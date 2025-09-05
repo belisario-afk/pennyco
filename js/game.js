@@ -1,3 +1,7 @@
+// ESM Game code
+import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
+import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
+
 (() => {
   const { Engine, Render, Runner, World, Bodies, Body, Composite, Events } = Matter;
 
@@ -13,7 +17,7 @@
   const GRAVITY_Y = 1.0;
   const DROP_X_NOISE = 2.5;
 
-  // Scoring slots (built from rows+1)
+  // Scoring slots
   let SLOT_POINTS = [];
   function buildSlotPoints(slotCount) {
     const center = Math.floor((slotCount - 1) / 2);
@@ -71,7 +75,6 @@
     return fetch(u, options);
   }
 
-  // Initialize admin inputs from storage
   (function initAdminInputs() {
     const saved = getBackendBaseUrl();
     if (saved) backendUrlInput.value = saved;
@@ -128,7 +131,7 @@
 
     // Pegs in upright triangle (pyramid pointing up)
     const rows = BOARD_ROWS;
-    const startY = BOARD_HEIGHT/2 - 4; // top space for drops
+    const startY = BOARD_HEIGHT/2 - 4;
     const rowHeight = PEG_SPACING;
     const startX = -((rows - 1) * PEG_SPACING) / 2;
 
@@ -235,10 +238,10 @@
     ball.plugin = { username, avatarUrl, scored: false };
     World.add(world, ball);
 
-    const texture = await PlinkoUtils.loadAvatarTexture(avatarUrl, 128);
+    const texture = await loadAvatarTexture(avatarUrl, 128);
     addBallMesh(ball, texture);
 
-    const nameSprite = PlinkoUtils.buildNameSprite(username);
+    const nameSprite = buildNameSprite(username);
     scene.add(nameSprite);
     labels.set(ball.id, nameSprite);
 
@@ -246,7 +249,6 @@
   }
 
   function handleCollision(body, against) {
-    // Detect sensor hit: ball entering a slot
     const sensor = slotSensors.find(s => s.body.id === against.id);
     if (!sensor) return;
     if (!body || !body.plugin || !String(body.label || '').startsWith('BALL_')) return;
@@ -263,7 +265,7 @@
 
       if (points >= 500) {
         const canvas = document.getElementById('confetti-canvas');
-        PlinkoUtils.fireworks(canvas, 1600);
+        fireworks(canvas, 1600);
       }
 
       setTimeout(() => {
@@ -306,7 +308,6 @@
     const nextScore = (current.score || 0) + points;
     leaderboard[username] = { username, avatarUrl, score: nextScore, lastUpdate: Date.now() };
     refreshLeaderboard();
-    // Write to leaderboard (allowed by demo rules)
     try {
       await FirebaseREST.update(`/leaderboard/${encodeKey(username)}`, {
         username,
@@ -329,19 +330,16 @@
     });
   }
 
-  // Firebase listeners
   function listenToEvents() {
     FirebaseREST.onChildAdded('/events', (id, obj) => {
       if (!obj || typeof obj !== 'object') return;
       if (processedEvents.has(id)) return;
 
-      // Skip historical backlog older than page load (1 minute buffer)
       const ts = typeof obj.timestamp === 'number' ? obj.timestamp : 0;
       if (ts && ts < startTime - 60_000) return;
 
       processedEvents.add(id);
 
-      // Event shape: { username, command, avatarUrl, timestamp }
       const username = sanitizeUsername(obj.username || 'viewer');
       const avatarUrl = obj.avatarUrl || '';
       const command = (obj.command || '').toLowerCase();
@@ -382,7 +380,6 @@
     }
   }
 
-  // Helpers
   function sanitizeUsername(u) {
     const s = String(u || '').trim();
     if (!s) return 'viewer';
@@ -390,11 +387,9 @@
   }
 
   function encodeKey(k) {
-    // Firebase keys cannot contain ., $, #, [, ]
     return encodeURIComponent(k.replace(/[.#$[\]]/g, '_'));
   }
 
-  // Admin UI actions
   btnSaveAdmin.addEventListener('click', () => {
     try {
       const baseUrl = backendUrlInput.value.trim();
@@ -445,14 +440,10 @@
     }
   });
 
-  // Start
   function start() {
     initThree();
     initMatter();
     listenToEvents();
-
-    // Do NOT try to write /config here; server manages it.
-    // FirebaseREST.update('/config', { spawnEnabled: true }).catch(() => {});
   }
 
   start();

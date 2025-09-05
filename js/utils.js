@@ -1,13 +1,13 @@
-// Utility helpers for Plinkoo
+// ESM Utils for Plinkoo
+import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 
 /**
  * Simple deterministic color from string.
  */
-function colorFromString(str) {
+export function colorFromString(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
-    // eslint-disable-next-line no-bitwise
-    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    hash = str.charCodeAt(i) + ((hash << 5) - hash); // eslint-disable-line no-bitwise
   }
   const hue = Math.abs(hash) % 360;
   return `hsl(${hue}, 70%, 55%)`;
@@ -16,7 +16,7 @@ function colorFromString(str) {
 /**
  * Create a round-cropped canvas texture for a given image URL with fallback.
  */
-async function loadAvatarTexture(url, diameter = 64) {
+export async function loadAvatarTexture(url, diameter = 64) {
   return new Promise((resolve) => {
     const size = Math.max(32, Math.min(256, diameter));
     const canvas = document.createElement('canvas');
@@ -67,7 +67,7 @@ async function loadAvatarTexture(url, diameter = 64) {
 /**
  * Build a Three.js sprite showing a username above a body.
  */
-function buildNameSprite(username) {
+export function buildNameSprite(username) {
   const text = username || 'viewer';
   const fontSize = 48;
   const padding = 16;
@@ -118,7 +118,7 @@ function roundRect(ctx, x, y, width, height, radius) {
 /**
  * Small confetti celebration on jackpot.
  */
-function fireworks(canvas, durationMs = 1200) {
+export function fireworks(canvas, durationMs = 1200) {
   const ctx = canvas.getContext('2d');
   const W = canvas.width = canvas.clientWidth;
   const H = canvas.height = canvas.clientHeight;
@@ -157,6 +157,7 @@ function fireworks(canvas, durationMs = 1200) {
   }, durationMs);
 }
 
+// Optional: also expose on window for any non-module code
 window.PlinkoUtils = {
   colorFromString,
   loadAvatarTexture,
