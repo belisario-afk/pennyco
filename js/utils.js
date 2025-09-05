@@ -1,4 +1,4 @@
-// Utilities: textures, labels, audio synth, projections, 2D FX manager (no auto AudioContext)
+// Utilities: audio (gesture-gated), textures, labels, projections, helpers for neon frame and normal maps
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 
 let audioCtx = null;
@@ -16,15 +16,10 @@ export async function initAudioOnce() {
       masterGain.gain.value = storedVolume;
       masterGain.connect(audioCtx.destination);
     }
-    if (audioCtx.state === 'suspended') {
-      await audioCtx.resume();
-    }
-  } catch (e) {
-    // fail silently; browser may still block until an explicit user gesture
-  }
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+  } catch {}
 }
 
-// Update saved volume; do not create AudioContext here
 export function setAudioVolume(v) {
   storedVolume = clamp01(Number(v));
   localStorage.setItem('plk_volume', String(storedVolume));
@@ -32,32 +27,24 @@ export function setAudioVolume(v) {
 }
 
 function now() { return audioCtx ? audioCtx.currentTime : 0; }
-
 function beep(freq, dur, type, gain) {
   if (!audioCtx || audioCtx.state !== 'running') return;
   const t0 = now();
   const o = audioCtx.createOscillator();
   const g = audioCtx.createGain();
-  o.type = type;
-  o.frequency.setValueAtTime(freq, t0);
+  o.type = type; o.frequency.setValueAtTime(freq, t0);
   g.gain.setValueAtTime(0, t0);
   g.gain.linearRampToValueAtTime(gain, t0 + 0.006);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
   o.connect(g).connect(masterGain);
-  o.start(t0);
-  o.stop(t0 + dur);
+  o.start(t0); o.stop(t0 + dur);
 }
-
 export function sfxBounce() { beep(520 + Math.random()*80, 0.03, 'square', 0.12); }
 export function sfxDrop()   { beep(420, 0.05, 'triangle', 0.18); }
 export function sfxScore(big=false) {
   if (!audioCtx || audioCtx.state !== 'running') return;
-  if (big) {
-    beep(880, 0.08, 'triangle', 0.25);
-    setTimeout(() => beep(1100, 0.12, 'triangle', 0.22), 70);
-  } else {
-    beep(760, 0.08, 'triangle', 0.22);
-  }
+  if (big) { beep(880, 0.08, 'triangle', 0.25); setTimeout(() => beep(1100, 0.12, 'triangle', 0.22), 70); }
+  else { beep(760, 0.08, 'triangle', 0.22); }
 }
 
 export async function loadAvatarTexture(url, diameter = 96) {
@@ -103,8 +90,7 @@ export function buildNameSprite(username) {
   const h = fontSize + padding*2;
   canvas.width = w; canvas.height = h;
 
-  // Neon bubble
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
   roundRect(ctx,0,0,w,h,12); ctx.fill();
   ctx.shadowColor = 'rgba(0,242,234,0.9)'; ctx.shadowBlur = 18;
   ctx.fillStyle = '#fff'; ctx.textAlign='center'; ctx.textBaseline='middle';
@@ -125,51 +111,98 @@ export function worldToScreen(vec3, camera, renderer) {
   return { x: v.x*halfW + halfW, y: -v.y*halfH + halfH };
 }
 
-// 2D FX manager (clears only its own canvas each frame)
-export class FXManager2D {
-  constructor(canvas) { this.canvas = canvas; this.parts = []; }
-  addSparks(x, y, color = '#00f2ea', count = 16) {
-    for (let i = 0; i < count; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const sp = 1 + Math.random() * 2.5;
-      this.parts.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp, life: 240 + Math.random()*160, color, size: 2 });
-    }
-  }
-  update(ctx, deltaMs) {
-    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    ctx.globalCompositeOperation = 'lighter';
-    for (const p of this.parts) {
-      p.x += p.vx; p.y += p.vy;
-      p.vx *= 0.97; p.vy *= 0.97; p.life -= deltaMs;
-      if (p.life > 0) { ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size); }
-    }
-    this.parts = this.parts.filter(p => p.life > 0);
-    ctx.globalCompositeOperation = 'source-over';
-  }
+/* Geometry helper: rounded-rectangle ring (frame) */
+export function makeRoundedRectRing(width, height, radius, thickness, curveSegments = 24) {
+  const outer = roundedRectShape(width, height, radius);
+  const inner = roundedRectShape(width - thickness*2, height - thickness*2, Math.max(0, radius - thickness));
+  const shape = outer;
+  shape.holes.push(inner);
+  const geom = new THREE.ShapeGeometry(shape, curveSegments);
+  return geom;
+}
+function roundedRectShape(w, h, r) {
+  const x = -w/2, y = -h/2;
+  const s = new THREE.Shape();
+  s.moveTo(x + r, y);
+  s.lineTo(x + w - r, y);
+  s.quadraticCurveTo(x + w, y, x + w, y + r);
+  s.lineTo(x + w, y + h - r);
+  s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  s.lineTo(x + r, y + h);
+  s.quadraticCurveTo(x, y + h, x, y + h - r);
+  s.lineTo(x, y + r);
+  s.quadraticCurveTo(x, y, x + r, y);
+  return s;
 }
 
-export function colorFromString(str) {
-  let hash = 0; for (let i=0;i<str.length;i++) hash = str.charCodeAt(i) + ((hash<<5)-hash);
-  const hue = Math.abs(hash) % 360;
-  return `hsl(${hue}, 70%, 55%)`;
+/* Procedural radial normal map (for pegs) */
+export function createRadialNormalMap(size = 64) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const cx = size/2, cy = size/2, rMax = size/2 - 1;
+  const img = ctx.createImageData(size, size);
+  for (let y=0; y<size; y++) {
+    for (let x=0; x<size; x++) {
+      const dx = (x + 0.5 - cx) / rMax;
+      const dy = (y + 0.5 - cy) / rMax;
+      const r2 = dx*dx + dy*dy;
+      let nx=0, ny=0, nz=1;
+      if (r2 <= 1.0) {
+        const z = Math.sqrt(1.0 - r2);
+        const invLen = 1.0 / Math.sqrt(dx*dx + dy*dy + z*z);
+        nx = dx * invLen; ny = dy * invLen; nz = z * invLen;
+      }
+      // Pack normal in RGB [0..255]
+      const R = Math.round((nx * 0.5 + 0.5) * 255);
+      const G = Math.round((ny * 0.5 + 0.5) * 255);
+      const B = Math.round((nz * 0.5 + 0.5) * 255);
+      const idx = (y*size + x) * 4;
+      img.data[idx] = R; img.data[idx+1] = G; img.data[idx+2] = B; img.data[idx+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.flipY = false;
+  return tex;
 }
 
-// Keep a minimal legacy function for compatibility (uses the manager internally)
-export function sparks2D(ctx, x, y, color='#00f2ea', count=14) {
-  const mgr = new FXManager2D(ctx.canvas);
-  mgr.addSparks(x, y, color, count);
-  let last = performance.now();
-  function step(t) {
-    const dt = t - last; last = t;
-    mgr.update(ctx, dt);
-    if (mgr.parts.length) requestAnimationFrame(step);
-  }
-  requestAnimationFrame(step);
+/* Simple gradient shader material for tray */
+export function makeTrayMaterial(topColor = new THREE.Color(0xff0050), bottomColor = new THREE.Color(0x550018), alpha = 0.55) {
+  const uniforms = {
+    uTop: { value: topColor },
+    uBottom: { value: bottomColor },
+    uAlpha: { value: alpha },
+  };
+  const mat = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform vec3 uTop;
+      uniform vec3 uBottom;
+      uniform float uAlpha;
+      void main(){
+        vec3 col = mix(uTop, uBottom, clamp(vUv.y, 0.0, 1.0));
+        gl_FragColor = vec4(col, uAlpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  return mat;
 }
 
 window.PlinkoUtils = {
+  initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore,
   loadAvatarTexture, buildNameSprite, worldToScreen,
-  FXManager2D, sparks2D,
-  initAudioOnce, setAudioVolume,
-  sfxBounce, sfxDrop, sfxScore
+  makeRoundedRectRing, createRadialNormalMap, makeTrayMaterial
 };

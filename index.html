@@ -12,16 +12,6 @@
   <!-- GSAP for UI transitions -->
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
 
-  <!-- Resolve bare specifiers for Three.js and its addons -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@0.157.0/examples/jsm/"
-    }
-  }
-  </script>
-
   <!-- Favicon (inline SVG) -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='100%25' height='100%25' rx='12' ry='12' fill='%230b0f1a'/%3E%3Ccircle cx='32' cy='32' r='18' fill='%230ff'/%3E%3Ctext x='32' y='40' font-size='24' text-anchor='middle' fill='%23fff' font-family='Arial'%3EP%3C/text%3E%3C/svg%3E">
 </head>
@@ -31,14 +21,6 @@
       <!-- WebGL canvas is injected by Three -->
       <!-- 2D FX overlay (sparks/confetti) -->
       <canvas id="fx-canvas"></canvas>
-
-      <!-- Board neon frame and tray (CSS overlay, auto-positioned from JS) -->
-      <div id="board-frame" aria-hidden="true"></div>
-      <div id="board-divider" aria-hidden="true"></div>
-      <div id="slot-tray" aria-hidden="true">
-        <div id="tray-dividers"></div>
-      </div>
-      <div id="board-title" aria-hidden="true">PLINKO</div>
 
       <!-- UI overlay -->
       <div id="overlay">
@@ -81,8 +63,31 @@
               Multi-Drop Count
               <input id="opt-multidrop" type="range" min="1" max="5" step="1" value="1">
             </label>
+            <label>
+              Theme
+              <select id="opt-theme">
+                <option value="cyan">Cyan</option>
+                <option value="magenta">Magenta</option>
+                <option value="mono">Mono</option>
+              </select>
+            </label>
+            <label>
+              Visual Quality
+              <select id="opt-quality">
+                <option value="low">Low</option>
+                <option value="medium" selected>Medium</option>
+                <option value="high">High</option>
+              </select>
+            </label>
             <label class="row">
-              <input id="opt-neon" type="checkbox" checked> Neon Effects
+              <input id="opt-bloom" type="checkbox" checked> Bloom
+            </label>
+            <label>
+              Bloom Strength
+              <input id="opt-bloom-strength" type="range" min="0" max="1.5" step="0.05" value="0.75">
+            </label>
+            <label class="row">
+              <input id="opt-smaa" type="checkbox" checked> SMAA Anti-Aliasing
             </label>
             <label class="row">
               <input id="opt-particles" type="checkbox" checked> Particles
@@ -96,30 +101,27 @@
           <hr class="divider">
 
           <h4>Admin</h4>
-          <!-- Wrap admin controls in a form to silence Chrome's password warning -->
-          <form id="admin-form" onsubmit="return false;">
-            <div class="settings-group">
-              <label>
-                Backend URL (Render)
-                <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="off" />
-              </label>
-              <label>
-                Admin Token
-                <input id="admin-token" type="password" placeholder="Enter admin token" autocomplete="off" />
-              </label>
-              <div class="admin-actions">
-                <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
-                <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
-              </div>
-              <div class="admin-actions">
-                <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
-                <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
-              </div>
-              <div class="admin-status">
-                <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
-              </div>
+          <div class="settings-group">
+            <label>
+              Backend URL (Render)
+              <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="off" />
+            </label>
+            <label>
+              Admin Token
+              <input id="admin-token" type="password" placeholder="Enter admin token" autocomplete="off" />
+            </label>
+            <div class="admin-actions">
+              <button id="btn-save-admin" class="btn">Save Admin Settings</button>
+              <button id="btn-reset-leaderboard" class="btn danger">Reset Leaderboard</button>
             </div>
-          </form>
+            <div class="admin-actions">
+              <button id="btn-toggle-spawn" class="btn alt">Toggle Spawn</button>
+              <button id="btn-simulate" class="btn alt">Simulate Drop</button>
+            </div>
+            <div class="admin-status">
+              <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
+            </div>
+          </div>
         </div>
       </div>
 

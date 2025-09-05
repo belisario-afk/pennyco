@@ -1,9 +1,9 @@
-// Faster visual spawn: create ball and placeholder instantly, load avatar texture asynchronously.
-// Calm physics (no launch impulse), fixed leaderboard reset handling, audio only after user gesture.
+// Plinkoo — True neon frame in WebGL, theme presets, peg normal map, ball Fresnel rim, toggleable Bloom/SMAA/Quality
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import {
+  initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore,
   loadAvatarTexture, buildNameSprite, worldToScreen,
-  FXManager2D, initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore
+  makeRoundedRectRing, createRadialNormalMap, makeTrayMaterial
 } from './utils.js';
 
 import { EffectComposer } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/EffectComposer.js';
@@ -32,35 +32,46 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const TRAY_RATIO = 0.22;
   let TRAY_HEIGHT = 0;
 
-  // Calm physics tuning
-  let GRAVITY_MAG = 1.0;        // slider adjusts; applied downward (negative y)
-  let DROP_SPEED = 0.5;         // kept for UI, no longer pushes ball
+  // Physics tuning (calm)
+  let GRAVITY_MAG = 1.0;
+  let DROP_SPEED = 0.5; // no longer applies force; kept for UI consistency
   let NEON = true;
   let PARTICLES = true;
 
-  // Very small bounce to avoid sticking
   const BALL_RESTITUTION = 0.06;
   const PEG_RESTITUTION  = 0.02;
   const BALL_FRICTION    = 0.04;
   const BALL_FRICTION_AIR= 0.012;
 
-  // Velocity clamps to prevent rare ricochets
-  const MAX_SPEED = 28; // world units/sec
+  const MAX_SPEED = 28;
   const MAX_H_SPEED = 22;
+
+  // Themes
+  const THEMES = {
+    cyan:   { neon: 0x00f2ea, accent: 0xff0050, rim: 0x82ffff, trayTop: 0xff2a7a, trayBottom: 0x2a0010 },
+    magenta:{ neon: 0xff0050, accent: 0x00f2ea, rim: 0xff99c0, trayTop: 0x00e6db, trayBottom: 0x001a19 },
+    mono:   { neon: 0xffffff, accent: 0xffffff, rim: 0xffffff, trayTop: 0xffffff, trayBottom: 0x222222 },
+  };
+  let THEME_KEY = localStorage.getItem('plk_theme') || 'cyan';
+  let QUALITY = localStorage.getItem('plk_quality') || 'medium';
+  let BLOOM_ENABLED = (localStorage.getItem('plk_bloom') ?? 'true') === 'true';
+  let BLOOM_STRENGTH = Number(localStorage.getItem('plk_bloom_strength') ?? '0.75');
+  let SMAA_ENABLED = (localStorage.getItem('plk_smaa') ?? 'true') === 'true';
 
   // Runtime state
   let engine, world;
-  let scene, camera, renderer, ambient, dirLight, pegsInstanced;
+  let scene, camera, renderer, ambient, dirLight;
   let composer, bloomPass, smaaPass;
+  let pegsInstanced, pegNormalTex;
+  let neonFrameMesh, trayMesh, titleSprite;
   let slotSensors = [];         // { body, index }
   const dynamicBodies = new Set();
   const meshById = new Map();
   const labelById = new Map();
-  const leaderboard = {};       // username -> entry
+  const leaderboard = {};
   const processedEvents = new Set();
   const ballCountForUser = new Map();
 
-  // top row Y for precise spawn
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
@@ -68,15 +79,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const container = document.getElementById('game-container');
   const fxCanvas = document.getElementById('fx-canvas');
   const fxCtx = fxCanvas.getContext('2d');
-  const boardFrame = document.getElementById('board-frame');
-  const boardDivider = document.getElementById('board-divider');
-  const slotTray = document.getElementById('slot-tray');
-  const trayDividers = document.getElementById('tray-dividers');
-  const boardTitle = document.getElementById('board-title');
   const slotLabelsEl = document.getElementById('slot-labels') || (() => {
     const el = document.createElement('div');
     el.id = 'slot-labels';
-    slotTray.appendChild(el);
+    document.getElementById('overlay').appendChild(el);
     return el;
   })();
   const leaderboardList = document.getElementById('leaderboard-list');
@@ -89,9 +95,16 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const optDropSpeed = document.getElementById('opt-drop-speed');
   const optGravity = document.getElementById('opt-gravity');
   const optMultiDrop = document.getElementById('opt-multidrop');
-  const optNeon = document.getElementById('opt-neon');
+  const optNeon = document.getElementById('opt-neon'); // legacy, kept for compatibility (hidden/not present OK)
   const optParticles = document.getElementById('opt-particles');
   const optVolume = document.getElementById('opt-volume');
+
+  const optTheme = document.getElementById('opt-theme');
+  const optQuality = document.getElementById('opt-quality');
+  const optBloom = document.getElementById('opt-bloom');
+  const optBloomStrength = document.getElementById('opt-bloom-strength');
+  const optSMAA = document.getElementById('opt-smaa');
+
   const adminTokenInput = document.getElementById('admin-token');
   const backendUrlInput = document.getElementById('backend-url');
   const btnSaveAdmin = document.getElementById('btn-save-admin');
@@ -109,7 +122,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     SLOT_POINTS = SLOT_MULTIPLIERS.map(m => m*100);
   }
 
-  function renderSlotLabels(slotCount, framePx) {
+  function renderSlotLabels(slotCount) {
     slotLabelsEl.innerHTML = '';
     SLOT_MULTIPLIERS.forEach((m) => {
       const div = document.createElement('div');
@@ -117,8 +130,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       div.textContent = `x${m}`;
       slotLabelsEl.appendChild(div);
     });
-    const slotWidthPx = framePx.width / slotCount;
-    trayDividers.style.setProperty('--slot-width', `${slotWidthPx}px`);
   }
 
   function getBackendBaseUrl() { return (localStorage.getItem('backendBaseUrl') || '').trim(); }
@@ -138,35 +149,61 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const g = Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value = String(g);
     const ds = Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value = String(ds);
     const md = Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value = String(md);
-    optNeon.checked = (localStorage.getItem('plk_neon') ?? 'true') === 'true';
-    optParticles.checked = (localStorage.getItem('plk_particles') ?? 'true') === 'true';
-    const vol = Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value = String(vol); setAudioVolume(vol); // no AudioContext creation
+    const parts = (localStorage.getItem('plk_particles') ?? 'true') === 'true';
+    optParticles.checked = parts;
+
+    // Theme/quality/post FX
+    optTheme.value = THEME_KEY;
+    optQuality.value = QUALITY;
+    optBloom.checked = BLOOM_ENABLED;
+    optBloomStrength.value = String(BLOOM_STRENGTH);
+    optSMAA.checked = SMAA_ENABLED;
+
+    const vol = Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value = String(vol); setAudioVolume(vol);
     const saved = getBackendBaseUrl(); if (saved) backendUrlInput.value = saved;
     const tok = localStorage.getItem('adminToken') || ''; if (tok) adminTokenInput.value = tok;
     applySettings();
   }
+
   function applySettings() {
     DROP_SPEED = Number(optDropSpeed.value);
     GRAVITY_MAG = Number(optGravity.value);
-    NEON = !!optNeon.checked;
     PARTICLES = !!optParticles.checked;
+
+    THEME_KEY = optTheme.value;
+    QUALITY = optQuality.value;
+    BLOOM_ENABLED = !!optBloom.checked;
+    BLOOM_STRENGTH = Number(optBloomStrength.value);
+    SMAA_ENABLED = !!optSMAA.checked;
+
     localStorage.setItem('plk_dropSpeed', String(DROP_SPEED));
     localStorage.setItem('plk_gravity', String(GRAVITY_MAG));
     localStorage.setItem('plk_multiDrop', String(optMultiDrop.value));
-    localStorage.setItem('plk_neon', String(NEON));
     localStorage.setItem('plk_particles', String(PARTICLES));
+
+    localStorage.setItem('plk_theme', THEME_KEY);
+    localStorage.setItem('plk_quality', QUALITY);
+    localStorage.setItem('plk_bloom', String(BLOOM_ENABLED));
+    localStorage.setItem('plk_bloom_strength', String(BLOOM_STRENGTH));
+    localStorage.setItem('plk_smaa', String(SMAA_ENABLED));
+
     if (world) world.gravity.y = -Math.abs(GRAVITY_MAG);
-    if (pegsInstanced) {
-      pegsInstanced.material.emissive.set(NEON ? 0x00ffff : 0x000000);
-      pegsInstanced.material.emissiveIntensity = NEON ? 0.30 : 0.0;
-      pegsInstanced.material.needsUpdate = true;
+
+    // Renderer quality
+    if (renderer) {
+      const cap = QUALITY === 'high' ? 2.0 : QUALITY === 'low' ? 1.1 : 1.5;
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, cap));
     }
     if (bloomPass) {
-      bloomPass.enabled = NEON;
-      bloomPass.strength = NEON ? 0.75 : 0.0;
-      bloomPass.threshold = 0.2;
-      bloomPass.radius = 0.6;
+      bloomPass.enabled = BLOOM_ENABLED;
+      bloomPass.strength = BLOOM_STRENGTH;
+      bloomPass.threshold = 0.18;
+      bloomPass.radius = 0.55;
     }
+    if (smaaPass) smaaPass.enabled = SMAA_ENABLED;
+
+    // Update theme colors on materials/meshes
+    updateVisualTheme();
   }
 
   function showSettings(){ gsap.to(settingsPanel, { x: 0, duration: 0.35, ease: 'expo.out' }); }
@@ -178,7 +215,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.0;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setClearColor(0x000000, 0);
     container.appendChild(renderer.domElement);
@@ -203,9 +240,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     composer.addPass(smaaPass);
     bloomPass = new UnrealBloomPass(
       new THREE.Vector2(renderer.domElement.width, renderer.domElement.height),
-      0.75, 0.6, 0.2
+      BLOOM_STRENGTH, 0.6, 0.18
     );
-    bloomPass.enabled = true;
+    bloomPass.enabled = BLOOM_ENABLED;
     composer.addPass(bloomPass);
 
     const ro = new ResizeObserver(onResize);
@@ -240,54 +277,98 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     fxCanvas.width = container.clientWidth;
     fxCanvas.height = container.clientHeight;
-    layoutOverlays();
+
+    rebuildBoardVisuals();
   }
 
-  function layoutOverlays() {
-    const left = -BOARD_WIDTH/2, right = BOARD_WIDTH/2;
-    const top = BOARD_HEIGHT/2, bottom = -BOARD_HEIGHT/2;
-    const trayTop = bottom + TRAY_HEIGHT;
+  // Build/refresh frame + tray + title in WebGL
+  function rebuildBoardVisuals() {
+    // Cleanup old
+    [neonFrameMesh, trayMesh, titleSprite].forEach(m => { if (!m) return; scene.remove(m); if (m.geometry) m.geometry.dispose(); if (m.material) m.material.dispose?.(); });
+    neonFrameMesh = null; trayMesh = null; titleSprite = null;
 
-    const pTopLeft = worldToScreen(new THREE.Vector3(left, top, 0), camera, renderer);
-    const pBottomRight = worldToScreen(new THREE.Vector3(right, bottom, 0), camera, renderer);
-    const pTrayTopLeft = worldToScreen(new THREE.Vector3(left, trayTop, 0), camera, renderer);
+    const theme = THEMES[THEME_KEY];
 
-    const frame = {
-      x: Math.round(pTopLeft.x),
-      y: Math.round(pTopLeft.y),
-      width: Math.round(pBottomRight.x - pTopLeft.x),
-      height: Math.round(pBottomRight.y - pTopLeft.y)
-    };
-    const tray = {
-      x: frame.x,
-      width: frame.width,
-      height: Math.round(pBottomRight.y - pTrayTopLeft.y),
-      top: Math.round(pTrayTopLeft.y)
-    };
-
-    Object.assign(boardFrame.style, {
-      left: frame.x + 'px', top: frame.y + 'px',
-      width: frame.width + 'px', height: frame.height + 'px',
-      display: 'block'
+    // Neon frame ring
+    const frameGeom = makeRoundedRectRing(BOARD_WIDTH, BOARD_HEIGHT, Math.min(BOARD_WIDTH, BOARD_HEIGHT)*0.04, /*thickness*/ 1.8, 32);
+    const frameMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(theme.neon),
+      transparent: true,
+      opacity: 1.0
     });
-    Object.assign(slotTray.style, {
-      left: tray.x + 'px', top: tray.top + 'px',
-      width: tray.width + 'px', height: tray.height + 'px',
-      display: 'block'
-    });
-    Object.assign(boardDivider.style, {
-      left: frame.x + 'px',
-      width: frame.width + 'px',
-      top: (pTrayTopLeft.y - 1) + 'px',
-      display: 'block'
-    });
+    neonFrameMesh = new THREE.Mesh(frameGeom, frameMat);
+    neonFrameMesh.position.set(0, 0, -0.5);
+    scene.add(neonFrameMesh);
 
-    boardTitle.style.left = (frame.x + 22) + 'px';
-    boardTitle.style.top = (frame.y + 18) + 'px';
+    // Magenta/cyan tray gradient
+    const trayW = BOARD_WIDTH, trayH = TRAY_HEIGHT;
+    const trayGeo = new THREE.PlaneGeometry(trayW, trayH, 1, 1);
+    const trayTop = new THREE.Color(theme.trayTop);
+    const trayBot = new THREE.Color(theme.trayBottom);
+    const trayMat = makeTrayMaterial(trayTop, trayBot, 0.55);
+    trayMesh = new THREE.Mesh(trayGeo, trayMat);
+    trayMesh.position.set(0, -BOARD_HEIGHT/2 + trayH/2, -0.6);
+    scene.add(trayMesh);
 
+    // Title sprite
+    titleSprite = buildTitleSprite('PLINKO', theme.neon);
+    titleSprite.position.set(-BOARD_WIDTH/2 + 3.0, BOARD_HEIGHT/2 - 4.0, -0.4);
+    scene.add(titleSprite);
+
+    // Rebuild slot labels row text
     const slotCount = ROWS + 1;
     buildSlots(slotCount);
-    renderSlotLabels(slotCount, frame);
+    renderSlotLabels(slotCount);
+
+    // Update pegs frame color after rebuild
+    updateVisualTheme();
+  }
+
+  function buildTitleSprite(text, neonHex) {
+    const t = String(text || 'PLINKO');
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const fs = 120;
+    ctx.font = `900 ${fs}px Inter, system-ui, Arial`;
+    const w = Math.ceil(ctx.measureText(t).width) + 40;
+    const h = fs + 30;
+    canvas.width = w; canvas.height = h;
+    ctx.shadowColor = '#ffffffaa';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(t, 0, h/2 + 6);
+    const tex = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true, color: new THREE.Color(neonHex) });
+    const spr = new THREE.Sprite(mat);
+    const scale = 0.009;
+    spr.scale.set(w*scale, h*scale, 1);
+    return spr;
+  }
+
+  function updateVisualTheme() {
+    const theme = THEMES[THEME_KEY];
+
+    // Frame/tray
+    if (neonFrameMesh) neonFrameMesh.material.color.set(theme.neon);
+    if (trayMesh) {
+      const mat = trayMesh.material;
+      mat.uniforms.uTop.value.set(theme.trayTop);
+      mat.uniforms.uBottom.value.set(theme.trayBottom);
+      mat.needsUpdate = true;
+    }
+    if (titleSprite) titleSprite.material.color.set(theme.neon);
+
+    // Pegs emissive/normal
+    if (pegsInstanced) {
+      const pm = pegsInstanced.material;
+      pm.emissive.set(theme.neon);
+      pm.emissiveIntensity = 0.30;
+      pm.needsUpdate = true;
+    }
+
+    // Ball rim color update (future spawns will use theme)
   }
 
   // Matter setup
@@ -299,18 +380,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     engine.velocityIterations = 6;
     engine.constraintIterations = 2;
 
-    buildBoard();
+    buildBoardPhysics();
     bindCollisions();
   }
 
-  function buildBoard() {
+  function buildBoardPhysics() {
     // Walls and kill-floor
     const left = Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2, 0, WALL_THICKNESS, BOARD_HEIGHT, { isStatic: true });
     const right = Bodies.rectangle(BOARD_WIDTH/2 + WALL_THICKNESS/2, 0, WALL_THICKNESS, BOARD_HEIGHT, { isStatic: true });
     const floor = Bodies.rectangle(0, -BOARD_HEIGHT/2 - 6, BOARD_WIDTH + WALL_THICKNESS*2, WALL_THICKNESS, { isStatic: true, label: 'KILL' });
     World.add(world, [left, right, floor]);
 
-    // Pegs
+    // Pegs instanced
     const startY = BOARD_HEIGHT/2 - 10; // top row
     TOP_ROW_Y = startY;
     const rowH = PEG_SPACING * 0.9;
@@ -349,15 +430,19 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function addPegInstancedMesh(pegPositions) {
     if (pegsInstanced) { scene.remove(pegsInstanced); pegsInstanced.geometry.dispose(); pegsInstanced.material.dispose(); }
-    const geo = new THREE.CylinderGeometry(PEG_RADIUS, PEG_RADIUS, 1.2, 16);
+    if (!pegNormalTex) pegNormalTex = createRadialNormalMap(64);
+
+    const geo = new THREE.CylinderGeometry(PEG_RADIUS, PEG_RADIUS, 1.2, 20);
     const mat = new THREE.MeshPhysicalMaterial({
       color: 0x86f7ff,
       metalness: 0.35,
       roughness: 0.35,
       clearcoat: 0.6,
       clearcoatRoughness: 0.2,
-      emissive: new THREE.Color(0x00ffff),
-      emissiveIntensity: 0.30
+      emissive: new THREE.Color(THEMES[THEME_KEY].neon),
+      emissiveIntensity: 0.30,
+      normalMap: pegNormalTex,
+      normalScale: new THREE.Vector2(0.35, 0.35)
     });
     const inst = new THREE.InstancedMesh(geo, mat, pegPositions.length);
     const m = new THREE.Matrix4();
@@ -405,7 +490,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const mesh = meshById.get(a.id);
         if (mesh) {
           const p2 = worldToScreen(mesh.position, camera, renderer);
-          fxMgr.addSparks(p2.x, p2.y, '#00f2ea', 12);
+          // simple spark: draw small circles on fx canvas (handled by external manager previously)
+          fxCtx.fillStyle = '#00f2ea';
+          fxCtx.beginPath(); fxCtx.arc(p2.x, p2.y, 1.6, 0, Math.PI*2); fxCtx.fill();
         }
       }
       sfxBounce();
@@ -415,9 +502,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       tryRemoveBall(a);
     }
   }
-
-  // FX manager
-  const fxMgr = new FXManager2D(fxCanvas);
 
   function startLoop() {
     let last = performance.now(), acc = 0;
@@ -432,7 +516,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
       clampVelocities();
 
-      fxMgr.update(fxCtx, dt);
+      // Clear FX canvas each frame
+      fxCtx.clearRect(0, 0, fxCanvas.width, fxCanvas.height);
+
       updateThreeFromMatter();
       composer.render();
 
@@ -461,11 +547,38 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  // Texture cache to avoid reloading same avatar URLs
-  const avatarTextureCache = new Map(); // url -> Promise<THREE.Texture>
+  // Fresnel rim injection for a MeshPhysicalMaterial
+  function addFresnelRim(material, rimHex = THEMES[THEME_KEY].rim, power = 2.0, intensity = 0.35) {
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.uRimColor = { value: new THREE.Color(rimHex) };
+      shader.uniforms.uRimPower = { value: power };
+      shader.uniforms.uRimIntensity = { value: intensity };
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+         // Fresnel rim (view-angle dependent)
+         vec3 V = normalize(vViewPosition);
+         vec3 N = normalize(geometryNormal);
+         float rim = pow(clamp(1.0 - dot(V, N), 0.0, 1.0), uRimPower);
+         totalEmissiveRadiance += uRimColor * (rim * uRimIntensity);
+        `
+      );
+    };
+    material.needsUpdate = true;
+  }
 
-  async function spawn({ username, avatarUrl }) {
-    // Immediate physics + placeholder mesh
+  // Texture cache for avatars
+  const avatarTextureCache = new Map();
+
+  async function spawnBall({ username, avatarUrl }) {
+    const multi = Math.max(1, Math.min(5, Number(optMultiDrop.value || 1)));
+    for (let i=0;i<multi;i++) spawnSingle({ username, avatarUrl });
+  }
+
+  async function spawnSingle({ username, avatarUrl }) {
+    const count = ballCountForUser.get(username) || 0;
+    if (count > 18) return;
+
     const jitter = PEG_SPACING * 0.35;
     const dropX = Math.max(-BOARD_WIDTH/2 + 4, Math.min(BOARD_WIDTH/2 - 4, (Math.random()-0.5) * jitter));
     const dropY = TOP_ROW_Y + PEG_SPACING * 0.8;
@@ -484,27 +597,29 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     Body.setVelocity(ball, { x: 0, y: 0 });
     Body.setAngularVelocity(ball, 0);
 
-    // Fast placeholder mesh (no texture yet)
-    const geo = new THREE.SphereGeometry(BALL_RADIUS, 20, 14);
+    // Mesh with fresnel rim
+    const theme = THEMES[THEME_KEY];
+    const geo = new THREE.SphereGeometry(BALL_RADIUS, 24, 18);
     const mat = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
-      metalness: 0.2,
-      roughness: 0.6,
-      clearcoat: 0.7,
-      clearcoatRoughness: 0.25,
-      emissive: NEON ? new THREE.Color(0x00c6ff) : new THREE.Color(0x000000),
-      emissiveIntensity: NEON ? 0.04 : 0.0
+      metalness: 0.25,
+      roughness: 0.55,
+      clearcoat: 0.8,
+      clearcoatRoughness: 0.2,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0
     });
+    addFresnelRim(mat, theme.rim, 2.0, 0.35);
     const mesh = new THREE.Mesh(geo, mat);
     scene.add(mesh);
     meshById.set(ball.id, mesh);
 
-    // Name sprite (can afford to add now)
+    // Name sprite
     const nameSprite = buildNameSprite(username);
     scene.add(nameSprite);
     labelById.set(ball.id, nameSprite);
 
-    // Async avatar map swap (does not block spawn)
+    // Async avatar map swap
     try {
       let texPromise = avatarTextureCache.get(avatarUrl || '');
       if (!texPromise) {
@@ -512,22 +627,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         avatarTextureCache.set(avatarUrl || '', texPromise);
       }
       const tex = await texPromise;
-      // it's possible the ball was already removed (scored). Guard:
       const liveMesh = meshById.get(ball.id);
       if (liveMesh && liveMesh.material) {
         liveMesh.material.map = tex;
         liveMesh.material.needsUpdate = true;
       }
-    } catch (e) {
-      // ignore texture failures
-    }
+    } catch {}
 
+    ballCountForUser.set(username, count + 1);
     sfxDrop();
-  }
-
-  async function spawnBall({ username, avatarUrl }) {
-    const multi = Math.max(1, Math.min(5, Number(optMultiDrop.value || 1)));
-    for (let i=0;i<multi;i++) spawn({ username, avatarUrl }); // fire-and-forget for speed
   }
 
   function tryRemoveBall(body) {
@@ -606,7 +714,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const username = sanitizeUsername(obj.username || 'viewer');
       const avatarUrl = obj.avatarUrl || '';
       const command = (obj.command || '').toLowerCase();
-      // Gift or command -> spawn
       if (command.includes('drop') || command.startsWith('gift')) spawnBall({ username, avatarUrl });
     });
 
@@ -663,9 +770,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   optDropSpeed.addEventListener('input', applySettings);
   optGravity.addEventListener('input', applySettings);
   optMultiDrop.addEventListener('input', applySettings);
-  optNeon.addEventListener('change', applySettings);
+  if (optNeon) optNeon.addEventListener('change', applySettings);
   optParticles.addEventListener('change', applySettings);
   optVolume.addEventListener('input', (e)=> setAudioVolume(Number(e.target.value)));
+
+  optTheme.addEventListener('change', () => { applySettings(); rebuildBoardVisuals(); });
+  optQuality.addEventListener('change', applySettings);
+  optBloom.addEventListener('change', applySettings);
+  optBloomStrength.addEventListener('input', applySettings);
+  optSMAA.addEventListener('change', applySettings);
 
   // Admin actions
   btnSaveAdmin.addEventListener('click', () => {
@@ -684,7 +797,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     try {
       const res = await adminFetch('/admin/reset-leaderboard', { method:'POST', headers:{'x-admin-token': token} });
       if (!res.ok) throw new Error('reset failed');
-      clearLeaderboardLocal(); // immediate local clear
+      clearLeaderboardLocal();
       alert('Leaderboard reset.');
     } catch {
       alert('Failed to reset leaderboard. Check Backend URL and token.');
