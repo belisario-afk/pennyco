@@ -1,9 +1,9 @@
-// ESM Game code
+// ESM Game code (optimized)
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
 
 (() => {
-  const { Engine, Render, Runner, World, Bodies, Body, Composite, Events } = Matter;
+  const { Engine, Runner, World, Bodies, Composite, Events } = Matter;
 
   // Config
   const BOARD_WIDTH = 18;  // world units
@@ -16,6 +16,11 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
   const WALL_THICKNESS = 1;
   const GRAVITY_Y = 1.0;
   const DROP_X_NOISE = 2.5;
+
+  // Render performance caps
+  const MAX_FPS = 60;
+  const HIDDEN_FPS = 5; // when tab hidden, save CPU
+  const PIXEL_RATIO_CAP = 1.5; // lower than devicePixelRatio for perf
 
   // Scoring slots
   let SLOT_POINTS = [];
@@ -33,10 +38,13 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
   // State
   let scene, camera, renderer, ambient, dirLight;
   let engine, runner, world;
-  let threeObjects = new Map(); // body.id -> mesh
-  let labels = new Map(); // body.id -> sprite
   let slotSensors = []; // { body, index, x, points }
   let spawnEnabled = true;
+
+  // Only track moving entities for per-frame updates (big perf win)
+  const dynamicBodies = new Set();   // Matter bodies (balls)
+  const meshesByBodyId = new Map();  // body.id -> THREE.Mesh
+  const labelsByBodyId = new Map();  // body.id -> THREE.Sprite
 
   const leaderboard = {}; // username -> { username, avatarUrl, score }
   const processedEvents = new Set();
@@ -108,11 +116,15 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     });
     confettiCanvas.width = container.clientWidth;
     confettiCanvas.height = container.clientHeight;
+
+    document.addEventListener('visibilitychange', () => {
+      // nothing else required; animate() adapts FPS automatically
+    });
   }
 
   function resizeRenderer() {
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, PIXEL_RATIO_CAP));
   }
 
   function initMatter() {
@@ -131,10 +143,11 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
 
     // Pegs in upright triangle (pyramid pointing up)
     const rows = BOARD_ROWS;
-    const startY = BOARD_HEIGHT/2 - 4;
+    const startY = BOARD_HEIGHT/2 - 4; // top space for drops
     const rowHeight = PEG_SPACING;
     const startX = -((rows - 1) * PEG_SPACING) / 2;
 
+    const pegPositions = [];
     for (let r = 0; r < rows; r++) {
       const y = startY - r * rowHeight;
       for (let c = 0; c <= r; c++) {
@@ -145,9 +158,11 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
           friction: 0.05
         });
         World.add(world, peg);
-        addPegMesh(peg);
+        pegPositions.push({ x, y });
       }
     }
+    // One InstancedMesh for all pegs (fewer draw calls, no per-frame updates)
+    addPegInstancedMesh(pegPositions);
 
     // Slots at bottom (sensors)
     const slotCount = rows + 1;
@@ -167,13 +182,19 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
       });
     }
 
-    // Render loop
-    const animate = () => {
+    // Render loop (throttled)
+    let lastRender = 0;
+    const animate = (t) => {
       requestAnimationFrame(animate);
+
+      const targetDelta = 1000 / (document.hidden ? HIDDEN_FPS : MAX_FPS);
+      if (t - lastRender < targetDelta) return;
+      lastRender = t;
+
       updateThreeFromMatter();
       renderer.render(scene, camera);
     };
-    animate();
+    requestAnimationFrame(animate);
 
     // Collision handling
     Events.on(engine, 'collisionStart', (ev) => {
@@ -184,36 +205,46 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     });
   }
 
-  function addPegMesh(pegBody) {
-    const geo = new THREE.CylinderGeometry(PEG_RADIUS, PEG_RADIUS, 0.4, 12);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x4f5c78, metalness: 0.4, roughness: 0.6 });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.rotation.x = Math.PI / 2;
-    scene.add(mesh);
-    threeObjects.set(pegBody.id, mesh);
+  function addPegInstancedMesh(pegPositions) {
+    const geo = new THREE.CylinderGeometry(PEG_RADIUS, PEG_RADIUS, 0.4, 10);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x4f5c78, metalness: 0.3, roughness: 0.7 });
+    const inst = new THREE.InstancedMesh(geo, mat, pegPositions.length);
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const rotX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+    for (let i = 0; i < pegPositions.length; i++) {
+      const { x, y } = pegPositions[i];
+      q.copy(rotX);
+      m.compose(new THREE.Vector3(x, y, 0), q, new THREE.Vector3(1, 1, 1));
+      inst.setMatrixAt(i, m);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    scene.add(inst);
   }
 
   function addBallMesh(ballBody, texture) {
-    const geo = new THREE.SphereGeometry(BALL_RADIUS, 24, 16);
+    // Lower segment counts for perf
+    const geo = new THREE.SphereGeometry(BALL_RADIUS, 16, 12);
     const mat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: texture,
-      metalness: 0.1,
-      roughness: 0.8
+      metalness: 0.08,
+      roughness: 0.85
     });
     const mesh = new THREE.Mesh(geo, mat);
     scene.add(mesh);
-    threeObjects.set(ballBody.id, mesh);
+    meshesByBodyId.set(ballBody.id, mesh);
   }
 
   function updateThreeFromMatter() {
-    Composite.allBodies(world).forEach((body) => {
-      const mesh = threeObjects.get(body.id);
+    // Only update moving balls, not static pegs/sensors
+    dynamicBodies.forEach((body) => {
+      const mesh = meshesByBodyId.get(body.id);
       if (mesh) {
         mesh.position.set(body.position.x, body.position.y, 0);
         mesh.rotation.z = body.angle;
       }
-      const label = labels.get(body.id);
+      const label = labelsByBodyId.get(body.id);
       if (label) {
         label.position.set(body.position.x, body.position.y + BALL_RADIUS * 2, 0);
       }
@@ -238,17 +269,20 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     ball.plugin = { username, avatarUrl, scored: false };
     World.add(world, ball);
 
+    dynamicBodies.add(ball);
+
     const texture = await loadAvatarTexture(avatarUrl, 128);
     addBallMesh(ball, texture);
 
     const nameSprite = buildNameSprite(username);
     scene.add(nameSprite);
-    labels.set(ball.id, nameSprite);
+    labelsByBodyId.set(ball.id, nameSprite);
 
     ballCountForUser.set(username, count + 1);
   }
 
   function handleCollision(body, against) {
+    // Detect sensor hit: ball entering a slot
     const sensor = slotSensors.find(s => s.body.id === against.id);
     if (!sensor) return;
     if (!body || !body.plugin || !String(body.label || '').startsWith('BALL_')) return;
@@ -270,27 +304,28 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
 
       setTimeout(() => {
         tryRemoveBody(body);
-      }, 1500);
+      }, 1200);
     }
   }
 
   function tryRemoveBody(body) {
     try {
-      const mesh = threeObjects.get(body.id);
+      const mesh = meshesByBodyId.get(body.id);
       if (mesh) {
         scene.remove(mesh);
         mesh.geometry.dispose();
         if (mesh.material && mesh.material.map) mesh.material.map.dispose();
         if (mesh.material) mesh.material.dispose();
       }
-      const lbl = labels.get(body.id);
+      const lbl = labelsByBodyId.get(body.id);
       if (lbl) {
         scene.remove(lbl);
         if (lbl.material && lbl.material.map) lbl.material.map.dispose();
         if (lbl.material) lbl.material.dispose();
       }
-      threeObjects.delete(body.id);
-      labels.delete(body.id);
+      meshesByBodyId.delete(body.id);
+      labelsByBodyId.delete(body.id);
+      dynamicBodies.delete(body);
       World.remove(world, body);
 
       const username = body.plugin?.username;
@@ -390,6 +425,7 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     return encodeURIComponent(k.replace(/[.#$[\]]/g, '_'));
   }
 
+  // Admin UI actions
   btnSaveAdmin.addEventListener('click', () => {
     try {
       const baseUrl = backendUrlInput.value.trim();
