@@ -7,7 +7,104 @@
   <link rel="stylesheet" href="./style.css"/>
 
   <!-- Favicon -->
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%235df2d6'/%3E%3Cstop offset='1' stop-color='%23a88bff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='32' cy='32' r='30' fill='url(%23g)'/%3E%3Ctext x='32' y='39' font-size='28' text-anchor='middle' fill='%230b0f1a' font-family='Arial, Helvetica, sans-serif'%3EP%3C/text%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%235df2d6'/%3E%3Cstop offset='1' stop-color='%23a88bff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='2' y='2' rx='12' ry='12' width='60' height='60' fill='url(%23g)'/%3E%3Ctext x='32' y='40' font-size='28' text-anchor='middle' fill='%230b0f1a' font-family='Arial, Helvetica, sans-serif'%3EP%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+  <div id="app">
+    <div id="frame">
+      <div class="glow"></div>
+      <div class="inner">
+
+        <!-- Header -->
+        <div id="header">
+          <div class="brand">
+            <div class="logo-dot"></div>
+            <div class="logo-text">Plinkoo</div>
+          </div>
+
+          <div class="spacer"></div>
+
+          <div id="spawn-indicator" class="chip">
+            <span>Spawn</span>
+            <strong id="spawn-status">unknown</strong>
+          </div>
+
+          <button id="btn-gear" aria-label="Settings" title="Settings">
+            <span class="gear">⚙️</span>
+          </button>
+        </div>
+
+        <!-- Content -->
+        <div id="content">
+          <!-- Sidebar (Leaderboard) -->
+          <aside id="sidebar">
+            <div class="panel leaderboard">
+              <h3>LEADERBOARD</h3>
+              <ol id="leaderboard-list" class="lb-list"></ol>
+            </div>
+
+            <div class="panel admin">
+              <details>
+                <summary>Admin</summary>
+                <form id="admin-form" onsubmit="return false;">
+                  <label>
+                    Backend URL
+                    <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" />
+                  </label>
+                  <label>
+                    Admin Token
+                    <input id="admin-token" type="password" placeholder="Token" autocomplete="off"/>
+                  </label>
+                  <div class="buttons">
+                    <button type="button" id="btn-save-admin">Save</button>
+                    <button type="button" id="btn-simulate">Simulate Drop</button>
+                    <button type="button" id="btn-toggle-spawn">Toggle Spawn</button>
+                    <button type="button" id="btn-reset-leaderboard" class="danger">Reset Leaderboard</button>
+                  </div>
+                </form>
+              </details>
+            </div>
+          </aside>
+
+          <!-- Board Area -->
+          <main id="board-area">
+            <div id="board-frame">
+              <div class="glow inner"></div>
+
+              <!-- Three.js canvas will be injected here -->
+              <div id="board-viewport">
+                <canvas id="confetti-canvas"></canvas>
+              </div>
+
+              <div id="board-hud">
+                <div class="stats">
+                  <div class="stat">
+                    <div class="label">Rows</div>
+                    <div class="value" id="rows-label">12</div>
+                  </div>
+                  <div class="stat">
+                    <div class="label">RTP</div>
+                    <div class="value" id="rtp-label">~96%</div>
+                  </div>
+                  <div class="stat">
+                    <div class="label">Seed</div>
+                    <div class="value mono" id="seed-label">—</div>
+                  </div>
+                  <div class="stat">
+                    <div class="label">Bet</div>
+                    <div class="value" id="bet-label">100 pts</div>
+                  </div>
+                </div>
+
+                <div id="slot-labels"></div>
+              </div>
+            </div>
+          </main>
+        </div>
+
+      </div>
+    </div>
+  </div>
 
   <!-- Firebase REST (classic, attaches window.FirebaseREST) -->
   <script src="./js/firebase.js"></script>
@@ -16,86 +113,59 @@
   <!-- ESM modules -->
   <script type="module" src="./js/utils.js"></script>
   <script type="module" src="./js/game.js"></script>
-</head>
-<body>
-  <div id="app">
-    <div id="game-container" class="vertical">
-      <canvas id="confetti-canvas"></canvas>
 
-      <div id="overlay">
-        <header id="top-bar">
-          <div class="brand">
-            <div class="mark">Plinkoo</div>
-            <div class="live-tag">@lmohss</div>
-          </div>
+  <!-- Settings Drawer -->
+  <div id="drawer" aria-hidden="true">
+    <div class="drawer-content">
+      <div class="drawer-header">
+        <h3>Game Controls</h3>
+        <button id="drawer-close" aria-label="Close">✖</button>
+      </div>
 
-          <div id="status">
-            <span>Spawn:</span>
-            <strong id="spawn-status">unknown</strong>
-          </div>
-        </header>
+      <div class="control">
+        <label>Rows <span id="rows-out">12</span></label>
+        <input id="ctrl-rows" type="range" min="8" max="16" step="1" value="12"/>
+      </div>
 
-        <section id="hud">
-          <div class="panel">
-            <div class="row">
-              <div class="col">
-                <div class="stat">
-                  <div class="label">Rows</div>
-                  <div class="value">12</div>
-                </div>
-                <div class="stat">
-                  <div class="label">RTP</div>
-                  <div class="value" id="rtp-label">~96%</div>
-                </div>
-                <div class="stat">
-                  <div class="label">Seed</div>
-                  <div class="value" id="seed-label">—</div>
-                </div>
-              </div>
-              <div class="col">
-                <div class="stat">
-                  <div class="label">Bet</div>
-                  <div class="value">100 pts</div>
-                </div>
-                <div class="stat">
-                  <div class="label">Volatility</div>
-                  <div class="value">Medium</div>
-                </div>
-              </div>
-            </div>
-          </div>
+      <div class="control">
+        <label>Bet (points) <span id="bet-out">100</span></label>
+        <input id="ctrl-bet" type="range" min="10" max="1000" step="10" value="100"/>
+      </div>
 
-          <div class="panel leaderboard">
-            <h3>Leaderboard</h3>
-            <ol id="leaderboard-list"></ol>
-          </div>
+      <div class="control">
+        <label>Speed (Time Scale) <span id="speed-out">0.90</span></label>
+        <input id="ctrl-speed" type="range" min="0.5" max="1.5" step="0.05" value="0.9"/>
+      </div>
 
-          <div class="panel admin">
-            <details>
-              <summary>Admin</summary>
-              <form id="admin-form" onsubmit="return false;">
-                <label>
-                  Backend URL
-                  <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" />
-                </label>
-                <label>
-                  Admin Token
-                  <input id="admin-token" type="password" placeholder="Token" autocomplete="off"/>
-                </label>
-                <div class="buttons">
-                  <button type="button" id="btn-save-admin">Save</button>
-                  <button type="button" id="btn-simulate">Simulate Drop</button>
-                  <button type="button" id="btn-toggle-spawn">Toggle Spawn</button>
-                  <button type="button" id="btn-reset-leaderboard" class="danger">Reset Leaderboard</button>
-                </div>
-              </form>
-            </details>
-          </div>
-        </section>
+      <div class="control">
+        <label>Gravity <span id="grav-out">0.70</span></label>
+        <input id="ctrl-gravity" type="range" min="0.3" max="1.5" step="0.05" value="0.7"/>
+      </div>
 
-        <footer id="slot-footer">
-          <div id="slot-labels"></div>
-        </footer>
+      <div class="control">
+        <label>Air Drag <span id="air-out">0.020</span></label>
+        <input id="ctrl-air" type="range" min="0.0" max="0.06" step="0.005" value="0.02"/>
+      </div>
+
+      <div class="control">
+        <label>Bounce (Restitution) <span id="rest-out">0.25</span></label>
+        <input id="ctrl-rest" type="range" min="0.10" max="0.40" step="0.01" value="0.25"/>
+      </div>
+
+      <div class="control">
+        <label>Risk (Edge Bias) <span id="risk-out">0.50</span></label>
+        <input id="ctrl-risk" type="range" min="0.0" max="1.0" step="0.05" value="0.5"/>
+      </div>
+
+      <div class="control">
+        <label>Path Influence (Nudge) <span id="nudge-out">0.0005</span></label>
+        <input id="ctrl-nudge" type="range" min="0.0" max="0.0015" step="0.0001" value="0.0005"/>
+      </div>
+
+      <div class="drawer-actions">
+        <button id="btn-apply">Apply</button>
+        <button id="btn-reset">Reset Defaults</button>
+        <button id="btn-save">Save (Local)</button>
       </div>
     </div>
   </div>

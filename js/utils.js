@@ -130,10 +130,8 @@ export function fireworks(canvas, durationMs = 1200) {
       size: 2 + Math.random() * 3
     });
   }
-  let start = performance.now();
   let raf;
-  const step = (t) => {
-    start = t;
+  const step = () => {
     ctx.clearRect(0, 0, W, H);
     parts.forEach(p => {
       p.x += p.vx; p.vy += p.g; p.y += p.vy;
@@ -147,7 +145,7 @@ export function fireworks(canvas, durationMs = 1200) {
 }
 
 /* =============================== */
-/* Provably-fair RNG (seeded)      */
+/* Provably-fair RNG and stats     */
 /* =============================== */
 
 /**
@@ -194,9 +192,7 @@ export function binomialProbabilities(n) {
   const denom = Math.pow(2, n);
   let c = 1; // C(n,0)
   for (let k = 0; k <= n; k++) {
-    if (k > 0) {
-      c = (c * (n - k + 1)) / k;
-    }
+    if (k > 0) c = (c * (n - k + 1)) / k;
     probs.push(c / denom);
   }
   return probs;
