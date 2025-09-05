@@ -1,15 +1,15 @@
-// Plinkoo — Visual upgrade: no fading overlay, bloom + SMAA, better neon materials
-import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
+// Plinkoo — Visual upgrade with import map for Three, bloom + SMAA, neon materials
+import * as THREE from 'three';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
   FXManager2D, initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore
 } from './utils.js';
 
-// Postprocessing
-import { EffectComposer } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { SMAAPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/SMAAPass.js';
+// Postprocessing via three/addons (resolved by import map)
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 
 const { Engine, World, Bodies, Events, Body } = Matter;
 
@@ -42,7 +42,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let engine, world;
   let scene, camera, renderer, ambient, dirLight, pegsInstanced;
   let composer, bloomPass, smaaPass;
-  let slotSensors = [];         // { body, index, points }
+  let slotSensors = [];         // { body, index }
   const dynamicBodies = new Set();
   const meshById = new Map();
   const labelById = new Map();
@@ -51,7 +51,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const ballCountForUser = new Map();
 
   const startTime = Date.now();
-  let lastRAF = performance.now();
 
   // DOM refs
   const container = document.getElementById('game-container');
@@ -191,9 +190,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     // Postprocessing
     composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
-    smaaPass = new SMAAPass(
-      renderer.domElement.width, renderer.domElement.height
-    );
+    smaaPass = new SMAAPass(renderer.domElement.width, renderer.domElement.height);
     composer.addPass(smaaPass);
     bloomPass = new UnrealBloomPass(
       new THREE.Vector2(renderer.domElement.width, renderer.domElement.height),
@@ -403,12 +400,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       sfxBounce();
     }
 
+    // Kill plane
     if (b.label === 'KILL' && String(a.label || '').startsWith('BALL_')) {
       tryRemoveBall(a);
     }
   }
 
-  // FX manager (replaces darkening overlay)
+  // FX manager (no darkening)
   const fxMgr = new FXManager2D(fxCanvas);
 
   function startLoop() {
@@ -422,9 +420,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         acc -= FIXED_DT; steps++;
       }
 
-      // Update 2D FX (clears its canvas each frame)
       fxMgr.update(fxCtx, dt);
-
       updateThreeFromMatter();
       composer.render();
 

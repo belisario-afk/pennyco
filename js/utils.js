@@ -1,5 +1,5 @@
 // ESM Utilities: textures, labels, audio synth, particles, projections, FX manager
-import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
+import * as THREE from 'three';
 
 let audioCtx = null;
 let masterGain = null;
@@ -102,8 +102,7 @@ export function worldToScreen(vec3, camera, renderer) {
 }
 
 /**
- * Lightweight 2D FX manager that renders particles and clears only the FX canvas,
- * so it never darkens the WebGL scene underneath.
+ * Lightweight 2D FX manager that renders particles and clears only the FX canvas.
  */
 export class FXManager2D {
   constructor(canvas) {
@@ -122,9 +121,7 @@ export class FXManager2D {
     }
   }
   update(ctx, deltaMs) {
-    // Clear to transparent each frame (does NOT affect WebGL canvas)
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-
     ctx.globalCompositeOperation = 'lighter';
     for (const p of this.parts) {
       p.x += p.vx;
@@ -136,13 +133,12 @@ export class FXManager2D {
       ctx.fillStyle = p.color;
       ctx.fillRect(p.x, p.y, p.size, p.size);
     }
-    // Remove dead
     this.parts = this.parts.filter(p => p.life > 0);
     ctx.globalCompositeOperation = 'source-over';
   }
 }
 
-// Optional legacy one-off sparks (not used by new code)
+// Optional legacy one-off sparks (kept for compatibility)
 export function sparks2D(ctx, x, y, color='#00f2ea', count=14) {
   const mgr = new FXManager2D(ctx.canvas);
   mgr.addSparks(x, y, color, count);
