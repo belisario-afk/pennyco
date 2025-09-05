@@ -1,15 +1,16 @@
-// Plinkoo — True neon frame in WebGL, theme presets, peg normal map, ball Fresnel rim, toggleable Bloom/SMAA/Quality
-import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
+// Plinkoo — Fix three module resolution via import map; admin token wrapped in form (index.html)
+// Also retains: neon frame, theme presets, peg normal map, ball Fresnel rim, Bloom/SMAA toggles
+import * as THREE from 'three';
 import {
   initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore,
   loadAvatarTexture, buildNameSprite, worldToScreen,
   makeRoundedRectRing, createRadialNormalMap, makeTrayMaterial
 } from './utils.js';
 
-import { EffectComposer } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { SMAAPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/SMAAPass.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 
 const { Engine, World, Bodies, Events, Body } = Matter;
 
@@ -18,10 +19,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const FIXED_DT = 1000/60;
   const MAX_STEPS = 4;
 
-  const WORLD_HEIGHT = 100; // constant; width adapts to viewport
+  const WORLD_HEIGHT = 100;
   let WORLD_WIDTH = 56.25;
 
-  // Board geometry (derived on resize)
+  // Board geometry
   let BOARD_HEIGHT = WORLD_HEIGHT * 0.82;
   let BOARD_WIDTH = 0;
   let PEG_SPACING = 4.2;
@@ -32,10 +33,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const TRAY_RATIO = 0.22;
   let TRAY_HEIGHT = 0;
 
-  // Physics tuning (calm)
+  // Physics (calm)
   let GRAVITY_MAG = 1.0;
-  let DROP_SPEED = 0.5; // no longer applies force; kept for UI consistency
-  let NEON = true;
+  let DROP_SPEED = 0.5;
   let PARTICLES = true;
 
   const BALL_RESTITUTION = 0.06;
@@ -64,7 +64,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let composer, bloomPass, smaaPass;
   let pegsInstanced, pegNormalTex;
   let neonFrameMesh, trayMesh, titleSprite;
-  let slotSensors = [];         // { body, index }
+  let slotSensors = [];
   const dynamicBodies = new Set();
   const meshById = new Map();
   const labelById = new Map();
@@ -95,7 +95,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const optDropSpeed = document.getElementById('opt-drop-speed');
   const optGravity = document.getElementById('opt-gravity');
   const optMultiDrop = document.getElementById('opt-multidrop');
-  const optNeon = document.getElementById('opt-neon'); // legacy, kept for compatibility (hidden/not present OK)
   const optParticles = document.getElementById('opt-particles');
   const optVolume = document.getElementById('opt-volume');
 
@@ -112,6 +111,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnToggleSpawn = document.getElementById('btn-toggle-spawn');
   const btnSimulate = document.getElementById('btn-simulate');
 
+  // Firebase client (global from firebase.js)
+  // eslint-disable-next-line no-undef
+  const FirebaseREST = window.FirebaseREST;
+
   // Slots
   let SLOT_POINTS = [];
   let SLOT_MULTIPLIERS = [];
@@ -121,7 +124,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     SLOT_MULTIPLIERS = Array.from({length:slotCount}, (_,i)=>mult(Math.abs(i-center)));
     SLOT_POINTS = SLOT_MULTIPLIERS.map(m => m*100);
   }
-
   function renderSlotLabels(slotCount) {
     slotLabelsEl.innerHTML = '';
     SLOT_MULTIPLIERS.forEach((m) => {
@@ -132,6 +134,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
+  // Backend URL helpers
   function getBackendBaseUrl() { return (localStorage.getItem('backendBaseUrl') || '').trim(); }
   function setBackendBaseUrl(url) {
     const clean = String(url || '').trim().replace(/\/+$/, '');
@@ -144,7 +147,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return fetch(u, options);
   }
 
-  // Settings persistence
+  // Settings
   function loadSettings() {
     const g = Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value = String(g);
     const ds = Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value = String(ds);
@@ -152,7 +155,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const parts = (localStorage.getItem('plk_particles') ?? 'true') === 'true';
     optParticles.checked = parts;
 
-    // Theme/quality/post FX
     optTheme.value = THEME_KEY;
     optQuality.value = QUALITY;
     optBloom.checked = BLOOM_ENABLED;
@@ -162,9 +164,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const vol = Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value = String(vol); setAudioVolume(vol);
     const saved = getBackendBaseUrl(); if (saved) backendUrlInput.value = saved;
     const tok = localStorage.getItem('adminToken') || ''; if (tok) adminTokenInput.value = tok;
+
     applySettings();
   }
-
   function applySettings() {
     DROP_SPEED = Number(optDropSpeed.value);
     GRAVITY_MAG = Number(optGravity.value);
@@ -180,7 +182,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     localStorage.setItem('plk_gravity', String(GRAVITY_MAG));
     localStorage.setItem('plk_multiDrop', String(optMultiDrop.value));
     localStorage.setItem('plk_particles', String(PARTICLES));
-
     localStorage.setItem('plk_theme', THEME_KEY);
     localStorage.setItem('plk_quality', QUALITY);
     localStorage.setItem('plk_bloom', String(BLOOM_ENABLED));
@@ -189,7 +190,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
     if (world) world.gravity.y = -Math.abs(GRAVITY_MAG);
 
-    // Renderer quality
     if (renderer) {
       const cap = QUALITY === 'high' ? 2.0 : QUALITY === 'low' ? 1.1 : 1.5;
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, cap));
@@ -202,14 +202,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     if (smaaPass) smaaPass.enabled = SMAA_ENABLED;
 
-    // Update theme colors on materials/meshes
     updateVisualTheme();
   }
 
   function showSettings(){ gsap.to(settingsPanel, { x: 0, duration: 0.35, ease: 'expo.out' }); }
   function hideSettings(){ gsap.to(settingsPanel, { x: '110%', duration: 0.35, ease: 'expo.in' }); }
 
-  // Three setup
+  // Three
   function initThree() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -233,7 +232,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     dirLight.position.set(-8, 16, 18);
     scene.add(ambient, dirLight);
 
-    // Postprocessing
+    // Post FX
     composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
     smaaPass = new SMAAPass(renderer.domElement.width, renderer.domElement.height);
@@ -249,7 +248,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     ro.observe(container);
     onResize();
   }
-
   function computeWorldSize() {
     const w = container.clientWidth || 1;
     const h = container.clientHeight || 1;
@@ -260,7 +258,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     PEG_SPACING = BOARD_WIDTH / (ROWS + 1);
     TRAY_HEIGHT = BOARD_HEIGHT * TRAY_RATIO;
   }
-
   function onResize() {
     renderer.setSize(container.clientWidth, container.clientHeight);
     composer.setSize(container.clientWidth, container.clientHeight);
@@ -281,26 +278,20 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     rebuildBoardVisuals();
   }
 
-  // Build/refresh frame + tray + title in WebGL
   function rebuildBoardVisuals() {
-    // Cleanup old
     [neonFrameMesh, trayMesh, titleSprite].forEach(m => { if (!m) return; scene.remove(m); if (m.geometry) m.geometry.dispose(); if (m.material) m.material.dispose?.(); });
     neonFrameMesh = null; trayMesh = null; titleSprite = null;
 
     const theme = THEMES[THEME_KEY];
 
     // Neon frame ring
-    const frameGeom = makeRoundedRectRing(BOARD_WIDTH, BOARD_HEIGHT, Math.min(BOARD_WIDTH, BOARD_HEIGHT)*0.04, /*thickness*/ 1.8, 32);
-    const frameMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(theme.neon),
-      transparent: true,
-      opacity: 1.0
-    });
+    const frameGeom = makeRoundedRectRing(BOARD_WIDTH, BOARD_HEIGHT, Math.min(BOARD_WIDTH, BOARD_HEIGHT)*0.04, 1.8, 32);
+    const frameMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.neon), transparent: true, opacity: 1.0 });
     neonFrameMesh = new THREE.Mesh(frameGeom, frameMat);
     neonFrameMesh.position.set(0, 0, -0.5);
     scene.add(neonFrameMesh);
 
-    // Magenta/cyan tray gradient
+    // Tray gradient
     const trayW = BOARD_WIDTH, trayH = TRAY_HEIGHT;
     const trayGeo = new THREE.PlaneGeometry(trayW, trayH, 1, 1);
     const trayTop = new THREE.Color(theme.trayTop);
@@ -310,20 +301,17 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     trayMesh.position.set(0, -BOARD_HEIGHT/2 + trayH/2, -0.6);
     scene.add(trayMesh);
 
-    // Title sprite
+    // Title
     titleSprite = buildTitleSprite('PLINKO', theme.neon);
     titleSprite.position.set(-BOARD_WIDTH/2 + 3.0, BOARD_HEIGHT/2 - 4.0, -0.4);
     scene.add(titleSprite);
 
-    // Rebuild slot labels row text
     const slotCount = ROWS + 1;
     buildSlots(slotCount);
     renderSlotLabels(slotCount);
 
-    // Update pegs frame color after rebuild
     updateVisualTheme();
   }
-
   function buildTitleSprite(text, neonHex) {
     const t = String(text || 'PLINKO');
     const canvas = document.createElement('canvas');
@@ -346,11 +334,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     spr.scale.set(w*scale, h*scale, 1);
     return spr;
   }
-
   function updateVisualTheme() {
     const theme = THEMES[THEME_KEY];
-
-    // Frame/tray
     if (neonFrameMesh) neonFrameMesh.material.color.set(theme.neon);
     if (trayMesh) {
       const mat = trayMesh.material;
@@ -359,16 +344,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       mat.needsUpdate = true;
     }
     if (titleSprite) titleSprite.material.color.set(theme.neon);
-
-    // Pegs emissive/normal
     if (pegsInstanced) {
       const pm = pegsInstanced.material;
       pm.emissive.set(theme.neon);
       pm.emissiveIntensity = 0.30;
       pm.needsUpdate = true;
     }
-
-    // Ball rim color update (future spawns will use theme)
   }
 
   // Matter setup
@@ -383,7 +364,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     buildBoardPhysics();
     bindCollisions();
   }
-
   function buildBoardPhysics() {
     // Walls and kill-floor
     const left = Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2, 0, WALL_THICKNESS, BOARD_HEIGHT, { isStatic: true });
@@ -391,8 +371,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const floor = Bodies.rectangle(0, -BOARD_HEIGHT/2 - 6, BOARD_WIDTH + WALL_THICKNESS*2, WALL_THICKNESS, { isStatic: true, label: 'KILL' });
     World.add(world, [left, right, floor]);
 
-    // Pegs instanced
-    const startY = BOARD_HEIGHT/2 - 10; // top row
+    // Pegs
+    const startY = BOARD_HEIGHT/2 - 10;
     TOP_ROW_Y = startY;
     const rowH = PEG_SPACING * 0.9;
     const startX = -((ROWS - 1) * PEG_SPACING) / 2;
@@ -427,7 +407,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       slotSensors.push({ body: sensor, index: i });
     }
   }
-
   function addPegInstancedMesh(pegPositions) {
     if (pegsInstanced) { scene.remove(pegsInstanced); pegsInstanced.geometry.dispose(); pegsInstanced.material.dispose(); }
     if (!pegNormalTex) pegNormalTex = createRadialNormalMap(64);
@@ -465,7 +444,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
     });
   }
-
   function handlePair(a, b) {
     if (!a || !b) return;
 
@@ -484,13 +462,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       return;
     }
 
-    // Peg bounce FX
+    // Peg bounce FX (simple spark dot)
     if (b.label === 'PEG' && String(a.label || '').startsWith('BALL_')) {
       if (PARTICLES) {
         const mesh = meshById.get(a.id);
         if (mesh) {
           const p2 = worldToScreen(mesh.position, camera, renderer);
-          // simple spark: draw small circles on fx canvas (handled by external manager previously)
           fxCtx.fillStyle = '#00f2ea';
           fxCtx.beginPath(); fxCtx.arc(p2.x, p2.y, 1.6, 0, Math.PI*2); fxCtx.fill();
         }
@@ -516,9 +493,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
       clampVelocities();
 
-      // Clear FX canvas each frame
       fxCtx.clearRect(0, 0, fxCanvas.width, fxCanvas.height);
-
       updateThreeFromMatter();
       composer.render();
 
@@ -526,7 +501,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     requestAnimationFrame(tick);
   }
-
   function clampVelocities() {
     for (const b of dynamicBodies) {
       const vx = b.velocity.x, vy = b.velocity.y;
@@ -537,7 +511,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if (sx !== vx || sy !== vy) Body.setVelocity(b, { x: sx, y: sy });
     }
   }
-
   function updateThreeFromMatter() {
     dynamicBodies.forEach((body) => {
       const mesh = meshById.get(body.id);
@@ -547,7 +520,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  // Fresnel rim injection for a MeshPhysicalMaterial
+  // Fresnel rim emitter
   function addFresnelRim(material, rimHex = THEMES[THEME_KEY].rim, power = 2.0, intensity = 0.35) {
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uRimColor = { value: new THREE.Color(rimHex) };
@@ -556,7 +529,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
-         // Fresnel rim (view-angle dependent)
          vec3 V = normalize(vViewPosition);
          vec3 N = normalize(geometryNormal);
          float rim = pow(clamp(1.0 - dot(V, N), 0.0, 1.0), uRimPower);
@@ -574,7 +546,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const multi = Math.max(1, Math.min(5, Number(optMultiDrop.value || 1)));
     for (let i=0;i<multi;i++) spawnSingle({ username, avatarUrl });
   }
-
   async function spawnSingle({ username, avatarUrl }) {
     const count = ballCountForUser.get(username) || 0;
     if (count > 18) return;
@@ -614,12 +585,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     scene.add(mesh);
     meshById.set(ball.id, mesh);
 
-    // Name sprite
     const nameSprite = buildNameSprite(username);
     scene.add(nameSprite);
     labelById.set(ball.id, nameSprite);
 
-    // Async avatar map swap
+    // Async avatar texture
     try {
       let texPromise = avatarTextureCache.get(avatarUrl || '');
       if (!texPromise) {
@@ -676,7 +646,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       console.warn('Leaderboard write failed (rules?)', e);
     }
   }
-
   function refreshLeaderboard() {
     const entries = Object.values(leaderboard).sort((a, b) => b.score - a.score).slice(0, 50);
     leaderboardList.innerHTML = '';
@@ -698,7 +667,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       leaderboardList.appendChild(li);
     }
   }
-
   function clearLeaderboardLocal() {
     for (const k of Object.keys(leaderboard)) delete leaderboard[k];
     leaderboardList.innerHTML = '';
@@ -770,7 +738,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   optDropSpeed.addEventListener('input', applySettings);
   optGravity.addEventListener('input', applySettings);
   optMultiDrop.addEventListener('input', applySettings);
-  if (optNeon) optNeon.addEventListener('change', applySettings);
   optParticles.addEventListener('change', applySettings);
   optVolume.addEventListener('input', (e)=> setAudioVolume(Number(e.target.value)));
 
@@ -790,7 +757,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert('Saved. Admin calls will use the backend URL you provided.');
     } catch { alert('Failed to save settings.'); }
   });
-
   btnReset.addEventListener('click', async () => {
     const token = adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if (!token) return alert('Provide admin token.');
@@ -803,7 +769,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert('Failed to reset leaderboard. Check Backend URL and token.');
     }
   });
-
   btnToggleSpawn.addEventListener('click', async () => {
     const token = adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if (!token) return alert('Provide admin token.');
@@ -814,7 +779,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert(`Spawn set to ${newVal}`);
     } catch { alert('Failed to toggle spawn.'); }
   });
-
   btnSimulate.addEventListener('click', async () => {
     try {
       const name = 'LocalTester' + Math.floor(Math.random()*1000);
