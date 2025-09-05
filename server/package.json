@@ -5,6 +5,7 @@
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
+    "build": "echo \"No build step needed for Plinkoo server\"",
     "start": "node server.js",
     "dev": "nodemon server.js"
   },

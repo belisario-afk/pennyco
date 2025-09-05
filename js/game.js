@@ -2,7 +2,7 @@
   const { Engine, Render, Runner, World, Bodies, Body, Composite, Events } = Matter;
 
   // Config
-  const BOARD_WIDTH = 18;  // world units (meters-ish)
+  const BOARD_WIDTH = 18;  // world units
   const BOARD_HEIGHT = 32;
   const BOARD_ROWS = 12;
   const PEG_SPACING = 1.2;
@@ -13,17 +13,15 @@
   const GRAVITY_Y = 1.0;
   const DROP_X_NOISE = 2.5;
 
-  // Scoring slots: Provide points from left to right
-  // Middle slots are higher value for fun
+  // Scoring slots (built from rows+1)
   let SLOT_POINTS = [];
   function buildSlotPoints(slotCount) {
     const center = Math.floor((slotCount - 1) / 2);
-    const base = 10;
     const arr = [];
     for (let i = 0; i < slotCount; i++) {
       const d = Math.abs(i - center);
       const val = d === 0 ? 500 : d === 1 ? 200 : d === 2 ? 100 : 50;
-      arr.push(val * 1);
+      arr.push(val);
     }
     SLOT_POINTS = arr;
   }
@@ -39,6 +37,7 @@
   const leaderboard = {}; // username -> { username, avatarUrl, score }
   const processedEvents = new Set();
   const ballCountForUser = new Map();
+  const startTime = Date.now();
 
   // DOM
   const container = document.getElementById('game-container');
@@ -46,10 +45,39 @@
   const slotLabelsEl = document.getElementById('slot-labels');
   const leaderboardList = document.getElementById('leaderboard-list');
   const spawnStatusEl = document.getElementById('spawn-status');
+
+  // Admin elements
   const adminTokenInput = document.getElementById('admin-token');
+  const backendUrlInput = document.getElementById('backend-url');
+  const btnSaveAdmin = document.getElementById('btn-save-admin');
   const btnReset = document.getElementById('btn-reset-leaderboard');
   const btnToggleSpawn = document.getElementById('btn-toggle-spawn');
   const btnSimulate = document.getElementById('btn-simulate');
+
+  // Backend URL management (Render)
+  function getBackendBaseUrl() {
+    const v = (localStorage.getItem('backendBaseUrl') || '').trim();
+    return v;
+  }
+  function setBackendBaseUrl(url) {
+    const clean = String(url || '').trim().replace(/\/+$/, '');
+    if (clean) localStorage.setItem('backendBaseUrl', clean);
+    else localStorage.removeItem('backendBaseUrl');
+  }
+  function adminFetch(path, options = {}) {
+    const base = getBackendBaseUrl();
+    if (!base) throw new Error('Backend URL not set. Enter it in the Admin panel and click Save.');
+    const u = `${base}${path.startsWith('/') ? '' : '/'}${path}`;
+    return fetch(u, options);
+  }
+
+  // Initialize admin inputs from storage
+  (function initAdminInputs() {
+    const saved = getBackendBaseUrl();
+    if (saved) backendUrlInput.value = saved;
+    const savedToken = localStorage.getItem('adminToken') || '';
+    if (savedToken) adminTokenInput.value = savedToken;
+  })();
 
   function initThree() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -225,7 +253,6 @@
     if (body.plugin.scored) return;
 
     const vy = body.velocity.y;
-    // Score when the ball is deep enough into sensor and moving downward (or small upward bounce)
     if (body.position.y < sensor.body.position.y + 0.2 && vy < 1.0) {
       body.plugin.scored = true;
       const username = body.plugin.username;
@@ -234,13 +261,11 @@
       const points = sensor.points;
       awardPoints(username, avatarUrl, points).catch(console.warn);
 
-      // Jackpot fireworks (big points)
       if (points >= 500) {
         const canvas = document.getElementById('confetti-canvas');
         PlinkoUtils.fireworks(canvas, 1600);
       }
 
-      // Cleanup: remove ball after a delay
       setTimeout(() => {
         tryRemoveBody(body);
       }, 1500);
@@ -277,17 +302,21 @@
   }
 
   async function awardPoints(username, avatarUrl, points) {
-    // Read-modify-write via REST; demo-safe (not strictly atomic).
     const current = leaderboard[username] || { username, avatarUrl, score: 0 };
     const nextScore = (current.score || 0) + points;
     leaderboard[username] = { username, avatarUrl, score: nextScore, lastUpdate: Date.now() };
     refreshLeaderboard();
-    await FirebaseREST.update(`/leaderboard/${encodeKey(username)}`, {
-      username,
-      avatarUrl: avatarUrl || '',
-      score: nextScore,
-      lastUpdate: Date.now(),
-    });
+    // Write to leaderboard (allowed by demo rules)
+    try {
+      await FirebaseREST.update(`/leaderboard/${encodeKey(username)}`, {
+        username,
+        avatarUrl: avatarUrl || '',
+        score: nextScore,
+        lastUpdate: Date.now(),
+      });
+    } catch (e) {
+      console.warn('Leaderboard write failed (client rules?)', e);
+    }
   }
 
   function refreshLeaderboard() {
@@ -305,6 +334,11 @@
     FirebaseREST.onChildAdded('/events', (id, obj) => {
       if (!obj || typeof obj !== 'object') return;
       if (processedEvents.has(id)) return;
+
+      // Skip historical backlog older than page load (1 minute buffer)
+      const ts = typeof obj.timestamp === 'number' ? obj.timestamp : 0;
+      if (ts && ts < startTime - 60_000) return;
+
       processedEvents.add(id);
 
       // Event shape: { username, command, avatarUrl, timestamp }
@@ -360,41 +394,54 @@
     return encodeURIComponent(k.replace(/[.#$[\]]/g, '_'));
   }
 
-  // Admin UI actions (calls backend)
+  // Admin UI actions
+  btnSaveAdmin.addEventListener('click', () => {
+    try {
+      const baseUrl = backendUrlInput.value.trim();
+      const token = adminTokenInput.value.trim();
+      setBackendBaseUrl(baseUrl);
+      if (token) localStorage.setItem('adminToken', token);
+      else localStorage.removeItem('adminToken');
+      alert('Saved. Admin calls will use the backend URL you provided.');
+    } catch (e) {
+      alert('Failed to save settings.');
+    }
+  });
+
   btnReset.addEventListener('click', async () => {
-    const token = adminTokenInput.value || '';
+    const token = adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if (!token) return alert('Provide admin token.');
     try {
-      await fetch('/admin/reset-leaderboard', { method: 'POST', headers: { 'x-admin-token': token } });
+      await adminFetch('/admin/reset-leaderboard', { method: 'POST', headers: { 'x-admin-token': token } });
       alert('Leaderboard reset.');
     } catch (e) {
-      alert('Failed to reset leaderboard.');
+      alert('Failed to reset leaderboard. Check Backend URL.');
     }
   });
 
   btnToggleSpawn.addEventListener('click', async () => {
-    const token = adminTokenInput.value || '';
+    const token = adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if (!token) return alert('Provide admin token.');
     try {
       const newVal = !spawnEnabled;
-      await fetch(`/admin/spawn-toggle?enabled=${newVal ? 'true' : 'false'}`, { method: 'POST', headers: { 'x-admin-token': token } });
+      await adminFetch(`/admin/spawn-toggle?enabled=${newVal ? 'true' : 'false'}`, { method: 'POST', headers: { 'x-admin-token': token } });
       alert(`Spawn set to ${newVal}`);
     } catch (e) {
-      alert('Failed to toggle spawn.');
+      alert('Failed to toggle spawn. Check Backend URL.');
     }
   });
 
   btnSimulate.addEventListener('click', async () => {
     try {
       const name = 'LocalTester' + Math.floor(Math.random() * 1000);
-      await fetch('/admin/spawn', {
+      await adminFetch('/admin/spawn', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ username: name, avatarUrl: '', command: '!drop' })
       });
       alert('Simulated drop sent.');
     } catch (e) {
-      alert('Simulation failed.');
+      alert('Simulation failed. Check Backend URL.');
     }
   });
 
@@ -404,8 +451,8 @@
     initMatter();
     listenToEvents();
 
-    // Initialize config spawnEnabled status (in case not present)
-    FirebaseREST.update('/config', { spawnEnabled: true }).catch(() => {});
+    // Do NOT try to write /config here; server manages it.
+    // FirebaseREST.update('/config', { spawnEnabled: true }).catch(() => {});
   }
 
   start();

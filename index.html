@@ -6,8 +6,19 @@
   <title>Plinkoo — TikTok Live Plinko</title>
   <link rel="stylesheet" href="./style.css"/>
 
-  <!-- Three.js and Matter.js via CDN -->
-  <script src="https://unpkg.com/three@0.157.0/build/three.min.js"></script>
+  <!-- Favicon to avoid 404 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%235df2d6'/%3E%3Ctext x='32' y='39' font-size='28' text-anchor='middle' fill='%230b0f1a' font-family='Arial'%3EP%3C/text%3E%3C/svg%3E">
+
+  <!-- Three.js as ES Module to avoid deprecation warnings -->
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
+    // Expose THREE globally for existing code
+    window.THREE = THREE;
+  </script>
+  <!-- Optional legacy fallback for very old browsers -->
+  <script nomodule src="https://cdn.jsdelivr.net/npm/three@0.157.0/build/three.min.js"></script>
+
+  <!-- Matter.js via CDN (UMD is fine) -->
   <script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>
 </head>
 <body>
@@ -24,15 +35,23 @@
             <details>
               <summary>Admin</summary>
               <div class="admin-content">
-                <label>
-                  Admin Token:
-                  <input id="admin-token" type="password" placeholder="Enter admin token" />
-                </label>
-                <div class="admin-actions">
-                  <button id="btn-reset-leaderboard">Reset Leaderboard</button>
-                  <button id="btn-toggle-spawn">Toggle Spawn</button>
-                  <button id="btn-simulate">Simulate Drop</button>
-                </div>
+                <!-- Put admin inputs inside a form (silences Chrome warning) -->
+                <form id="admin-form" onsubmit="return false;">
+                  <label>
+                    Admin Token:
+                    <input id="admin-token" type="password" placeholder="Enter admin token" autocomplete="off" />
+                  </label>
+                  <label>
+                    Backend URL (Render):
+                    <input id="backend-url" type="url" placeholder="https://your-relay.onrender.com" autocomplete="off" />
+                  </label>
+                  <div class="admin-actions">
+                    <button id="btn-save-admin" type="button">Save Admin Settings</button>
+                    <button id="btn-reset-leaderboard" type="button">Reset Leaderboard</button>
+                    <button id="btn-toggle-spawn" type="button">Toggle Spawn</button>
+                    <button id="btn-simulate" type="button">Simulate Drop</button>
+                  </div>
+                </form>
                 <div class="admin-status">
                   <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
                 </div>
