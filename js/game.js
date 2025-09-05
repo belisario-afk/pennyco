@@ -1,15 +1,15 @@
-// Plinkoo — Visual upgrade with import map for Three, bloom + SMAA, neon materials
-import * as THREE from 'three';
+// Plinkoo — Calm drops: spawn at top row, tiny bounce, no launch impulse, velocity clamp
+import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
   FXManager2D, initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore
 } from './utils.js';
 
-// Postprocessing via three/addons (resolved by import map)
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+// Postprocessing
+import { EffectComposer } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/SMAAPass.js';
 
 const { Engine, World, Bodies, Events, Body } = Matter;
 
@@ -32,11 +32,21 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const TRAY_RATIO = 0.22;
   let TRAY_HEIGHT = 0;
 
-  // Tunables (settings)
-  let GRAVITY_MAG = 1.0;
-  let DROP_SPEED = 0.5;
+  // Calm physics tuning
+  let GRAVITY_MAG = 1.0;        // slider adjusts; applied downward (negative y)
+  let DROP_SPEED = 0.5;         // kept for UI, not used to push anymore
   let NEON = true;
   let PARTICLES = true;
+
+  // Very small bounce so it won’t get stuck, but no ricochets
+  const BALL_RESTITUTION = 0.06;
+  const PEG_RESTITUTION  = 0.02;
+  const BALL_FRICTION    = 0.04;
+  const BALL_FRICTION_AIR= 0.012;
+
+  // Clamp runaway speeds to keep things readable and stable
+  const MAX_SPEED = 28; // world units/sec
+  const MAX_H_SPEED = 22;
 
   // Runtime state
   let engine, world;
@@ -49,6 +59,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const leaderboard = {};
   const processedEvents = new Set();
   const ballCountForUser = new Map();
+
+  // Top-row Y cached for precise spawn point
+  let TOP_ROW_Y = 0;
 
   const startTime = Date.now();
 
@@ -162,7 +175,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function hideSettings(){ gsap.to(settingsPanel, { x: '110%', duration: 0.35, ease: 'expo.in' }); }
 
   // Three setup
-  let resizeObserver;
   function initThree() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -170,7 +182,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderer.toneMappingExposure = 1.0;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setClearColor(0x000000, 0); // transparent
+    renderer.setClearColor(0x000000, 0);
     container.appendChild(renderer.domElement);
 
     scene = new THREE.Scene();
@@ -181,7 +193,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     );
     camera.position.set(0, 0, 10);
 
-    // Lighting for crisp pegs/balls
     ambient = new THREE.AmbientLight(0xffffff, 0.9);
     dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
     dirLight.position.set(-8, 16, 18);
@@ -201,7 +212,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
     const ro = new ResizeObserver(onResize);
     ro.observe(container);
-    resizeObserver = ro;
     onResize();
   }
 
@@ -303,7 +313,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     World.add(world, [left, right, floor]);
 
     // Pegs
-    const startY = BOARD_HEIGHT/2 - 10;
+    const startY = BOARD_HEIGHT/2 - 10; // top row
+    TOP_ROW_Y = startY;                 // cache for spawn placement
     const rowH = PEG_SPACING * 0.9;
     const startX = -((ROWS - 1) * PEG_SPACING) / 2;
 
@@ -313,7 +324,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       for (let c = 0; c <= r; c++) {
         const x = startX + c * PEG_SPACING + (ROWS - 1 - r) * (PEG_SPACING/2);
         const peg = Bodies.circle(x, y, PEG_RADIUS, {
-          isStatic: true, restitution: 0.45, friction: 0.02
+          isStatic: true,
+          restitution: PEG_RESTITUTION,
+          friction: 0.01
         });
         peg.label = 'PEG';
         World.add(world, peg);
@@ -346,7 +359,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       clearcoat: 0.6,
       clearcoatRoughness: 0.2,
       emissive: new THREE.Color(0x00ffff),
-      emissiveIntensity: 0.35
+      emissiveIntensity: 0.30
     });
     const inst = new THREE.InstancedMesh(geo, mat, pegPositions.length);
     const m = new THREE.Matrix4();
@@ -394,19 +407,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const mesh = meshById.get(a.id);
         if (mesh) {
           const p2 = worldToScreen(mesh.position, camera, renderer);
-          fxMgr.addSparks(p2.x, p2.y, '#00f2ea', 16);
+          fxMgr.addSparks(p2.x, p2.y, '#00f2ea', 12);
         }
       }
       sfxBounce();
     }
 
-    // Kill plane
     if (b.label === 'KILL' && String(a.label || '').startsWith('BALL_')) {
       tryRemoveBall(a);
     }
   }
 
-  // FX manager (no darkening)
+  // FX manager
   const fxMgr = new FXManager2D(fxCanvas);
 
   function startLoop() {
@@ -420,6 +432,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         acc -= FIXED_DT; steps++;
       }
 
+      clampVelocities();
+
       fxMgr.update(fxCtx, dt);
       updateThreeFromMatter();
       composer.render();
@@ -427,6 +441,21 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
+  }
+
+  function clampVelocities() {
+    for (const b of dynamicBodies) {
+      const vx = b.velocity.x, vy = b.velocity.y;
+      let sx = vx, sy = vy;
+      // Clamp horizontal separately (prevents wild side slaps)
+      if (Math.abs(sx) > MAX_H_SPEED) sx = Math.sign(sx) * MAX_H_SPEED;
+      const speed = Math.hypot(sx, sy);
+      if (speed > MAX_SPEED) {
+        const k = MAX_SPEED / speed;
+        sx *= k; sy *= k;
+      }
+      if (sx !== vx || sy !== vy) Body.setVelocity(b, { x: sx, y: sy });
+    }
   }
 
   function updateThreeFromMatter() {
@@ -447,14 +476,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const count = ballCountForUser.get(username) || 0;
     if (count > 18) return;
 
-    const xNoise = (Math.random()-0.5) * (BOARD_WIDTH * 0.35);
-    const dropX = Math.max(-BOARD_WIDTH/2 + 4, Math.min(BOARD_WIDTH/2 - 4, xNoise));
-    const dropY = BOARD_HEIGHT/2 - 6;
+    // Spawn centered at the top row, with tiny horizontal jitter
+    const jitter = PEG_SPACING * 0.35;
+    const dropX = Math.max(-BOARD_WIDTH/2 + 4, Math.min(BOARD_WIDTH/2 - 4, (Math.random()-0.5) * jitter));
+    const dropY = TOP_ROW_Y + PEG_SPACING * 0.8; // just above top pegs
 
     const ball = Bodies.circle(dropX, dropY, BALL_RADIUS, {
-      restitution: 0.36,
-      friction: 0.02,
-      frictionAir: 0.002,
+      restitution: BALL_RESTITUTION,
+      friction: BALL_FRICTION,
+      frictionAir: BALL_FRICTION_AIR,
       density: 0.0018
     });
     ball.label = `BALL_${username}`;
@@ -462,8 +492,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     World.add(world, ball);
     dynamicBodies.add(ball);
 
-    const impulseX = (Math.random()*2-1) * (0.002 + DROP_SPEED*0.004);
-    Body.applyForce(ball, ball.position, { x: impulseX, y: 0 });
+    // No launch impulse. Start calm with zero velocity and angular velocity.
+    Body.setVelocity(ball, { x: 0, y: 0 });
+    Body.setAngularVelocity(ball, 0);
 
     const tex = await loadAvatarTexture(avatarUrl, 128);
     const geo = new THREE.SphereGeometry(BALL_RADIUS, 24, 18);
@@ -471,14 +502,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       color: 0xffffff,
       map: tex,
       metalness: 0.25,
-      roughness: 0.5,
+      roughness: 0.55,
       clearcoat: 0.8,
       clearcoatRoughness: 0.2,
-      sheen: 0.2,
+      sheen: 0.15,
       sheenRoughness: 0.6,
       sheenColor: new THREE.Color(0x88ffff),
       emissive: NEON ? new THREE.Color(0x00ffff) : new THREE.Color(0x000000),
-      emissiveIntensity: NEON ? 0.05 : 0.0
+      emissiveIntensity: NEON ? 0.04 : 0.0
     });
     const mesh = new THREE.Mesh(geo, mat);
     scene.add(mesh);
