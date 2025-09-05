@@ -1,0 +1,24 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "events": {
+      ".read": true,
+      ".write": false
+    },
+
+    "leaderboard": {
+      ".read": true,
+      "$user": {
+        ".write": true,
+        ".validate": "newData.hasChildren(['username','avatarUrl','score','lastUpdate']) && newData.child('username').isString() && newData.child('avatarUrl').isString() && newData.child('score').isNumber() && newData.child('lastUpdate').isNumber()"
+      }
+    },
+
+    "config": {
+      ".read": true,
+      ".write": false
+    }
+  }
+}

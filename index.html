@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Plinkoo — TikTok Live Plinko</title>
+  <link rel="stylesheet" href="./style.css"/>
+
+  <!-- Three.js and Matter.js via CDN -->
+  <script src="https://unpkg.com/three@0.157.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <div id="game-container">
+      <canvas id="confetti-canvas"></canvas>
+      <div id="overlay">
+        <div id="top-bar">
+          <div class="branding">
+            <span class="logo">Plinkoo</span>
+            <span class="live">@lmohss</span>
+          </div>
+          <div id="admin-panel">
+            <details>
+              <summary>Admin</summary>
+              <div class="admin-content">
+                <label>
+                  Admin Token:
+                  <input id="admin-token" type="password" placeholder="Enter admin token" />
+                </label>
+                <div class="admin-actions">
+                  <button id="btn-reset-leaderboard">Reset Leaderboard</button>
+                  <button id="btn-toggle-spawn">Toggle Spawn</button>
+                  <button id="btn-simulate">Simulate Drop</button>
+                </div>
+                <div class="admin-status">
+                  <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <div id="leaderboard">
+          <h3>Leaderboard</h3>
+          <ol id="leaderboard-list"></ol>
+        </div>
+
+        <div id="slot-labels"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./js/utils.js"></script>
+  <script src="./js/firebase.js"></script>
+  <script src="./js/game.js"></script>
+</body>
+</html>
