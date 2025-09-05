@@ -1,8 +1,8 @@
-// Plinkoo — Calm drops: spawn at top row, tiny bounce, no launch impulse, velocity clamp
+// Plinkoo — Calm drops + neon + fixed leaderboard reset + audio unlock gating
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
-  FXManager2D, initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore
+  FXManager2D, unlockAudio, setAudioVolume, sfxBounce, sfxDrop, sfxScore
 } from './utils.js';
 
 // Postprocessing
@@ -34,17 +34,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   // Calm physics tuning
   let GRAVITY_MAG = 1.0;        // slider adjusts; applied downward (negative y)
-  let DROP_SPEED = 0.5;         // kept for UI, not used to push anymore
+  let DROP_SPEED = 0.5;         // retained for UI, not used to push anymore
   let NEON = true;
   let PARTICLES = true;
 
-  // Very small bounce so it won’t get stuck, but no ricochets
   const BALL_RESTITUTION = 0.06;
   const PEG_RESTITUTION  = 0.02;
   const BALL_FRICTION    = 0.04;
   const BALL_FRICTION_AIR= 0.012;
-
-  // Clamp runaway speeds to keep things readable and stable
   const MAX_SPEED = 28; // world units/sec
   const MAX_H_SPEED = 22;
 
@@ -56,13 +53,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const dynamicBodies = new Set();
   const meshById = new Map();
   const labelById = new Map();
-  const leaderboard = {};
+  const leaderboard = {};       // username -> entry
   const processedEvents = new Set();
   const ballCountForUser = new Map();
 
-  // Top-row Y cached for precise spawn point
   let TOP_ROW_Y = 0;
-
   const startTime = Date.now();
 
   // DOM refs
@@ -74,6 +69,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const slotTray = document.getElementById('slot-tray');
   const trayDividers = document.getElementById('tray-dividers');
   const boardTitle = document.getElementById('board-title');
+
   const slotLabelsEl = document.getElementById('slot-labels') || (() => {
     const el = document.createElement('div');
     el.id = 'slot-labels';
@@ -122,6 +118,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     trayDividers.style.setProperty('--slot-width', `${slotWidthPx}px`);
   }
 
+  // Backend URL management
   function getBackendBaseUrl() { return (localStorage.getItem('backendBaseUrl') || '').trim(); }
   function setBackendBaseUrl(url) {
     const clean = String(url || '').trim().replace(/\/+$/, '');
@@ -134,6 +131,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return fetch(u, options);
   }
 
+  // Settings persistence
   function loadSettings() {
     const g = Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value = String(g);
     const ds = Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value = String(ds);
@@ -171,6 +169,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
+  // GSAP panel
   function showSettings(){ gsap.to(settingsPanel, { x: 0, duration: 0.35, ease: 'expo.out' }); }
   function hideSettings(){ gsap.to(settingsPanel, { x: '110%', duration: 0.35, ease: 'expo.in' }); }
 
@@ -447,7 +446,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     for (const b of dynamicBodies) {
       const vx = b.velocity.x, vy = b.velocity.y;
       let sx = vx, sy = vy;
-      // Clamp horizontal separately (prevents wild side slaps)
       if (Math.abs(sx) > MAX_H_SPEED) sx = Math.sign(sx) * MAX_H_SPEED;
       const speed = Math.hypot(sx, sy);
       if (speed > MAX_SPEED) {
@@ -476,7 +474,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const count = ballCountForUser.get(username) || 0;
     if (count > 18) return;
 
-    // Spawn centered at the top row, with tiny horizontal jitter
+    // Spawn centered at the top row, tiny horizontal jitter
     const jitter = PEG_SPACING * 0.35;
     const dropX = Math.max(-BOARD_WIDTH/2 + 4, Math.min(BOARD_WIDTH/2 - 4, (Math.random()-0.5) * jitter));
     const dropY = TOP_ROW_Y + PEG_SPACING * 0.8; // just above top pegs
@@ -492,7 +490,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     World.add(world, ball);
     dynamicBodies.add(ball);
 
-    // No launch impulse. Start calm with zero velocity and angular velocity.
+    // Calm start
     Body.setVelocity(ball, { x: 0, y: 0 });
     Body.setAngularVelocity(ball, 0);
 
@@ -562,6 +560,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
+  function clearLeaderboardLocal() {
+    // Remove all keys while preserving object reference
+    for (const k of Object.keys(leaderboard)) delete leaderboard[k];
+    refreshLeaderboard();
+  }
+
   function refreshLeaderboard() {
     const entries = Object.values(leaderboard).sort((a, b) => b.score - a.score).slice(0, 50);
     leaderboardList.innerHTML = '';
@@ -584,6 +588,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
+  // Firebase listeners
   function listenToEvents() {
     FirebaseREST.onChildAdded('/events', (id, obj) => {
       if (!obj || typeof obj !== 'object' || processedEvents.has(id)) return;
@@ -596,9 +601,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if (command.includes('drop') || command.startsWith('gift')) spawnBall({ username, avatarUrl });
     });
 
+    // IMPORTANT: handle null (cleared) leaderboard to reset UI
     FirebaseREST.onValue('/leaderboard', (data) => {
-      if (data && typeof data === 'object') {
-        Object.keys(data).forEach((k) => {
+      if (!data) {
+        clearLeaderboardLocal();
+        return;
+      }
+      if (typeof data === 'object') {
+        // Rebuild from server data
+        const keys = Object.keys(data);
+        // Clear then repopulate to keep UI in sync
+        for (const k of Object.keys(leaderboard)) delete leaderboard[k];
+        for (const k of keys) {
           const entry = data[k];
           if (entry?.username) {
             leaderboard[entry.username] = {
@@ -608,7 +622,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
               lastUpdate: entry.lastUpdate || 0
             };
           }
-        });
+        }
         refreshLeaderboard();
       }
     });
@@ -629,7 +643,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   // Settings bindings
   btnGear.addEventListener('click', showSettings);
   btnCloseSettings.addEventListener('click', hideSettings);
-  ;['pointerdown','keydown'].forEach(ev => window.addEventListener(ev, () => initAudioOnce(), { once:true, passive:true }));
+
+  // Unlock audio ONLY after user gesture; sfx are no-ops until then (no console spam)
+  const unlock = async () => { await unlockAudio(); window.removeEventListener('pointerdown', unlock); window.removeEventListener('keydown', unlock); };
+  window.addEventListener('pointerdown', unlock, { passive: true });
+  window.addEventListener('keydown', unlock, { passive: true });
+
   optDropSpeed.addEventListener('input', applySettings);
   optGravity.addEventListener('input', applySettings);
   optMultiDrop.addEventListener('input', applySettings);
@@ -647,29 +666,48 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert('Saved. Admin calls will use the backend URL you provided.');
     } catch { alert('Failed to save settings.'); }
   });
+
   btnReset.addEventListener('click', async () => {
     const token = adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if (!token) return alert('Provide admin token.');
-    try { await adminFetch('/admin/reset-leaderboard', { method:'POST', headers:{'x-admin-token': token} }); alert('Leaderboard reset.'); }
-    catch { alert('Failed to reset leaderboard. Check Backend URL.'); }
+    try {
+      const res = await adminFetch('/admin/reset-leaderboard', { method:'POST', headers:{'x-admin-token': token} });
+      if (!res.ok) throw new Error('reset failed');
+      // Immediately clear local UI so it looks reset even before Firebase echo
+      clearLeaderboardLocal();
+      alert('Leaderboard reset.');
+    } catch {
+      alert('Failed to reset leaderboard. Check Backend URL and token.');
+    }
   });
+
   btnToggleSpawn.addEventListener('click', async () => {
     const token = adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if (!token) return alert('Provide admin token.');
     try {
       const curr = spawnStatusEl.textContent === 'true';
       const newVal = !curr;
-      await adminFetch(`/admin/spawn-toggle?enabled=${newVal?'true':'false'}`, { method:'POST', headers:{'x-admin-token': token} });
+      const res = await adminFetch(`/admin/spawn-toggle?enabled=${newVal?'true':'false'}`, { method:'POST', headers:{'x-admin-token': token} });
+      if (!res.ok) throw new Error('toggle failed');
       alert(`Spawn set to ${newVal}`);
-    } catch { alert('Failed to toggle spawn.'); }
+    } catch {
+      alert('Failed to toggle spawn. Check Backend URL.');
+    }
   });
+
   btnSimulate.addEventListener('click', async () => {
     try {
       const name = 'LocalTester' + Math.floor(Math.random()*1000);
-      const res = await adminFetch('/admin/spawn', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ username:name, avatarUrl:'', command:'!drop' }) });
+      const res = await adminFetch('/admin/spawn', {
+        method:'POST',
+        headers:{'content-type':'application/json'},
+        body: JSON.stringify({ username:name, avatarUrl:'', command:'!drop' })
+      });
       if (!res.ok) throw new Error('spawn failed');
       alert('Simulated drop sent.');
-    } catch { alert('Simulation failed. Check Backend URL and DEV_MODE=true on server.'); }
+    } catch {
+      alert('Simulation failed. Check Backend URL and DEV_MODE=true on server.');
+    }
   });
 
   // Start

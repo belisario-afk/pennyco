@@ -1,22 +1,38 @@
 // ESM Utilities: textures, labels, audio synth, particles, projections, FX manager
-import * as THREE from 'three';
+import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 
 let audioCtx = null;
 let masterGain = null;
 
-function ensureAudio() {
-  if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    masterGain = audioCtx.createGain();
-    masterGain.gain.value = Number(localStorage.getItem('plk_volume') ?? '0.5');
-    masterGain.connect(audioCtx.destination);
+// Do NOT auto-create audio; only after user gesture via unlockAudio()
+export async function unlockAudio() {
+  try {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = audioCtx.createGain();
+      const stored = Number(localStorage.getItem('plk_volume') ?? '0.5');
+      masterGain.gain.value = isFinite(stored) ? stored : 0.5;
+      masterGain.connect(audioCtx.destination);
+    }
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume().catch(() => {});
+    }
+  } catch (e) {
+    // Ignore; browser may still block until another gesture
   }
 }
-export function initAudioOnce() { ensureAudio(); }
-export function setAudioVolume(v) { ensureAudio(); masterGain.gain.value = Math.max(0, Math.min(1, v)); localStorage.setItem('plk_volume', String(masterGain.gain.value)); }
+
+export function setAudioVolume(v) {
+  const vol = Math.max(0, Math.min(1, Number(v)));
+  localStorage.setItem('plk_volume', String(vol));
+  if (masterGain) masterGain.gain.value = vol;
+}
+
 function now() { return audioCtx ? audioCtx.currentTime : 0; }
+
 function beep(freq, dur, type, gain) {
-  if (!audioCtx) return;
+  // Guard: if audio not unlocked or not running, skip silently (no console spam)
+  if (!audioCtx || audioCtx.state !== 'running') return;
   const t0 = now();
   const o = audioCtx.createOscillator();
   const g = audioCtx.createGain();
@@ -27,9 +43,14 @@ function beep(freq, dur, type, gain) {
   o.connect(g).connect(masterGain);
   o.start(t0); o.stop(t0 + dur);
 }
-export function sfxBounce() { ensureAudio(); beep(520 + Math.random()*80, 0.03, 'square', 0.12); }
-export function sfxDrop() { ensureAudio(); beep(420, 0.05, 'triangle', 0.18); }
-export function sfxScore(big=false) { ensureAudio(); if (big){beep(880,0.08,'triangle',0.25); setTimeout(()=>beep(1100,0.12,'triangle',0.22),70);} else {beep(760,0.08,'triangle',0.22);} }
+
+export function sfxBounce() { beep(520 + Math.random()*80, 0.03, 'square', 0.12); }
+export function sfxDrop()   { beep(420, 0.05, 'triangle', 0.18); }
+export function sfxScore(big=false) {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  if (big){ beep(880,0.08,'triangle',0.25); setTimeout(()=>beep(1100,0.12,'triangle',0.22),70); }
+  else { beep(760,0.08,'triangle',0.22); }
+}
 
 export function colorFromString(str) {
   let hash = 0; for (let i=0;i<str.length;i++) hash = str.charCodeAt(i) + ((hash<<5)-hash);
@@ -102,7 +123,8 @@ export function worldToScreen(vec3, camera, renderer) {
 }
 
 /**
- * Lightweight 2D FX manager that renders particles and clears only the FX canvas.
+ * Lightweight 2D FX manager that renders particles and clears only the FX canvas,
+ * so it never darkens the WebGL scene underneath.
  */
 export class FXManager2D {
   constructor(canvas) {
@@ -138,7 +160,7 @@ export class FXManager2D {
   }
 }
 
-// Optional legacy one-off sparks (kept for compatibility)
+// Optional quick one-off (kept for backward compatibility)
 export function sparks2D(ctx, x, y, color='#00f2ea', count=14) {
   const mgr = new FXManager2D(ctx.canvas);
   mgr.addSparks(x, y, color, count);
@@ -154,5 +176,5 @@ export function sparks2D(ctx, x, y, color='#00f2ea', count=14) {
 window.PlinkoUtils = {
   loadAvatarTexture, buildNameSprite, worldToScreen,
   FXManager2D, sparks2D,
-  initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore
+  unlockAudio, setAudioVolume, sfxBounce, sfxDrop, sfxScore
 };
