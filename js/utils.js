@@ -1,61 +1,63 @@
-// ESM Utilities: textures, labels, audio synth, particles, projections, FX manager
+// Utilities: textures, labels, audio synth, projections, 2D FX manager (no auto AudioContext)
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 
 let audioCtx = null;
 let masterGain = null;
+let storedVolume = clamp01(Number(localStorage.getItem('plk_volume') ?? '0.5'));
 
-// Do NOT auto-create audio; only after user gesture via unlockAudio()
-export async function unlockAudio() {
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+
+// Create or resume AudioContext ONLY after a user gesture
+export async function initAudioOnce() {
   try {
     if (!audioCtx) {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       masterGain = audioCtx.createGain();
-      const stored = Number(localStorage.getItem('plk_volume') ?? '0.5');
-      masterGain.gain.value = isFinite(stored) ? stored : 0.5;
+      masterGain.gain.value = storedVolume;
       masterGain.connect(audioCtx.destination);
     }
     if (audioCtx.state === 'suspended') {
-      await audioCtx.resume().catch(() => {});
+      await audioCtx.resume();
     }
   } catch (e) {
-    // Ignore; browser may still block until another gesture
+    // fail silently; browser may still block until an explicit user gesture
   }
 }
 
+// Update saved volume; do not create AudioContext here
 export function setAudioVolume(v) {
-  const vol = Math.max(0, Math.min(1, Number(v)));
-  localStorage.setItem('plk_volume', String(vol));
-  if (masterGain) masterGain.gain.value = vol;
+  storedVolume = clamp01(Number(v));
+  localStorage.setItem('plk_volume', String(storedVolume));
+  if (masterGain) masterGain.gain.value = storedVolume;
 }
 
 function now() { return audioCtx ? audioCtx.currentTime : 0; }
 
 function beep(freq, dur, type, gain) {
-  // Guard: if audio not unlocked or not running, skip silently (no console spam)
   if (!audioCtx || audioCtx.state !== 'running') return;
   const t0 = now();
   const o = audioCtx.createOscillator();
   const g = audioCtx.createGain();
-  o.type = type; o.frequency.setValueAtTime(freq, t0);
+  o.type = type;
+  o.frequency.setValueAtTime(freq, t0);
   g.gain.setValueAtTime(0, t0);
   g.gain.linearRampToValueAtTime(gain, t0 + 0.006);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
   o.connect(g).connect(masterGain);
-  o.start(t0); o.stop(t0 + dur);
+  o.start(t0);
+  o.stop(t0 + dur);
 }
 
 export function sfxBounce() { beep(520 + Math.random()*80, 0.03, 'square', 0.12); }
 export function sfxDrop()   { beep(420, 0.05, 'triangle', 0.18); }
 export function sfxScore(big=false) {
   if (!audioCtx || audioCtx.state !== 'running') return;
-  if (big){ beep(880,0.08,'triangle',0.25); setTimeout(()=>beep(1100,0.12,'triangle',0.22),70); }
-  else { beep(760,0.08,'triangle',0.22); }
-}
-
-export function colorFromString(str) {
-  let hash = 0; for (let i=0;i<str.length;i++) hash = str.charCodeAt(i) + ((hash<<5)-hash);
-  const hue = Math.abs(hash) % 360;
-  return `hsl(${hue}, 70%, 55%)`;
+  if (big) {
+    beep(880, 0.08, 'triangle', 0.25);
+    setTimeout(() => beep(1100, 0.12, 'triangle', 0.22), 70);
+  } else {
+    beep(760, 0.08, 'triangle', 0.22);
+  }
 }
 
 export async function loadAvatarTexture(url, diameter = 96) {
@@ -101,6 +103,7 @@ export function buildNameSprite(username) {
   const h = fontSize + padding*2;
   canvas.width = w; canvas.height = h;
 
+  // Neon bubble
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
   roundRect(ctx,0,0,w,h,12); ctx.fill();
   ctx.shadowColor = 'rgba(0,242,234,0.9)'; ctx.shadowBlur = 18;
@@ -122,45 +125,36 @@ export function worldToScreen(vec3, camera, renderer) {
   return { x: v.x*halfW + halfW, y: -v.y*halfH + halfH };
 }
 
-/**
- * Lightweight 2D FX manager that renders particles and clears only the FX canvas,
- * so it never darkens the WebGL scene underneath.
- */
+// 2D FX manager (clears only its own canvas each frame)
 export class FXManager2D {
-  constructor(canvas) {
-    this.canvas = canvas;
-    this.parts = []; // {x,y,vx,vy,life,color,size}
-  }
+  constructor(canvas) { this.canvas = canvas; this.parts = []; }
   addSparks(x, y, color = '#00f2ea', count = 16) {
     for (let i = 0; i < count; i++) {
       const a = Math.random() * Math.PI * 2;
       const sp = 1 + Math.random() * 2.5;
-      this.parts.push({
-        x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
-        life: 240 + Math.random() * 160, // in ms
-        color, size: 2
-      });
+      this.parts.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp, life: 240 + Math.random()*160, color, size: 2 });
     }
   }
   update(ctx, deltaMs) {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.globalCompositeOperation = 'lighter';
     for (const p of this.parts) {
-      p.x += p.vx;
-      p.y += p.vy;
-      p.vx *= 0.97;
-      p.vy *= 0.97;
-      p.life -= deltaMs;
-      if (p.life <= 0) continue;
-      ctx.fillStyle = p.color;
-      ctx.fillRect(p.x, p.y, p.size, p.size);
+      p.x += p.vx; p.y += p.vy;
+      p.vx *= 0.97; p.vy *= 0.97; p.life -= deltaMs;
+      if (p.life > 0) { ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size); }
     }
     this.parts = this.parts.filter(p => p.life > 0);
     ctx.globalCompositeOperation = 'source-over';
   }
 }
 
-// Optional quick one-off (kept for backward compatibility)
+export function colorFromString(str) {
+  let hash = 0; for (let i=0;i<str.length;i++) hash = str.charCodeAt(i) + ((hash<<5)-hash);
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 70%, 55%)`;
+}
+
+// Keep a minimal legacy function for compatibility (uses the manager internally)
 export function sparks2D(ctx, x, y, color='#00f2ea', count=14) {
   const mgr = new FXManager2D(ctx.canvas);
   mgr.addSparks(x, y, color, count);
@@ -176,5 +170,6 @@ export function sparks2D(ctx, x, y, color='#00f2ea', count=14) {
 window.PlinkoUtils = {
   loadAvatarTexture, buildNameSprite, worldToScreen,
   FXManager2D, sparks2D,
-  unlockAudio, setAudioVolume, sfxBounce, sfxDrop, sfxScore
+  initAudioOnce, setAudioVolume,
+  sfxBounce, sfxDrop, sfxScore
 };

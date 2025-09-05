@@ -1,11 +1,10 @@
-// Plinkoo — Calm drops + neon + fixed leaderboard reset + audio unlock gating
+// Plinkoo — Calm drops + Neon, fixed leaderboard reset, audio guarded behind user gesture
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
-  FXManager2D, unlockAudio, setAudioVolume, sfxBounce, sfxDrop, sfxScore
+  FXManager2D, initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore
 } from './utils.js';
 
-// Postprocessing
 import { EffectComposer } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/UnrealBloomPass.js';
@@ -34,14 +33,17 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   // Calm physics tuning
   let GRAVITY_MAG = 1.0;        // slider adjusts; applied downward (negative y)
-  let DROP_SPEED = 0.5;         // retained for UI, not used to push anymore
+  let DROP_SPEED = 0.5;         // kept for UI, no longer pushes ball
   let NEON = true;
   let PARTICLES = true;
 
+  // Very small bounce to avoid sticking
   const BALL_RESTITUTION = 0.06;
   const PEG_RESTITUTION  = 0.02;
   const BALL_FRICTION    = 0.04;
   const BALL_FRICTION_AIR= 0.012;
+
+  // Velocity clamps to prevent rare ricochets
   const MAX_SPEED = 28; // world units/sec
   const MAX_H_SPEED = 22;
 
@@ -69,7 +71,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const slotTray = document.getElementById('slot-tray');
   const trayDividers = document.getElementById('tray-dividers');
   const boardTitle = document.getElementById('board-title');
-
   const slotLabelsEl = document.getElementById('slot-labels') || (() => {
     const el = document.createElement('div');
     el.id = 'slot-labels';
@@ -118,7 +119,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     trayDividers.style.setProperty('--slot-width', `${slotWidthPx}px`);
   }
 
-  // Backend URL management
   function getBackendBaseUrl() { return (localStorage.getItem('backendBaseUrl') || '').trim(); }
   function setBackendBaseUrl(url) {
     const clean = String(url || '').trim().replace(/\/+$/, '');
@@ -138,11 +138,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const md = Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value = String(md);
     optNeon.checked = (localStorage.getItem('plk_neon') ?? 'true') === 'true';
     optParticles.checked = (localStorage.getItem('plk_particles') ?? 'true') === 'true';
-    const vol = Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value = String(vol); setAudioVolume(vol);
-
+    const vol = Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value = String(vol); setAudioVolume(vol); // does not create AudioContext
     const saved = getBackendBaseUrl(); if (saved) backendUrlInput.value = saved;
     const tok = localStorage.getItem('adminToken') || ''; if (tok) adminTokenInput.value = tok;
-
     applySettings();
   }
   function applySettings() {
@@ -158,7 +156,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if (world) world.gravity.y = -Math.abs(GRAVITY_MAG);
     if (pegsInstanced) {
       pegsInstanced.material.emissive.set(NEON ? 0x00ffff : 0x000000);
-      pegsInstanced.material.emissiveIntensity = NEON ? 0.35 : 0.0;
+      pegsInstanced.material.emissiveIntensity = NEON ? 0.30 : 0.0;
       pegsInstanced.material.needsUpdate = true;
     }
     if (bloomPass) {
@@ -169,7 +167,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
-  // GSAP panel
   function showSettings(){ gsap.to(settingsPanel, { x: 0, duration: 0.35, ease: 'expo.out' }); }
   function hideSettings(){ gsap.to(settingsPanel, { x: '110%', duration: 0.35, ease: 'expo.in' }); }
 
@@ -313,7 +310,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
     // Pegs
     const startY = BOARD_HEIGHT/2 - 10; // top row
-    TOP_ROW_Y = startY;                 // cache for spawn placement
+    TOP_ROW_Y = startY;
     const rowH = PEG_SPACING * 0.9;
     const startX = -((ROWS - 1) * PEG_SPACING) / 2;
 
@@ -448,10 +445,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       let sx = vx, sy = vy;
       if (Math.abs(sx) > MAX_H_SPEED) sx = Math.sign(sx) * MAX_H_SPEED;
       const speed = Math.hypot(sx, sy);
-      if (speed > MAX_SPEED) {
-        const k = MAX_SPEED / speed;
-        sx *= k; sy *= k;
-      }
+      if (speed > MAX_SPEED) { const k = MAX_SPEED / speed; sx *= k; sy *= k; }
       if (sx !== vx || sy !== vy) Body.setVelocity(b, { x: sx, y: sy });
     }
   }
@@ -474,7 +468,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const count = ballCountForUser.get(username) || 0;
     if (count > 18) return;
 
-    // Spawn centered at the top row, tiny horizontal jitter
+    // Spawn centered at the top row, with tiny horizontal jitter
     const jitter = PEG_SPACING * 0.35;
     const dropX = Math.max(-BOARD_WIDTH/2 + 4, Math.min(BOARD_WIDTH/2 - 4, (Math.random()-0.5) * jitter));
     const dropY = TOP_ROW_Y + PEG_SPACING * 0.8; // just above top pegs
@@ -490,7 +484,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     World.add(world, ball);
     dynamicBodies.add(ball);
 
-    // Calm start
+    // No launch impulse. Start calm.
     Body.setVelocity(ball, { x: 0, y: 0 });
     Body.setAngularVelocity(ball, 0);
 
@@ -560,12 +554,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
-  function clearLeaderboardLocal() {
-    // Remove all keys while preserving object reference
-    for (const k of Object.keys(leaderboard)) delete leaderboard[k];
-    refreshLeaderboard();
-  }
-
   function refreshLeaderboard() {
     const entries = Object.values(leaderboard).sort((a, b) => b.score - a.score).slice(0, 50);
     leaderboardList.innerHTML = '';
@@ -588,6 +576,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
+  // Clear leaderboard immediately in UI
+  function clearLeaderboardLocal() {
+    for (const k of Object.keys(leaderboard)) delete leaderboard[k];
+    refreshLeaderboard();
+  }
+
   // Firebase listeners
   function listenToEvents() {
     FirebaseREST.onChildAdded('/events', (id, obj) => {
@@ -601,18 +595,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if (command.includes('drop') || command.startsWith('gift')) spawnBall({ username, avatarUrl });
     });
 
-    // IMPORTANT: handle null (cleared) leaderboard to reset UI
     FirebaseREST.onValue('/leaderboard', (data) => {
-      if (!data) {
-        clearLeaderboardLocal();
-        return;
-      }
-      if (typeof data === 'object') {
-        // Rebuild from server data
-        const keys = Object.keys(data);
-        // Clear then repopulate to keep UI in sync
-        for (const k of Object.keys(leaderboard)) delete leaderboard[k];
-        for (const k of keys) {
+      if (data && typeof data === 'object' && Object.keys(data).length) {
+        // populate from DB
+        for (const k of Object.keys(data)) {
           const entry = data[k];
           if (entry?.username) {
             leaderboard[entry.username] = {
@@ -623,8 +609,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
             };
           }
         }
-        refreshLeaderboard();
+      } else {
+        // data is null or empty => clear UI immediately
+        clearLeaderboardLocal();
+        return;
       }
+      refreshLeaderboard();
     });
 
     FirebaseREST.onValue('/config', (data) => {
@@ -640,14 +630,22 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
   function encodeKey(k) { return encodeURIComponent(k.replace(/[.#$[\]]/g, '_')); }
 
-  // Settings bindings
+  // Settings bindings + Audio gesture unlock (no repeated attempts)
   btnGear.addEventListener('click', showSettings);
   btnCloseSettings.addEventListener('click', hideSettings);
-
-  // Unlock audio ONLY after user gesture; sfx are no-ops until then (no console spam)
-  const unlock = async () => { await unlockAudio(); window.removeEventListener('pointerdown', unlock); window.removeEventListener('keydown', unlock); };
-  window.addEventListener('pointerdown', unlock, { passive: true });
-  window.addEventListener('keydown', unlock, { passive: true });
+  let audioBound = false;
+  function bindAudioUnlockOnce() {
+    if (audioBound) return;
+    audioBound = true;
+    const unlock = async () => {
+      await initAudioOnce();
+      window.removeEventListener('pointerdown', unlock, true);
+      window.removeEventListener('keydown', unlock, true);
+    };
+    window.addEventListener('pointerdown', unlock, true);
+    window.addEventListener('keydown', unlock, true);
+  }
+  bindAudioUnlockOnce();
 
   optDropSpeed.addEventListener('input', applySettings);
   optGravity.addEventListener('input', applySettings);
@@ -673,7 +671,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     try {
       const res = await adminFetch('/admin/reset-leaderboard', { method:'POST', headers:{'x-admin-token': token} });
       if (!res.ok) throw new Error('reset failed');
-      // Immediately clear local UI so it looks reset even before Firebase echo
+      // Clear immediately in UI so a new game starts clean, even before RTDB event arrives
       clearLeaderboardLocal();
       alert('Leaderboard reset.');
     } catch {
@@ -687,27 +685,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     try {
       const curr = spawnStatusEl.textContent === 'true';
       const newVal = !curr;
-      const res = await adminFetch(`/admin/spawn-toggle?enabled=${newVal?'true':'false'}`, { method:'POST', headers:{'x-admin-token': token} });
-      if (!res.ok) throw new Error('toggle failed');
+      await adminFetch(`/admin/spawn-toggle?enabled=${newVal?'true':'false'}`, { method:'POST', headers:{'x-admin-token': token} });
       alert(`Spawn set to ${newVal}`);
-    } catch {
-      alert('Failed to toggle spawn. Check Backend URL.');
-    }
+    } catch { alert('Failed to toggle spawn.'); }
   });
 
   btnSimulate.addEventListener('click', async () => {
     try {
       const name = 'LocalTester' + Math.floor(Math.random()*1000);
-      const res = await adminFetch('/admin/spawn', {
-        method:'POST',
-        headers:{'content-type':'application/json'},
-        body: JSON.stringify({ username:name, avatarUrl:'', command:'!drop' })
-      });
+      const res = await adminFetch('/admin/spawn', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ username:name, avatarUrl:'', command:'!drop' }) });
       if (!res.ok) throw new Error('spawn failed');
       alert('Simulated drop sent.');
-    } catch {
-      alert('Simulation failed. Check Backend URL and DEV_MODE=true on server.');
-    }
+    } catch { alert('Simulation failed. Check Backend URL and DEV_MODE=true on server.'); }
   });
 
   // Start
