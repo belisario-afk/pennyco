@@ -1,5 +1,10 @@
-// Plinkoo — Neon redesign with Orthographic camera, tray overlay, GSAP panel, fixed-step physics
+// Neon upgrade: sRGB + ACES tone mapping + Bloom, peg spheres, non-dimming FX fade
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
+import { EffectComposer } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'https://unpkg.com/three@0.157.0/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { RoomEnvironment } from 'https://unpkg.com/three@0.157.0/examples/jsm/environments/RoomEnvironment.js';
+
 import {
   loadAvatarTexture, buildNameSprite, fireworks, sparks2D, worldToScreen,
   initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore
@@ -8,63 +13,63 @@ import {
 const { Engine, World, Bodies, Events, Body } = Matter;
 
 (() => {
-  // Physics and world sizing
-  const FIXED_DT = 1000/60;
+  // Fixed-step physics
+  const FIXED_DT = 1000 / 60;
   const MAX_STEPS = 4;
 
-  const WORLD_HEIGHT = 100; // constant; width adapts to viewport
+  // World sizing (9:16 friendly)
+  const WORLD_HEIGHT = 100;
   let WORLD_WIDTH = 56.25;
 
-  // Board geometry (derived on resize)
+  // Board geometry (computed)
   let BOARD_HEIGHT = WORLD_HEIGHT * 0.82;
   let BOARD_WIDTH = 0;
   let PEG_SPACING = 4.2;
   const ROWS = 12;
-  const PEG_RADIUS = 0.75;
+  const PEG_RADIUS = 0.7;   // smaller studs
   const BALL_RADIUS = 1.5;
   const WALL_THICKNESS = 2.0;
-  const TRAY_RATIO = 0.22; // portion of board height for the magenta tray
+  const TRAY_RATIO = 0.22;
   let TRAY_HEIGHT = 0;
 
-  // Tunables (settings)
-  let GRAVITY_MAG = 1.0;
-  let DROP_SPEED = 0.5;
-  let NEON = true;
-  let PARTICLES = true;
+  // Settings
+  let GRAVITY_MAG = Number(localStorage.getItem('plk_gravity') ?? '1.0');
+  let DROP_SPEED = Number(localStorage.getItem('plk_dropSpeed') ?? '0.5');
+  let NEON = (localStorage.getItem('plk_neon') ?? 'true') === 'true';
+  let PARTICLES = (localStorage.getItem('plk_particles') ?? 'true') === 'true';
 
-  // Runtime state
+  // Runtime
   let engine, world;
-  let scene, camera, renderer, ambient, dirLight, pegsInstanced;
-  let slotSensors = [];         // { body, index, points }
+  let scene, camera, renderer, ambient, dirLight;
+  let composer, bloomPass;
+  let pegsInstanced;
+  let slotSensors = [];
   const dynamicBodies = new Set();
   const meshById = new Map();
   const labelById = new Map();
   const leaderboard = {};
   const processedEvents = new Set();
   const ballCountForUser = new Map();
-
   const startTime = Date.now();
 
-  // DOM refs
+  // DOM
   const container = document.getElementById('game-container');
   const fxCanvas = document.getElementById('fx-canvas');
   const fxCtx = fxCanvas.getContext('2d');
   const boardFrame = document.getElementById('board-frame');
   const boardDivider = document.getElementById('board-divider');
   const slotTray = document.getElementById('slot-tray');
-  const trayDividers = document.getElementById('tray-dividers');
+  const trayDividers = document.getElementById('tray-dividers') || (() => {
+    const d = document.createElement('div'); d.id = 'tray-dividers'; slotTray.appendChild(d); return d;
+  })();
   const boardTitle = document.getElementById('board-title');
-
   const slotLabelsEl = document.getElementById('slot-labels') || (() => {
-    const el = document.createElement('div');
-    el.id = 'slot-labels';
-    slotTray.appendChild(el);
-    return el;
+    const el = document.createElement('div'); el.id = 'slot-labels'; slotTray.appendChild(el); return el;
   })();
   const leaderboardList = document.getElementById('leaderboard-list');
   const spawnStatusEl = document.getElementById('spawn-status');
 
-  // Settings and Admin
+  // Settings + Admin
   const btnGear = document.getElementById('btn-gear');
   const settingsPanel = document.getElementById('settings-panel');
   const btnCloseSettings = document.getElementById('btn-close-settings');
@@ -74,6 +79,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const optNeon = document.getElementById('opt-neon');
   const optParticles = document.getElementById('opt-particles');
   const optVolume = document.getElementById('opt-volume');
+
   const adminTokenInput = document.getElementById('admin-token');
   const backendUrlInput = document.getElementById('backend-url');
   const btnSaveAdmin = document.getElementById('btn-save-admin');
@@ -81,41 +87,32 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnToggleSpawn = document.getElementById('btn-toggle-spawn');
   const btnSimulate = document.getElementById('btn-simulate');
 
-  // Slot scoring model (display multipliers + internal points)
+  // Slot model
   let SLOT_POINTS = [];
   let SLOT_MULTIPLIERS = [];
   function buildSlots(slotCount) {
-    // Center-biased multipliers similar to mock: {16,9,5,3,1,...}
     const center = Math.floor((slotCount - 1) / 2);
-    const fromD = (d) => (d===0?16:d===1?9:d===2?5:d===3?3:1);
-    SLOT_MULTIPLIERS = Array.from({length:slotCount}, (_,i)=>fromD(Math.abs(i-center)));
-    // Convert to points (scale up for leaderboard)
+    const mul = (d) => (d===0?16:d===1?9:d===2?5:d===3?3:1);
+    SLOT_MULTIPLIERS = Array.from({length:slotCount}, (_,i)=>mul(Math.abs(i-center)));
     SLOT_POINTS = SLOT_MULTIPLIERS.map(m => m*100);
   }
-
   function renderSlotLabels(slotCount, framePx) {
     slotLabelsEl.innerHTML = '';
-    const labels = SLOT_MULTIPLIERS.map(m => `x${m}`);
-    labels.forEach((txt) => {
+    SLOT_MULTIPLIERS.forEach(m => {
       const div = document.createElement('div');
       div.className = 'slot-label';
-      div.textContent = txt;
+      div.textContent = `x${m}`;
       slotLabelsEl.appendChild(div);
     });
-
-    // Set divider spacing CSS var for a repeating gradient
     const slotWidthPx = framePx.width / slotCount;
     trayDividers.style.setProperty('--slot-width', `${slotWidthPx}px`);
   }
 
-  // Backend URL management
-  function getBackendBaseUrl() {
-    return (localStorage.getItem('backendBaseUrl') || '').trim();
-  }
+  // Backend URL helpers
+  function getBackendBaseUrl() { return (localStorage.getItem('backendBaseUrl') || '').trim(); }
   function setBackendBaseUrl(url) {
     const clean = String(url || '').trim().replace(/\/+$/, '');
-    if (clean) localStorage.setItem('backendBaseUrl', clean);
-    else localStorage.removeItem('backendBaseUrl');
+    if (clean) localStorage.setItem('backendBaseUrl', clean); else localStorage.removeItem('backendBaseUrl');
   }
   function adminFetch(path, options = {}) {
     const base = getBackendBaseUrl();
@@ -124,13 +121,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return fetch(u, options);
   }
 
-  // Settings persistence
+  // Settings load/apply
   function loadSettings() {
-    const g = Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value = String(g);
-    const ds = Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value = String(ds);
-    const md = Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value = String(md);
-    optNeon.checked = (localStorage.getItem('plk_neon') ?? 'true') === 'true';
-    optParticles.checked = (localStorage.getItem('plk_particles') ?? 'true') === 'true';
+    if (!Number.isNaN(GRAVITY_MAG)) optGravity.value = String(GRAVITY_MAG);
+    if (!Number.isNaN(DROP_SPEED)) optDropSpeed.value = String(DROP_SPEED);
+    const md = Number(localStorage.getItem('plk_multiDrop') ?? '1'); if (!Number.isNaN(md)) optMultiDrop.value = String(md);
+    optNeon.checked = NEON; optParticles.checked = PARTICLES;
     const vol = Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value = String(vol); setAudioVolume(vol);
 
     const saved = getBackendBaseUrl(); if (saved) backendUrlInput.value = saved;
@@ -149,7 +145,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     localStorage.setItem('plk_neon', String(NEON));
     localStorage.setItem('plk_particles', String(PARTICLES));
     if (world) world.gravity.y = -Math.abs(GRAVITY_MAG);
-    // update peg material glow
+
+    // Bloom toggle
+    if (bloomPass) bloomPass.enabled = NEON;
     if (pegsInstanced) {
       pegsInstanced.material.emissive.set(NEON ? 0x00ffff : 0x000000);
       pegsInstanced.material.emissiveIntensity = NEON ? 0.22 : 0.0;
@@ -161,12 +159,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function showSettings(){ gsap.to(settingsPanel, { x: 0, duration: 0.35, ease: 'expo.out' }); }
   function hideSettings(){ gsap.to(settingsPanel, { x: '110%', duration: 0.35, ease: 'expo.in' }); }
 
-  // Three setup (Orthographic)
-  let resizeObserver;
+  // Three setup with tone mapping + bloom
   function initThree() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
     renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.physicallyCorrectLights = true;
     container.appendChild(renderer.domElement);
 
     scene = new THREE.Scene();
@@ -178,13 +179,24 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     camera.position.set(0, 0, 10);
 
     ambient = new THREE.AmbientLight(0xffffff, 0.95);
-    dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
-    dirLight.position.set(-10, 20, 20);
+    dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+    dirLight.position.set(-12, 18, 16);
     scene.add(ambient, dirLight);
+
+    // Subtle PBR reflections without external HDR
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+    // Post-processing Bloom
+    composer = new EffectComposer(renderer);
+    const renderPass = new RenderPass(scene, camera);
+    bloomPass = new UnrealBloomPass(new THREE.Vector2(container.clientWidth, container.clientHeight), 0.7, 0.4, 0.85);
+    bloomPass.enabled = NEON;
+    composer.addPass(renderPass);
+    composer.addPass(bloomPass);
 
     const ro = new ResizeObserver(onResize);
     ro.observe(container);
-    resizeObserver = ro;
     onResize();
   }
 
@@ -201,22 +213,20 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function onResize() {
     renderer.setSize(container.clientWidth, container.clientHeight);
+    composer.setSize(container.clientWidth, container.clientHeight);
     computeWorldSize();
-    if (camera) {
-      camera.left = -WORLD_WIDTH/2;
-      camera.right = WORLD_WIDTH/2;
-      camera.top = WORLD_HEIGHT/2;
-      camera.bottom = -WORLD_HEIGHT/2;
-      camera.updateProjectionMatrix();
-    }
+    camera.left = -WORLD_WIDTH/2;
+    camera.right = WORLD_WIDTH/2;
+    camera.top = WORLD_HEIGHT/2;
+    camera.bottom = -WORLD_HEIGHT/2;
+    camera.updateProjectionMatrix();
+
     fxCanvas.width = container.clientWidth;
     fxCanvas.height = container.clientHeight;
     layoutOverlays();
   }
 
-  // Position neon board overlays using world-to-screen
   function layoutOverlays() {
-    // Board frame bounds in world space
     const left = -BOARD_WIDTH/2, right = BOARD_WIDTH/2;
     const top = BOARD_HEIGHT/2, bottom = -BOARD_HEIGHT/2;
     const trayTop = bottom + TRAY_HEIGHT;
@@ -238,35 +248,19 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       top: Math.round(pTrayTopLeft.y)
     };
 
-    // Apply to elements
-    Object.assign(boardFrame.style, {
-      left: frame.x + 'px', top: frame.y + 'px',
-      width: frame.width + 'px', height: frame.height + 'px',
-      display: 'block'
-    });
-    Object.assign(slotTray.style, {
-      left: tray.x + 'px', top: tray.top + 'px',
-      width: tray.width + 'px', height: tray.height + 'px',
-      display: 'block'
-    });
-    Object.assign(boardDivider.style, {
-      left: frame.x + 'px',
-      width: frame.width + 'px',
-      top: (pTrayTopLeft.y - 1) + 'px',
-      display: 'block'
-    });
+    Object.assign(boardFrame.style, { left: frame.x+'px', top: frame.y+'px', width: frame.width+'px', height: frame.height+'px', display: 'block' });
+    Object.assign(slotTray.style, { left: tray.x+'px', top: tray.top+'px', width: tray.width+'px', height: tray.height+'px', display: 'block' });
+    Object.assign(boardDivider.style, { left: frame.x+'px', width: frame.width+'px', top: (pTrayTopLeft.y-1)+'px', display: 'block' });
 
-    // Board title near top-left inside frame
     boardTitle.style.left = (frame.x + 22) + 'px';
     boardTitle.style.top = (frame.y + 18) + 'px';
 
-    // Update slots UI
     const slotCount = ROWS + 1;
     buildSlots(slotCount);
     renderSlotLabels(slotCount, frame);
   }
 
-  // Matter setup
+  // Matter
   function initMatter() {
     engine = Engine.create({ enableSleeping: false });
     world = engine.world;
@@ -281,13 +275,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   function buildBoard() {
-    // Walls and kill-floor (just below board)
+    // Walls + kill-floor
     const left = Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2, 0, WALL_THICKNESS, BOARD_HEIGHT, { isStatic: true });
     const right = Bodies.rectangle(BOARD_WIDTH/2 + WALL_THICKNESS/2, 0, WALL_THICKNESS, BOARD_HEIGHT, { isStatic: true });
     const floor = Bodies.rectangle(0, -BOARD_HEIGHT/2 - 6, BOARD_WIDTH + WALL_THICKNESS*2, WALL_THICKNESS, { isStatic: true, label: 'KILL' });
     World.add(world, [left, right, floor]);
 
-    // Pegs
+    // Peg studs: spheres (instanced)
     const startY = BOARD_HEIGHT/2 - 10;
     const rowH = PEG_SPACING * 0.9;
     const startX = -((ROWS - 1) * PEG_SPACING) / 2;
@@ -305,36 +299,37 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     addPegInstancedMesh(pegPositions);
 
-    // Slots (sensors)
+    // Slots
     slotSensors = [];
     const slotCount = ROWS + 1;
     const slotWidth = BOARD_WIDTH / slotCount;
-    const slotY = -BOARD_HEIGHT/2 + (TRAY_HEIGHT * 0.35); // slightly above tray bottom
+    const slotY = -BOARD_HEIGHT/2 + (TRAY_HEIGHT * 0.35);
     for (let i = 0; i < slotCount; i++) {
       const x = -BOARD_WIDTH/2 + slotWidth*(i+0.5);
       const sensor = Bodies.rectangle(x, slotY, slotWidth, 2.6, { isStatic: true, isSensor: true });
       sensor.label = `SLOT_${i}`;
       World.add(world, sensor);
-      slotSensors.push({ body: sensor, index: i, points: 0 }); // points filled via SLOT_POINTS on collision
+      slotSensors.push({ body: sensor, index: i });
     }
   }
 
   function addPegInstancedMesh(pegPositions) {
     if (pegsInstanced) { scene.remove(pegsInstanced); pegsInstanced.geometry.dispose(); pegsInstanced.material.dispose(); }
-    const geo = new THREE.CylinderGeometry(PEG_RADIUS, PEG_RADIUS, 1.2, 12);
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x1ea6b3,
-      metalness: 0.35,
-      roughness: 0.55,
+    const geo = new THREE.SphereGeometry(PEG_RADIUS, 24, 16);
+    const mat = new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(0x83f3ff),
+      metalness: 0.4,
+      roughness: 0.35,
+      clearcoat: 0.6,
+      clearcoatRoughness: 0.2,
       emissive: NEON ? new THREE.Color(0x00ffff) : new THREE.Color(0x000000),
-      emissiveIntensity: NEON ? 0.22 : 0.0
+      emissiveIntensity: NEON ? 0.18 : 0.0
     });
     const inst = new THREE.InstancedMesh(geo, mat, pegPositions.length);
     const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI/2);
     for (let i=0;i<pegPositions.length;i++) {
       const {x,y} = pegPositions[i];
-      m.compose(new THREE.Vector3(x,y,0), q, new THREE.Vector3(1,1,1));
+      m.compose(new THREE.Vector3(x,y,0), new THREE.Quaternion(), new THREE.Vector3(1,1,1));
       inst.setMatrixAt(i, m);
     }
     inst.instanceMatrix.needsUpdate = true;
@@ -354,7 +349,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function handlePair(a, b) {
     if (!a || !b) return;
 
-    // Score on slot sensor
+    // Score on slot
     const slot = slotSensors.find(s => s.body.id === b.id);
     if (slot && String(a.label || '').startsWith('BALL_')) {
       const ball = a;
@@ -370,7 +365,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       return;
     }
 
-    // Peg bounce: spark + sfx
+    // Peg bounce FX
     if (b.label === 'PEG' && String(a.label || '').startsWith('BALL_')) {
       if (PARTICLES) {
         const mesh = meshById.get(a.id);
@@ -382,7 +377,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       sfxBounce();
     }
 
-    // Kill plane
     if (b.label === 'KILL' && String(a.label || '').startsWith('BALL_')) {
       tryRemoveBall(a);
     }
@@ -398,16 +392,17 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         acc -= FIXED_DT; steps++;
       }
       updateThreeFromMatter();
-      renderer.render(scene, camera);
+      if (composer) composer.render(); else renderer.render(scene, camera);
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
 
-    // FX fade
+    // FX canvas fade: erase particles only (won't darken UI)
     setInterval(() => {
-      fxCtx.globalCompositeOperation = 'source-over';
-      fxCtx.fillStyle = 'rgba(0,0,0,0.12)';
+      fxCtx.globalCompositeOperation = 'destination-out';
+      fxCtx.fillStyle = 'rgba(0,0,0,0.14)';
       fxCtx.fillRect(0, 0, fxCanvas.width, fxCanvas.height);
+      fxCtx.globalCompositeOperation = 'source-over';
     }, 120);
   }
 
@@ -434,29 +429,28 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const dropY = BOARD_HEIGHT/2 - 6;
 
     const ball = Bodies.circle(dropX, dropY, BALL_RADIUS, {
-      restitution: 0.36,
-      friction: 0.02,
-      frictionAir: 0.002,
-      density: 0.0018
+      restitution: 0.36, friction: 0.02, frictionAir: 0.002, density: 0.0018
     });
     ball.label = `BALL_${username}`;
     ball.plugin = { username, avatarUrl, scored: false };
     World.add(world, ball);
     dynamicBodies.add(ball);
 
-    // Small random impulse for variety (scaled by DROP_SPEED)
+    // Small nudge for variety
     const impulseX = (Math.random()*2-1) * (0.002 + DROP_SPEED*0.004);
     Body.applyForce(ball, ball.position, { x: impulseX, y: 0 });
 
     const tex = await loadAvatarTexture(avatarUrl, 128);
-    const geo = new THREE.SphereGeometry(BALL_RADIUS, 20, 14);
-    const mat = new THREE.MeshStandardMaterial({
+    const geo = new THREE.SphereGeometry(BALL_RADIUS, 24, 18);
+    const mat = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
       map: tex,
       metalness: 0.08,
-      roughness: 0.85,
+      roughness: 0.82,
+      clearcoat: 0.5,
+      clearcoatRoughness: 0.3,
       emissive: NEON ? new THREE.Color(0x00ffff) : new THREE.Color(0x000000),
-      emissiveIntensity: NEON ? 0.08 : 0.0
+      emissiveIntensity: NEON ? 0.07 : 0.0
     });
     const mesh = new THREE.Mesh(geo, mat);
     scene.add(mesh);
@@ -496,17 +490,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   async function awardPoints(username, avatarUrl, points) {
-    const current = leaderboard[username] || { username, avatarUrl, score: 0 };
-    const nextScore = (current.score || 0) + points;
-    leaderboard[username] = { username, avatarUrl, score: nextScore, lastUpdate: Date.now() };
+    const curr = leaderboard[username] || { username, avatarUrl, score: 0 };
+    const next = (curr.score || 0) + points;
+    leaderboard[username] = { username, avatarUrl, score: next, lastUpdate: Date.now() };
     refreshLeaderboard();
     try {
-      await FirebaseREST.update(`/leaderboard/${encodeKey(username)}`, {
-        username, avatarUrl: avatarUrl || '', score: nextScore, lastUpdate: Date.now()
+      await FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g, '_'))}`, {
+        username, avatarUrl: avatarUrl || '', score: next, lastUpdate: Date.now()
       });
-    } catch (e) {
-      console.warn('Leaderboard write failed (rules?)', e);
-    }
+    } catch {}
   }
 
   function refreshLeaderboard() {
@@ -524,22 +516,19 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const score = document.createElement('div');
       score.className = 'lb-score';
       score.textContent = e.score.toLocaleString();
-      li.appendChild(ava);
-      li.appendChild(name);
-      li.appendChild(score);
+      li.appendChild(ava); li.appendChild(name); li.appendChild(score);
       leaderboardList.appendChild(li);
     }
   }
 
-  // Firebase listeners
+  // Firebase
   function listenToEvents() {
-    FirebaseREST.get('/config').catch(()=>{});
     FirebaseREST.onChildAdded('/events', (id, obj) => {
       if (!obj || typeof obj !== 'object' || processedEvents.has(id)) return;
       const ts = typeof obj.timestamp === 'number' ? obj.timestamp : 0;
-      if (ts && ts < startTime - 60_000) return; // ignore old backlog
+      if (ts && ts < startTime - 60_000) return;
       processedEvents.add(id);
-      const username = sanitizeUsername(obj.username || 'viewer');
+      const username = (obj.username || 'viewer').toString().trim().slice(0, 24);
       const avatarUrl = obj.avatarUrl || '';
       const command = (obj.command || '').toLowerCase();
       if (command.includes('drop') || command.startsWith('gift')) spawnBall({ username, avatarUrl });
@@ -547,50 +536,34 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
     FirebaseREST.onValue('/leaderboard', (data) => {
       if (data && typeof data === 'object') {
-        Object.keys(data).forEach((k) => {
-          const entry = data[k];
-          if (entry?.username) {
-            leaderboard[entry.username] = {
-              username: entry.username,
-              avatarUrl: entry.avatarUrl || '',
-              score: entry.score || 0,
-              lastUpdate: entry.lastUpdate || 0
-            };
-          }
-        });
+        for (const k of Object.keys(data)) {
+          const e = data[k];
+          if (e?.username) leaderboard[e.username] = { username: e.username, avatarUrl: e.avatarUrl || '', score: e.score || 0, lastUpdate: e.lastUpdate || 0 };
+        }
         refreshLeaderboard();
       }
     });
 
     FirebaseREST.onValue('/config', (data) => {
+      const el = spawnStatusEl; if (!el) return;
       const enabled = !!(data && data.spawnEnabled);
-      spawnStatusEl.textContent = enabled ? 'true' : 'false';
-      spawnStatusEl.style.color = enabled ? 'var(--good)' : 'var(--danger)';
+      el.textContent = enabled ? 'true' : 'false';
+      el.style.color = enabled ? 'var(--good)' : 'var(--danger)';
     });
   }
 
-  // Helpers
-  function sanitizeUsername(u) {
-    const s = String(u || '').trim();
-    return s ? s.slice(0, 24) : 'viewer';
-  }
-  function encodeKey(k) { return encodeURIComponent(k.replace(/[.#$[\]]/g, '_')); }
-
-  // Settings bindings
-  btnGear.addEventListener('click', showSettings);
-  btnCloseSettings.addEventListener('click', hideSettings);
-
+  // Bindings
+  btnGear?.addEventListener('click', showSettings);
+  btnCloseSettings?.addEventListener('click', hideSettings);
   ;['pointerdown','keydown'].forEach(ev => window.addEventListener(ev, () => initAudioOnce(), { once:true, passive:true }));
+  optDropSpeed?.addEventListener('input', applySettings);
+  optGravity?.addEventListener('input', applySettings);
+  optMultiDrop?.addEventListener('input', applySettings);
+  optNeon?.addEventListener('change', applySettings);
+  optParticles?.addEventListener('change', applySettings);
+  optVolume?.addEventListener('input', (e)=> setAudioVolume(Number(e.target.value)));
 
-  optDropSpeed.addEventListener('input', applySettings);
-  optGravity.addEventListener('input', applySettings);
-  optMultiDrop.addEventListener('input', applySettings);
-  optNeon.addEventListener('change', applySettings);
-  optParticles.addEventListener('change', applySettings);
-  optVolume.addEventListener('input', (e)=> setAudioVolume(Number(e.target.value)));
-
-  // Admin actions
-  btnSaveAdmin.addEventListener('click', () => {
+  btnSaveAdmin?.addEventListener('click', () => {
     try {
       const baseUrl = backendUrlInput.value.trim();
       const token = adminTokenInput.value.trim();
@@ -600,29 +573,28 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     } catch { alert('Failed to save settings.'); }
   });
 
-  btnReset.addEventListener('click', async () => {
+  btnReset?.addEventListener('click', async () => {
     const token = adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if (!token) return alert('Provide admin token.');
-    try { await adminFetch('/admin/reset-leaderboard', { method:'POST', headers:{'x-admin-token': token} }); alert('Leaderboard reset.'); }
+    try { await adminFetch('/admin/reset-leaderboard', { method:'POST', headers:{ 'x-admin-token': token } }); alert('Leaderboard reset.'); }
     catch { alert('Failed to reset leaderboard. Check Backend URL.'); }
   });
 
-  btnToggleSpawn.addEventListener('click', async () => {
+  btnToggleSpawn?.addEventListener('click', async () => {
     const token = adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if (!token) return alert('Provide admin token.');
     try {
-      const curr = spawnStatusEl.textContent === 'true';
+      const curr = spawnStatusEl?.textContent === 'true';
       const newVal = !curr;
-      await adminFetch(`/admin/spawn-toggle?enabled=${newVal?'true':'false'}`, { method:'POST', headers:{'x-admin-token': token} });
+      await adminFetch(`/admin/spawn-toggle?enabled=${newVal?'true':'false'}`, { method:'POST', headers:{ 'x-admin-token': token } });
       alert(`Spawn set to ${newVal}`);
-    } catch { alert('Failed to toggle spawn.'); }
+    } catch { alert('Failed to toggle spawn. Check Backend URL.'); }
   });
 
-  btnSimulate.addEventListener('click', async () => {
+  btnSimulate?.addEventListener('click', async () => {
     try {
       const name = 'LocalTester' + Math.floor(Math.random()*1000);
-      const res = await adminFetch('/admin/spawn', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ username:name, avatarUrl:'', command:'!drop' }) });
-      const js = await res.json().catch(()=>({}));
+      const res = await adminFetch('/admin/spawn', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ username:name, avatarUrl:'', command:'!drop' }) });
       if (!res.ok) throw new Error('spawn failed');
       alert('Simulated drop sent.');
     } catch { alert('Simulation failed. Check Backend URL and DEV_MODE=true on server.'); }
