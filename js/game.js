@@ -1,11 +1,12 @@
-// ESM Game code (with helpful logs)
+// ESM Game code (optimized, gravity fix)
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
 
 (() => {
   const { Engine, Runner, World, Bodies, Composite, Events } = Matter;
 
-  const BOARD_WIDTH = 18;
+  // Config
+  const BOARD_WIDTH = 18;  // world units
   const BOARD_HEIGHT = 32;
   const BOARD_ROWS = 12;
   const PEG_SPACING = 1.2;
@@ -13,40 +14,51 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
   const BALL_RADIUS = 0.45;
   const SLOT_HEIGHT = 1.2;
   const WALL_THICKNESS = 1;
-  const GRAVITY_Y = 1.0;
+  const GRAVITY_Y = 1.0;       // magnitude; actual direction set below (negative to fall down on screen)
   const DROP_X_NOISE = 2.5;
 
+  // Render performance caps
+  const MAX_FPS = 60;
+  const HIDDEN_FPS = 5; // when tab hidden, save CPU
+  const PIXEL_RATIO_CAP = 1.5; // lower than devicePixelRatio for perf
+
+  // Scoring slots
   let SLOT_POINTS = [];
   function buildSlotPoints(slotCount) {
     const center = Math.floor((slotCount - 1) / 2);
     const arr = [];
     for (let i = 0; i < slotCount; i++) {
       const d = Math.abs(i - center);
-      arr.push(d === 0 ? 500 : d === 1 ? 200 : d === 2 ? 100 : 50);
+      const val = d === 0 ? 500 : d === 1 ? 200 : d === 2 ? 100 : 50;
+      arr.push(val);
     }
     SLOT_POINTS = arr;
   }
 
+  // State
   let scene, camera, renderer, ambient, dirLight;
   let engine, runner, world;
-  let slotSensors = [];
+  let slotSensors = []; // { body, index, x, points }
   let spawnEnabled = true;
 
-  const dynamicBodies = new Set();
-  const meshesByBodyId = new Map();
-  const labelsByBodyId = new Map();
+  // Only track moving entities for per-frame updates (big perf win)
+  const dynamicBodies = new Set();   // Matter bodies (balls)
+  const meshesByBodyId = new Map();  // body.id -> THREE.Mesh
+  const labelsByBodyId = new Map();  // body.id -> THREE.Sprite
 
-  const leaderboard = {};
+  const leaderboard = {}; // username -> { username, avatarUrl, score }
   const processedEvents = new Set();
   const ballCountForUser = new Map();
   const startTime = Date.now();
 
+  // DOM
   const container = document.getElementById('game-container');
   const confettiCanvas = document.getElementById('confetti-canvas');
   const slotLabelsEl = document.getElementById('slot-labels');
   const leaderboardList = document.getElementById('leaderboard-list');
   const spawnStatusEl = document.getElementById('spawn-status');
 
+  // Admin elements
   const adminTokenInput = document.getElementById('admin-token');
   const backendUrlInput = document.getElementById('backend-url');
   const btnSaveAdmin = document.getElementById('btn-save-admin');
@@ -54,8 +66,10 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
   const btnToggleSpawn = document.getElementById('btn-toggle-spawn');
   const btnSimulate = document.getElementById('btn-simulate');
 
+  // Backend URL management (Render)
   function getBackendBaseUrl() {
-    return (localStorage.getItem('backendBaseUrl') || '').trim();
+    const v = (localStorage.getItem('backendBaseUrl') || '').trim();
+    return v;
   }
   function setBackendBaseUrl(url) {
     const clean = String(url || '').trim().replace(/\/+$/, '');
@@ -82,6 +96,7 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     container.appendChild(renderer.domElement);
 
     scene = new THREE.Scene();
+    scene.background = null;
 
     const aspect = container.clientWidth / container.clientHeight;
     camera = new THREE.PerspectiveCamera(46, aspect, 0.1, 1000);
@@ -101,79 +116,79 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     });
     confettiCanvas.width = container.clientWidth;
     confettiCanvas.height = container.clientHeight;
+
+    document.addEventListener('visibilitychange', () => {
+      // nothing else required; animate() adapts FPS automatically
+    });
   }
 
   function resizeRenderer() {
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, PIXEL_RATIO_CAP));
   }
 
   function initMatter() {
     engine = Engine.create();
     world = engine.world;
-    world.gravity.y = GRAVITY_Y;
+
+    // IMPORTANT: Invert gravity so balls fall downward on screen (Three's +Y is up)
+    world.gravity.y = -Math.abs(GRAVITY_Y);
 
     runner = Runner.create();
     Runner.run(runner, engine);
 
-    const left = Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2, 0, WALL_THICKNESS, BOARD_HEIGHT, { isStatic: true });
-    const right = Bodies.rectangle(BOARD_WIDTH/2 + WALL_THICKNESS/2, 0, WALL_THICKNESS, BOARD_HEIGHT, { isStatic: true });
+    // Walls
+    const left = Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2, 0, WALL_THICKNESS, BOARD_HEIGHT, { isStatic: true, friction: 0.2, restitution: 0.4 });
+    const right = Bodies.rectangle(BOARD_WIDTH/2 + WALL_THICKNESS/2, 0, WALL_THICKNESS, BOARD_HEIGHT, { isStatic: true, friction: 0.2, restitution: 0.4 });
     const floor = Bodies.rectangle(0, -BOARD_HEIGHT/2 - 2, BOARD_WIDTH + WALL_THICKNESS*2, WALL_THICKNESS, { isStatic: true });
     World.add(world, [left, right, floor]);
 
-    // Pegs (upright triangle)
+    // Pegs in upright triangle (pyramid pointing up)
     const rows = BOARD_ROWS;
-    const startY = BOARD_HEIGHT/2 - 4;
+    const startY = BOARD_HEIGHT/2 - 4; // near top
     const rowHeight = PEG_SPACING;
     const startX = -((rows - 1) * PEG_SPACING) / 2;
 
-    const pegGeo = new THREE.CylinderGeometry(PEG_RADIUS, PEG_RADIUS, 0.4, 10);
-    const pegMat = new THREE.MeshStandardMaterial({ color: 0x4f5c78, metalness: 0.3, roughness: 0.7 });
     const pegPositions = [];
-
     for (let r = 0; r < rows; r++) {
       const y = startY - r * rowHeight;
       for (let c = 0; c <= r; c++) {
         const x = startX + c * PEG_SPACING + (rows - 1 - r) * (PEG_SPACING / 2);
-        const peg = Bodies.circle(x, y, PEG_RADIUS, { isStatic: true });
+        const peg = Bodies.circle(x, y, PEG_RADIUS, {
+          isStatic: true,
+          restitution: 0.4,
+          friction: 0.05
+        });
         World.add(world, peg);
         pegPositions.push({ x, y });
       }
     }
-    const inst = new THREE.InstancedMesh(pegGeo, pegMat, pegPositions.length);
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI/2);
-    for (let i = 0; i < pegPositions.length; i++) {
-      const { x, y } = pegPositions[i];
-      m.compose(new THREE.Vector3(x, y, 0), q, new THREE.Vector3(1,1,1));
-      inst.setMatrixAt(i, m);
-    }
-    inst.instanceMatrix.needsUpdate = true;
-    scene.add(inst);
+    // Instanced pegs
+    addPegInstancedMesh(pegPositions);
 
-    // Slots
+    // Slots at bottom (sensors)
     const slotCount = rows + 1;
     buildSlotPoints(slotCount);
     renderSlotLabels(slotCount);
 
     const slotWidth = BOARD_WIDTH / slotCount;
-    const slotY = -BOARD_HEIGHT/2 + SLOT_HEIGHT / 2;
+    const slotY = -BOARD_HEIGHT/2 + SLOT_HEIGHT / 2; // bottom area (negative y)
 
-    slotSensors = [];
     for (let i = 0; i < slotCount; i++) {
       const x = -BOARD_WIDTH/2 + slotWidth * (i + 0.5);
       const body = Bodies.rectangle(x, slotY, slotWidth, SLOT_HEIGHT, { isStatic: true, isSensor: true });
       body.label = `SLOT_${i}`;
       World.add(world, body);
-      slotSensors.push({ body, index: i, x, points: SLOT_POINTS[i] });
+      slotSensors.push({
+        body, index: i, x, points: SLOT_POINTS[i]
+      });
     }
 
     // Render loop (throttled)
     let lastRender = 0;
-    const MAX_FPS = 60;
-    const HIDDEN_FPS = 5;
     const animate = (t) => {
       requestAnimationFrame(animate);
+
       const targetDelta = 1000 / (document.hidden ? HIDDEN_FPS : MAX_FPS);
       if (t - lastRender < targetDelta) return;
       lastRender = t;
@@ -183,6 +198,7 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     };
     requestAnimationFrame(animate);
 
+    // Collision handling
     Events.on(engine, 'collisionStart', (ev) => {
       ev.pairs.forEach(({ bodyA, bodyB }) => {
         handleCollision(bodyA, bodyB);
@@ -191,7 +207,25 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     });
   }
 
+  function addPegInstancedMesh(pegPositions) {
+    const geo = new THREE.CylinderGeometry(PEG_RADIUS, PEG_RADIUS, 0.4, 10);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x4f5c78, metalness: 0.3, roughness: 0.7 });
+    const inst = new THREE.InstancedMesh(geo, mat, pegPositions.length);
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const rotX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+    for (let i = 0; i < pegPositions.length; i++) {
+      const { x, y } = pegPositions[i];
+      q.copy(rotX);
+      m.compose(new THREE.Vector3(x, y, 0), q, new THREE.Vector3(1, 1, 1));
+      inst.setMatrixAt(i, m);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    scene.add(inst);
+  }
+
   function addBallMesh(ballBody, texture) {
+    // Lower segment counts for perf
     const geo = new THREE.SphereGeometry(BALL_RADIUS, 16, 12);
     const mat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
@@ -205,6 +239,7 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
   }
 
   function updateThreeFromMatter() {
+    // Only update moving balls, not static pegs/sensors
     dynamicBodies.forEach((body) => {
       const mesh = meshesByBodyId.get(body.id);
       if (mesh) {
@@ -222,20 +257,23 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     if (!spawnEnabled) return;
 
     const count = ballCountForUser.get(username) || 0;
-    if (count > 18) return;
+    if (count > 18) return; // avoid too many
 
     const xNoise = (Math.random() - 0.5) * DROP_X_NOISE;
     const dropX = Math.max(-BOARD_WIDTH/2 + 1, Math.min(BOARD_WIDTH/2 - 1, xNoise));
-    const dropY = BOARD_HEIGHT/2 - 1;
+    const dropY = BOARD_HEIGHT/2 - 1; // near top (positive y)
 
     const ball = Bodies.circle(dropX, dropY, BALL_RADIUS, {
-      restitution: 0.35, friction: 0.02, density: 0.002,
+      restitution: 0.35,
+      friction: 0.02,
+      density: 0.002,
     });
     ball.label = `BALL_${username}`;
     ball.plugin = { username, avatarUrl, scored: false };
     World.add(world, ball);
-
     dynamicBodies.add(ball);
+
+    console.log('[Game] Spawned ball for', username, 'at', { x: dropX, y: dropY });
 
     const texture = await loadAvatarTexture(avatarUrl, 128);
     addBallMesh(ball, texture);
@@ -248,22 +286,29 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
   }
 
   function handleCollision(body, against) {
+    // Detect sensor hit: ball entering a slot
     const sensor = slotSensors.find(s => s.body.id === against.id);
     if (!sensor) return;
     if (!body || !body.plugin || !String(body.label || '').startsWith('BALL_')) return;
     if (body.plugin.scored) return;
 
     const vy = body.velocity.y;
-    if (body.position.y < sensor.body.position.y + 0.2 && vy < 1.0) {
+    // Score when the ball is deep enough into sensor and moving downward in screen (vy close to 0 or slightly up due to bounce)
+    if (body.position.y < sensor.body.position.y + 0.2 && vy > -1.0) {
       body.plugin.scored = true;
       const username = body.plugin.username;
       const avatarUrl = body.plugin.avatarUrl || '';
+
       const points = sensor.points;
-
       awardPoints(username, avatarUrl, points).catch(console.warn);
-      if (points >= 500) fireworks(confettiCanvas, 1600);
 
-      setTimeout(() => tryRemoveBody(body), 1200);
+      if (points >= 500) {
+        fireworks(confettiCanvas, 1600);
+      }
+
+      setTimeout(() => {
+        tryRemoveBody(body);
+      }, 1200);
     }
   }
 
@@ -292,7 +337,9 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
         const c = ballCountForUser.get(username) || 1;
         ballCountForUser.set(username, Math.max(0, c - 1));
       }
-    } catch {}
+    } catch (e) {
+      // noop
+    }
   }
 
   async function awardPoints(username, avatarUrl, points) {
@@ -302,7 +349,10 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     refreshLeaderboard();
     try {
       await FirebaseREST.update(`/leaderboard/${encodeKey(username)}`, {
-        username, avatarUrl: avatarUrl || '', score: nextScore, lastUpdate: Date.now(),
+        username,
+        avatarUrl: avatarUrl || '',
+        score: nextScore,
+        lastUpdate: Date.now(),
       });
     } catch (e) {
       console.warn('Leaderboard write failed (client rules?)', e);
@@ -312,15 +362,15 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
   function refreshLeaderboard() {
     const entries = Object.values(leaderboard).sort((a, b) => b.score - a.score).slice(0, 50);
     leaderboardList.innerHTML = '';
-    for (const e of entries) {
+    entries.forEach((e) => {
       const li = document.createElement('li');
       li.textContent = `${e.username}: ${e.score}`;
       leaderboardList.appendChild(li);
-    }
+    });
   }
 
+  // Firebase listeners
   function listenToEvents() {
-    // Quick connectivity probe
     FirebaseREST.get('/config').then(() => {
       console.log('[Firebase] Connected (GET /config ok)');
     }).catch((e) => {
@@ -349,12 +399,12 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
 
     FirebaseREST.onValue('/leaderboard', (data) => {
       if (data && typeof data === 'object') {
-        for (const k of Object.keys(data)) {
+        Object.keys(data).forEach((k) => {
           const entry = data[k];
           if (entry && entry.username) {
             leaderboard[entry.username] = { username: entry.username, avatarUrl: entry.avatarUrl || '', score: entry.score || 0, lastUpdate: entry.lastUpdate || 0 };
           }
-        }
+        });
         refreshLeaderboard();
       }
     });
@@ -379,13 +429,15 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
 
   function sanitizeUsername(u) {
     const s = String(u || '').trim();
-    return s ? s.slice(0, 24) : 'viewer';
+    if (!s) return 'viewer';
+    return s.slice(0, 24);
   }
   function encodeKey(k) {
     return encodeURIComponent(k.replace(/[.#$[\]]/g, '_'));
   }
 
-  document.getElementById('btn-save-admin').addEventListener('click', () => {
+  // Admin UI actions
+  btnSaveAdmin.addEventListener('click', () => {
     try {
       const baseUrl = backendUrlInput.value.trim();
       const token = adminTokenInput.value.trim();
@@ -393,7 +445,7 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
       if (token) localStorage.setItem('adminToken', token);
       else localStorage.removeItem('adminToken');
       alert('Saved. Admin calls will use the backend URL you provided.');
-    } catch {
+    } catch (e) {
       alert('Failed to save settings.');
     }
   });
@@ -404,7 +456,7 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     try {
       await adminFetch('/admin/reset-leaderboard', { method: 'POST', headers: { 'x-admin-token': token } });
       alert('Leaderboard reset.');
-    } catch {
+    } catch (e) {
       alert('Failed to reset leaderboard. Check Backend URL.');
     }
   });
@@ -413,10 +465,10 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     const token = adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if (!token) return alert('Provide admin token.');
     try {
-      const newVal = !(spawnEnabled);
+      const newVal = !spawnEnabled;
       await adminFetch(`/admin/spawn-toggle?enabled=${newVal ? 'true' : 'false'}`, { method: 'POST', headers: { 'x-admin-token': token } });
       alert(`Spawn set to ${newVal}`);
-    } catch {
+    } catch (e) {
       alert('Failed to toggle spawn. Check Backend URL.');
     }
   });
@@ -443,5 +495,6 @@ import { loadAvatarTexture, buildNameSprite, fireworks } from './utils.js';
     initMatter();
     listenToEvents();
   }
+
   start();
 })();
