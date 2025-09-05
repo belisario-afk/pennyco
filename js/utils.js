@@ -1,4 +1,4 @@
-// ESM Utilities: textures, labels, audio synth, particles, projections
+// ESM Utilities: textures, labels, audio synth, particles, projections, FX manager
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 
 let audioCtx = null;
@@ -101,27 +101,62 @@ export function worldToScreen(vec3, camera, renderer) {
   return { x: v.x*halfW + halfW, y: -v.y*halfH + halfH };
 }
 
+/**
+ * Lightweight 2D FX manager that renders particles and clears only the FX canvas,
+ * so it never darkens the WebGL scene underneath.
+ */
+export class FXManager2D {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.parts = []; // {x,y,vx,vy,life,color,size}
+  }
+  addSparks(x, y, color = '#00f2ea', count = 16) {
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 1 + Math.random() * 2.5;
+      this.parts.push({
+        x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        life: 240 + Math.random() * 160, // in ms
+        color, size: 2
+      });
+    }
+  }
+  update(ctx, deltaMs) {
+    // Clear to transparent each frame (does NOT affect WebGL canvas)
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of this.parts) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.97;
+      p.vy *= 0.97;
+      p.life -= deltaMs;
+      if (p.life <= 0) continue;
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x, p.y, p.size, p.size);
+    }
+    // Remove dead
+    this.parts = this.parts.filter(p => p.life > 0);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+}
+
+// Optional legacy one-off sparks (not used by new code)
 export function sparks2D(ctx, x, y, color='#00f2ea', count=14) {
-  const parts = [];
-  for (let i=0;i<count;i++){const a=Math.random()*Math.PI*2, sp=1+Math.random()*2.5; parts.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:20+Math.random()*16});}
-  let id=0; function step(){ id++; ctx.globalCompositeOperation='lighter';
-    for(const p of parts){p.x+=p.vx; p.y+=p.vy; p.vx*=0.96; p.vy*=0.96; p.life--; ctx.fillStyle=color; if(p.life>0) ctx.fillRect(p.x,p.y,2,2);}
-    if(id<18) requestAnimationFrame(step);
-  } step();
+  const mgr = new FXManager2D(ctx.canvas);
+  mgr.addSparks(x, y, color, count);
+  let last = performance.now();
+  function step(t) {
+    const dt = t - last; last = t;
+    mgr.update(ctx, dt);
+    if (mgr.parts.length) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
 }
 
-export function fireworks(canvas, durationMs=1200){
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width = canvas.clientWidth;
-  const H = canvas.height = canvas.clientHeight;
-  const parts = Array.from({length:120}, ()=>({x:Math.random()*W,y:H+Math.random()*80,vx:(Math.random()-0.5)*6,vy:-Math.random()*8-5,g:0.18+Math.random()*0.1,color:`hsl(${Math.floor(Math.random()*360)},80%,65%)`,size:2+Math.random()*3}));
-  let t0=performance.now(), raf;
-  const step=(t)=>{const dt=Math.min(32,t-t0); t0=t; ctx.clearRect(0,0,W,H);
-    for(const p of parts){p.x+=p.vx; p.vy+=p.g; p.y+=p.vy; ctx.fillStyle=p.color; ctx.fillRect(p.x,p.y,p.size,p.size);}
-    raf=requestAnimationFrame(step);
-  }; raf=requestAnimationFrame(step);
-  setTimeout(()=>{cancelAnimationFrame(raf); ctx.clearRect(0,0,W,H);}, durationMs);
-}
-
-window.PlinkoUtils = { loadAvatarTexture, buildNameSprite, fireworks, sparks2D, worldToScreen,
-  initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore };
+window.PlinkoUtils = {
+  loadAvatarTexture, buildNameSprite, worldToScreen,
+  FXManager2D, sparks2D,
+  initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore
+};
