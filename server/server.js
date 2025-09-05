@@ -38,9 +38,27 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Simple root page
+app.get('/', (req, res) => {
+  res.type('html').send(`
+    <!doctype html>
+    <html><head><meta charset="utf-8"><title>Plinkoo Relay</title>
+    <style>body{font-family:system-ui;padding:24px;color:#0b0f1a}</style></head>
+    <body>
+      <h2>Plinkoo Relay</h2>
+      <p>Service is running. Use <a href="/health">/health</a> for status.</p>
+      <ul>
+        <li>POST <code>/admin/spawn</code> (DEV_MODE only) { "username": "Test", "avatarUrl": "", "command": "!drop" }</li>
+        <li>POST <code>/admin/spawn-toggle?enabled=true|false</code> (requires x-admin-token)</li>
+        <li>POST <code>/admin/reset-leaderboard</code> (requires x-admin-token)</li>
+      </ul>
+    </body></html>
+  `);
+});
+
 // Health
 app.get('/health', (req, res) => {
-  res.json({ ok: true, spawnEnabled: SPAWN_ENABLED, username: TIKTOK_USERNAME });
+  res.json({ ok: true, spawnEnabled: SPAWN_ENABLED, username: TIKTOK_USERNAME, devMode: DEV_MODE });
 });
 
 // Admin guard
@@ -81,6 +99,7 @@ app.post('/admin/spawn', async (req, res) => {
   if (!DEV_MODE) return res.status(403).json({ error: 'DEV_MODE disabled' });
   const { username = 'Tester', avatarUrl = '', command = '!drop' } = req.body || {};
   try {
+    console.log('[admin/spawn] simulate', { username, command });
     await enqueueEvent({ username, avatarUrl, command });
     return res.json({ ok: true });
   } catch (e) {
@@ -91,7 +110,7 @@ app.post('/admin/spawn', async (req, res) => {
 
 // TikTok connection
 const tiktok = new WebcastPushConnection(TIKTOK_USERNAME, {
-  // Request default options; adjust if needed.
+  // Defaults usually fine
 });
 
 const lastEventByUser = new Map();
@@ -105,7 +124,10 @@ function allowedByCooldown(username) {
 }
 
 async function enqueueEvent({ username, avatarUrl, command }) {
-  if (!SPAWN_ENABLED) return;
+  if (!SPAWN_ENABLED) {
+    console.log('[enqueueEvent] blocked (spawn disabled)', username, command);
+    return;
+  }
 
   const event = {
     username,
@@ -113,7 +135,8 @@ async function enqueueEvent({ username, avatarUrl, command }) {
     avatarUrl: avatarUrl || '',
     timestamp: admin.database.ServerValue.TIMESTAMP,
   };
-  await db.ref('events').push(event);
+  const ref = await db.ref('events').push(event);
+  console.log('[enqueueEvent] pushed', ref.key, { username, command });
 }
 
 async function handleChat(data) {
@@ -140,12 +163,9 @@ async function handleGift(gift) {
     const avatarUrl = gift?.profilePictureUrl || '';
     const giftName = gift?.giftName || 'gift';
     const diamonds = Number(gift?.diamondCount || 0);
-    const repeatEnd = !!gift?.repeatEnd;
 
-    // only when the gift streak ends or for non-streakable gifts
-    if (gift?.repeatEnd === false && gift?.repeatCount && gift?.repeatCount > 0) {
-      return; // wait for repeatEnd
-    }
+    // Only when the streak ends (repeatEnd true) or for non-streak gifts
+    if (gift?.repeatEnd === false && gift?.repeatCount && gift?.repeatCount > 0) return;
 
     if (!allowedByCooldown(username)) return;
     await enqueueEvent({ username, avatarUrl, command: `gift:${giftName}:${diamonds}` });
@@ -167,7 +187,6 @@ async function startTikTok() {
     tiktok.on('chat', handleChat);
     tiktok.on('gift', handleGift);
     tiktok.on('streamEnd', () => console.log('Stream ended.'));
-    tiktok.on('like', () => {}); // optional
   } catch (err) {
     console.error('Failed to connect to TikTok:', err?.message || err);
     setTimeout(() => startTikTok().catch(console.error), 7000);
@@ -175,7 +194,6 @@ async function startTikTok() {
 }
 
 (async () => {
-  // Reflect initial spawnEnabled to DB
   await db.ref('config').update({ spawnEnabled: SPAWN_ENABLED }).catch(() => {});
   startTikTok().catch(console.error);
 })();
