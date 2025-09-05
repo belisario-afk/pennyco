@@ -4,23 +4,33 @@
   <meta charset="UTF-8" />
   <meta name="viewport"
         content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Plinkoo — TikTok Live Plinko (Orthographic)</title>
+  <title>Plinkoo — TikTok Live Plinko (Neon)</title>
   <link rel="stylesheet" href="./style.css"/>
-
-  <!-- Favicon (inline SVG) -->
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='100%25' height='100%25' rx='12' ry='12' fill='%230b0f1a'/%3E%3Ccircle cx='32' cy='32' r='18' fill='%230ff'/%3E%3Ctext x='32' y='40' font-size='24' text-anchor='middle' fill='%23fff' font-family='Arial'%3EP%3C/text%3E%3C/svg%3E">
 
   <!-- Matter.js (UMD) -->
   <script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>
-  <!-- GSAP for UI/UX transitions -->
+  <!-- GSAP for UI transitions -->
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+
+  <!-- Favicon (inline SVG) -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='100%25' height='100%25' rx='12' ry='12' fill='%230b0f1a'/%3E%3Ccircle cx='32' cy='32' r='18' fill='%230ff'/%3E%3Ctext x='32' y='40' font-size='24' text-anchor='middle' fill='%23fff' font-family='Arial'%3EP%3C/text%3E%3C/svg%3E">
 </head>
 <body>
   <div id="app">
     <div id="game-container">
-      <!-- 2D overlay canvas for sparks/confetti -->
+      <!-- WebGL canvas is injected by Three -->
+      <!-- 2D FX overlay (sparks/confetti) -->
       <canvas id="fx-canvas"></canvas>
 
+      <!-- Board neon frame and tray (CSS overlay, auto-positioned from JS) -->
+      <div id="board-frame" aria-hidden="true"></div>
+      <div id="board-divider" aria-hidden="true"></div>
+      <div id="slot-tray" aria-hidden="true">
+        <div id="tray-dividers"></div>
+      </div>
+      <div id="board-title" aria-hidden="true">PLINKO</div>
+
+      <!-- UI overlay -->
       <div id="overlay">
         <div id="top-bar">
           <div class="branding">
@@ -29,21 +39,17 @@
           </div>
 
           <div class="controls">
-            <!-- Settings gear -->
             <button id="btn-gear" aria-label="Settings" title="Settings">
               <span class="gear">⚙️</span>
             </button>
           </div>
         </div>
 
-        <!-- Leaderboard -->
-        <div id="leaderboard" class="panel glass">
-          <h3>Leaderboard</h3>
-          <ol id="leaderboard-list"></ol>
-        </div>
-
-        <!-- Slot labels -->
-        <div id="slot-labels"></div>
+        <!-- Leaderboard (left) -->
+        <aside id="leaderboard" class="panel glass">
+          <div class="lb-head">LEADERBOARD</div>
+          <ol id="leaderboard-list" class="lb-list"></ol>
+        </aside>
 
         <!-- Slide-in Settings Panel -->
         <div id="settings-panel" class="panel glass">
