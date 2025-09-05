@@ -1,4 +1,4 @@
-// ESM Game (vertical, auto-scale, provably-fair with controls)
+// ESM Game (vertical, auto-scale, provably-fair with robust collisions)
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import {
   loadAvatarTexture,
@@ -10,54 +10,57 @@ import {
 } from './utils.js';
 
 (() => {
-  const { Engine, Runner, World, Bodies, Composite, Events, Body } = Matter;
+  const { Engine, World, Bodies, Composite, Events, Body } = Matter;
 
-  // Base world extents (board area)
-  const BASE = {
-    width: 18,
-    height: 32,
-  };
+  // Base board extents (in world units)
+  const BASE = { width: 18, height: 32 };
 
-  // Default config (editable via drawer)
+  // Default config (editable in the drawer)
   const Defaults = {
     rows: 12,
     bet: 100,
-    timeScale: 0.9,
-    gravity: 0.7,
-    air: 0.02,
-    restitution: 0.25,
-    risk: 0.5,         // 0..1 edge bias
-    nudge: 0.0005,     // 0..0.0015
+    timeScale: 0.9,   // 0.5..1.5 (also scales physics step)
+    gravity: 0.7,     // magnitude, always downward on screen
+    air: 0.02,        // ball air drag
+    restitution: 0.25,// bounciness
+    risk: 0.5,        // 0..1 (edge bias -> higher risk)
+    nudge: 0.0005,    // tiny per-row impulse (guided path)
   };
 
-  // Derived geometry
+  // Geometry
   const PEG_SPACING = 1.2;
-  const PEG_RADIUS = 0.18;
+  const PEG_RADIUS_VIS = 0.18;
+  const PEG_RADIUS_PHYS = PEG_RADIUS_VIS * 1.15; // slightly larger hitbox for stable contacts
   const BALL_RADIUS = 0.45;
   const SLOT_HEIGHT = 1.2;
   const WALL_THICKNESS = 1;
 
-  // Render performance
+  // Render performance caps
   const MAX_FPS = 60;
   const HIDDEN_FPS = 6;
   const PIXEL_RATIO_CAP = 1.5;
+
+  // Physics loop (fixed step to avoid tunneling)
+  const PHYS_HZ = 120;                  // physics substeps per second
+  const PHYS_DT_MS = 1000 / PHYS_HZ;    // fixed dt in ms
+  const MAX_SUBSTEPS_PER_FRAME = 6;     // clamp to avoid spiral of death
 
   // State
   let cfg = loadConfig();
   let MULTS = generateMultipliers(cfg.rows, cfg.risk, 0.96);
   let scene, camera, renderer;
-  let engine, world, runner;
+  let engine, world;
+
   let pegInstanced = null;
-
   const slotSensors = []; // { body, index, x, mult }
-  const rowY = [];        // peg row y-positions for guided nudges
+  const rowY = [];        // y per peg row (for nudging)
 
-  const dynamicBodies = new Set(); // moving balls
-  const meshesById = new Map();    // ball body.id -> mesh
-  const labelsById = new Map();    // ball body.id -> name sprite
+  const dynamicBodies = new Set(); // balls
+  const meshesById = new Map();    // body.id -> THREE.Mesh
+  const labelsById = new Map();    // body.id -> THREE.Sprite
 
   let spawnEnabled = true;
-  const leaderboard = {};          // username -> { score }
+  const leaderboard = {};
   const processedEvents = new Set();
   const startTime = Date.now();
 
@@ -126,7 +129,6 @@ import {
     if (savedToken) adminTokenInput.value = savedToken;
   })();
 
-  // -------------------------
   // Config helpers
   function loadConfig() {
     const js = JSON.parse(localStorage.getItem('plinkoo_config') || 'null');
@@ -173,11 +175,11 @@ import {
     cfg.nudge = Number(ctrlNudge.value);
   }
 
-  // Generate symmetric multipliers given rows and risk, scaled to target RTP
+  // Multipliers (symmetric), scaled to target RTP
   function generateMultipliers(rows, risk01, targetRTP = 0.96) {
     const n = rows;
     const center = n / 2;
-    const baseScale = 0.18 + (0.42 * risk01); // exponent intensity
+    const baseScale = 0.18 + (0.42 * risk01);
     const base = [];
     for (let k = 0; k <= n; k++) {
       const dist = Math.abs(k - center);
@@ -191,13 +193,12 @@ import {
     return mults;
   }
 
-  // -------------------------
-  // Three + Matter setup
+  // Three.js setup
   function initThree() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     boardViewport.appendChild(renderer.domElement);
 
-    // Orthographic camera for stable sizing and easy auto-scale
+    // Orthographic for easy auto-fit
     camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 100);
     camera.position.set(0, 0, 10);
     camera.lookAt(0, 0, 0);
@@ -219,7 +220,7 @@ import {
     renderer.setSize(w, h);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, PIXEL_RATIO_CAP));
 
-    // Fit the whole board (BASE.width x BASE.height) into the viewport
+    // Fit board into viewport
     const aspect = w / h;
     const viewHeight = Math.max(BASE.height, BASE.width / aspect);
     const viewWidth = viewHeight * aspect;
@@ -234,10 +235,65 @@ import {
     confettiCanvas.height = h;
   }
 
+  // Matter.js setup with fixed timestep
+  function initMatter() {
+    engine = Engine.create();
+    world = engine.world;
+
+    // Stronger solver to avoid tunneling
+    engine.positionIterations = 12;
+    engine.velocityIterations = 8;
+    engine.constraintIterations = 4;
+    engine.enableSleeping = false;
+
+    // Gravity downward on screen
+    world.gravity.y = -Math.abs(cfg.gravity);
+
+    rebuildBoard();
+
+    // Collisions
+    Events.on(engine, 'collisionStart', (ev) => {
+      ev.pairs.forEach(({ bodyA, bodyB }) => {
+        handleCollision(bodyA, bodyB);
+        handleCollision(bodyB, bodyA);
+      });
+    });
+
+    // Loops: physics at fixed step, render throttled to FPS cap
+    let physAccumulator = 0;
+    let lastTime = 0;
+    let lastRender = 0;
+
+    function loop(time) {
+      requestAnimationFrame(loop);
+      if (!lastTime) lastTime = time;
+      const rawDelta = time - lastTime;
+      lastTime = time;
+
+      // Accumulate and step physics at fixed dt (scaled by timeScale)
+      physAccumulator += rawDelta;
+      let substeps = 0;
+      const scaledDt = PHYS_DT_MS * (1 / Math.max(0.25, Math.min(2.0, 1 / cfg.timeScale))); // inverse scale keeps perceived speed consistent with cfg.timeScale
+      while (physAccumulator >= scaledDt && substeps < MAX_SUBSTEPS_PER_FRAME) {
+        Engine.update(engine, scaledDt);
+        physAccumulator -= scaledDt;
+        substeps++;
+      }
+
+      // Render throttle
+      const targetDelta = 1000 / (document.hidden ? HIDDEN_FPS : MAX_FPS);
+      if (time - lastRender < targetDelta) return;
+      lastRender = time;
+
+      updateThreeFromMatter();
+      renderer.render(scene, camera);
+    }
+    requestAnimationFrame(loop);
+  }
+
   function clearWorld() {
-    // Remove all physics bodies
     Composite.clear(engine.world, false);
-    // Remove meshes and labels
+
     for (const mesh of meshesById.values()) {
       scene.remove(mesh);
       mesh.geometry.dispose();
@@ -254,63 +310,35 @@ import {
     labelsById.clear();
     dynamicBodies.clear();
 
-    // Remove pegs instanced mesh
     if (pegInstanced) {
       scene.remove(pegInstanced);
       pegInstanced.geometry.dispose();
       pegInstanced.material?.dispose?.();
       pegInstanced = null;
     }
-    // Clear sensors + rows
+
     slotSensors.length = 0;
     rowY.length = 0;
-  }
-
-  function initMatter() {
-    engine = Engine.create();
-    world = engine.world;
-    engine.timing.timeScale = cfg.timeScale;
-    world.gravity.y = -Math.abs(cfg.gravity); // negative -> down on screen
-
-    runner = Runner.create();
-    Runner.run(runner, engine);
-
-    rebuildBoard();
-
-    // Collisions
-    Events.on(engine, 'collisionStart', (ev) => {
-      ev.pairs.forEach(({ bodyA, bodyB }) => {
-        handleCollision(bodyA, bodyB);
-        handleCollision(bodyB, bodyA);
-      });
-    });
-
-    // Render loop (throttled)
-    let lastRender = 0;
-    const animate = (t) => {
-      requestAnimationFrame(animate);
-      const targetDelta = 1000 / (document.hidden ? HIDDEN_FPS : MAX_FPS);
-      if (t - lastRender < targetDelta) return;
-      lastRender = t;
-
-      updateThreeFromMatter();
-      renderer.render(scene, camera);
-    };
-    requestAnimationFrame(animate);
   }
 
   function rebuildBoard() {
     clearWorld();
 
     // Bounds
-    const left = Bodies.rectangle(-BASE.width/2 - WALL_THICKNESS/2, 0, WALL_THICKNESS, BASE.height, { isStatic: true });
-    const right = Bodies.rectangle(BASE.width/2 + WALL_THICKNESS/2, 0, WALL_THICKNESS, BASE.height, { isStatic: true });
-    const floor = Bodies.rectangle(0, -BASE.height/2 - 2, BASE.width + WALL_THICKNESS*2, WALL_THICKNESS, { isStatic: true });
+    const left = Bodies.rectangle(-BASE.width/2 - WALL_THICKNESS/2, 0, WALL_THICKNESS, BASE.height, {
+      isStatic: true, restitution: 0.0, friction: 0.2
+    });
+    const right = Bodies.rectangle(BASE.width/2 + WALL_THICKNESS/2, 0, WALL_THICKNESS, BASE.height, {
+      isStatic: true, restitution: 0.0, friction: 0.2
+    });
+    const floor = Bodies.rectangle(0, -BASE.height/2 - 2, BASE.width + WALL_THICKNESS*2, WALL_THICKNESS, {
+      isStatic: true, restitution: 0.0, friction: 0.2
+    });
     World.add(world, [left, right, floor]);
 
     // Pegs (upright triangle)
     const rows = cfg.rows;
-    const startY = BASE.height/2 - 4;  // near top
+    const startY = BASE.height/2 - 4;
     const rowHeight = PEG_SPACING;
     const startX = -((rows - 1) * PEG_SPACING) / 2;
 
@@ -321,14 +349,20 @@ import {
       rowY.push(y);
       for (let c = 0; c <= r; c++) {
         const x = startX + c * PEG_SPACING + (rows - 1 - r) * (PEG_SPACING / 2);
-        const peg = Bodies.circle(x, y, PEG_RADIUS, { isStatic: true });
+        const peg = Bodies.circle(x, y, PEG_RADIUS_PHYS, {
+          isStatic: true,
+          restitution: 0.0,
+          friction: 0.1,
+          frictionStatic: 0.0,
+          slop: 0.01
+        });
         World.add(world, peg);
         pegPositions.push({ x, y });
       }
     }
     pegInstanced = addPegInstancedMesh(pegPositions);
 
-    // Slots at bottom
+    // Slots at bottom (sensors only)
     MULTS = generateMultipliers(cfg.rows, cfg.risk, 0.96);
     renderSlotLabels(MULTS);
 
@@ -343,7 +377,7 @@ import {
       slotSensors.push({ body: sensor, index: i, x, mult: MULTS[i] });
     }
 
-    // Update labels
+    // Labels
     rowsLabel.textContent = String(cfg.rows);
     const rtp = computeRTP(MULTS);
     rtpLabel.textContent = `~${Math.round(rtp * 100)}%`;
@@ -351,8 +385,9 @@ import {
   }
 
   function addPegInstancedMesh(pegPositions) {
-    const geo = new THREE.CylinderGeometry(PEG_RADIUS, PEG_RADIUS, 0.4, 12);
-    const mat = new THREE.MeshStandardMaterial({ color: 0xd9dee9, metalness: 0.3, roughness: 0.65 });
+    // Visual pegs (match visual radius; physics uses slightly larger radius)
+    const geo = new THREE.CylinderGeometry(PEG_RADIUS_VIS, PEG_RADIUS_VIS, 0.4, 12);
+    const mat = new THREE.MeshStandardMaterial({ color: 0xdfe6f2, metalness: 0.25, roughness: 0.7 });
     const inst = new THREE.InstancedMesh(geo, mat, pegPositions.length);
     const m = new THREE.Matrix4();
     const rot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI/2);
@@ -376,10 +411,18 @@ import {
     });
   }
 
-  // -------------------------
-  // Game flow
+  // Game loop helpers
   function updateThreeFromMatter() {
+    // Remove balls that leave safe bounds (fail-safe; not on peg hit)
+    const OOB_Y = -BASE.height/2 - 10;
+    const OOB_X = BASE.width/2 + 6;
+
     dynamicBodies.forEach((body) => {
+      if (Math.abs(body.position.x) > OOB_X || body.position.y < OOB_Y) {
+        tryRemoveBody(body);
+        return;
+      }
+
       const mesh = meshesById.get(body.id);
       if (mesh) {
         mesh.position.set(body.position.x, body.position.y, 0);
@@ -389,6 +432,8 @@ import {
       if (label) {
         label.position.set(body.position.x, body.position.y + BALL_RADIUS * 2, 0);
       }
+
+      // Guided nudges (tiny and once per row)
       applyGuidedNudges(body);
     });
   }
@@ -397,7 +442,7 @@ import {
     const data = body.plugin;
     if (!data || !Array.isArray(data.decisions)) return;
 
-    const zone = 0.2;
+    const zone = 0.20;
     for (let k = data.lastRowIndex + 1; k < rowY.length; k++) {
       const y = rowY[k];
       if (body.position.y < y + zone && body.position.y > y - zone) {
@@ -434,7 +479,7 @@ import {
     const decisions = [];
     for (let i = 0; i < cfg.rows; i++) decisions.push(rng() < 0.5 ? 0 : 1);
 
-    // Drop near center with small seeded offset
+    // Drop near top center with tiny offset
     const centerOffset = (rng() - 0.5) * 2.0;
     const dropX = centerOffset * Math.min(BASE.width/2 - 1, 3.0);
     const dropY = BASE.height/2 - 1;
@@ -442,7 +487,10 @@ import {
     const ball = Bodies.circle(dropX, dropY, BALL_RADIUS, {
       restitution: cfg.restitution,
       frictionAir: cfg.air,
+      friction: 0.02,
+      frictionStatic: 0,
       density: 0.002,
+      slop: 0.01
     });
     ball.label = `BALL_${username}`;
     ball.plugin = {
@@ -465,11 +513,13 @@ import {
   }
 
   function handleCollision(body, against) {
-    const sensor = slotSensors.find(s => s.body.id === against.id);
+    // Score only on slot sensors — pegs and walls are solid and do not remove balls
+    const sensor = slotSensors.find(s => s.body.id === against?.id);
     if (!sensor) return;
     if (!body || !body.plugin || !String(body.label || '').startsWith('BALL_')) return;
     if (body.plugin.scored) return;
 
+    // Mark scored and award
     body.plugin.scored = true;
     const username = body.plugin.username;
     const avatarUrl = body.plugin.avatarUrl || '';
@@ -478,6 +528,7 @@ import {
     awardPoints(username, avatarUrl, points).catch(console.warn);
     if (sensor.mult >= 3) fireworks(confettiCanvas, 1600);
 
+    // Remove only after scoring
     setTimeout(() => tryRemoveBody(body), 1100);
   }
 
@@ -510,7 +561,7 @@ import {
     refreshLeaderboard();
 
     try {
-      await FirebaseREST.update(`/leaderboard/${encodeKey(username)}`, {
+      await FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g, '_'))}`, {
         username,
         avatarUrl: avatarUrl || '',
         score: nextScore,
@@ -532,7 +583,6 @@ import {
     }
   }
 
-  // -------------------------
   // Firebase listeners
   function listenToEvents() {
     FirebaseREST.onChildAdded('/events', (id, obj) => {
@@ -540,7 +590,7 @@ import {
       if (processedEvents.has(id)) return;
 
       const ts = typeof obj.timestamp === 'number' ? obj.timestamp : 0;
-      if (ts && ts < startTime - 60_000) return; // avoid old backlog
+      if (ts && ts < startTime - 60_000) return; // skip old backlog
 
       processedEvents.add(id);
 
@@ -579,20 +629,23 @@ import {
     });
   }
 
-  // -------------------------
   // Admin UI
   btnSaveAdmin.addEventListener('click', () => {
     try {
       const baseUrl = backendUrlInput.value.trim();
       const token = adminTokenInput.value.trim();
+      if (!/^https?:\/\//i.test(baseUrl)) { alert('Enter a valid Backend URL (https://…)'); return; }
       setBackendBaseUrl(baseUrl);
       if (token) localStorage.setItem('adminToken', token);
       else localStorage.removeItem('adminToken');
+      // Optional quick health probe
+      fetch(`${baseUrl.replace(/\/+$/,'')}/health`).catch(() => {});
       alert('Saved admin settings.');
     } catch {
       alert('Failed to save admin settings.');
     }
   });
+
   btnReset.addEventListener('click', async () => {
     const token = adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if (!token) return alert('Provide admin token.');
@@ -603,6 +656,7 @@ import {
       alert('Failed. Check Backend URL.');
     }
   });
+
   btnToggleSpawn.addEventListener('click', async () => {
     const token = adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if (!token) return alert('Provide admin token.');
@@ -614,26 +668,32 @@ import {
       alert('Failed. Check Backend URL.');
     }
   });
+
   btnSimulate.addEventListener('click', async () => {
+    const base = (localStorage.getItem('backendBaseUrl') || '').trim();
+    if (!base) { alert('Backend URL not set. Click Save in Admin.'); return; }
     try {
       const name = 'LocalTester' + Math.floor(Math.random() * 1000);
-      const res = await adminFetch('/admin/spawn', {
+      const res = await fetch(`${base.replace(/\/+$/,'')}/admin/spawn`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ username: name, avatarUrl: '', command: '!drop' })
       });
-      if (!res.ok) throw new Error('spawn failed');
-      alert('Simulated drop sent.');
-    } catch {
-      alert('Simulation failed. Ensure Backend URL and DEV_MODE=true on server.');
+      const text = await res.text();
+      if (!res.ok) {
+        alert(`Simulate failed: HTTP ${res.status}\n${text}`);
+        return;
+      }
+      alert('Simulated drop sent. Watch for the event and ball.');
+    } catch (e) {
+      alert(`Simulation failed: ${e?.message || e}`);
     }
   });
 
-  // -------------------------
-  // Drawer (Controls)
+  // Drawer (controls)
   function showDrawer(v) { drawer.setAttribute('aria-hidden', v ? 'false' : 'true'); }
-  btnGear.addEventListener('click', () => showDrawer(true));
-  btnClose.addEventListener('click', () => showDrawer(false));
+  document.getElementById('btn-gear').addEventListener('click', () => showDrawer(true));
+  document.getElementById('drawer-close').addEventListener('click', () => showDrawer(false));
   drawer.addEventListener('click', (e) => { if (e.target === drawer) showDrawer(false); });
 
   // Live output updates
@@ -648,36 +708,31 @@ import {
 
   btnApply.addEventListener('click', () => {
     readConfigFromUI();
-    engine.timing.timeScale = cfg.timeScale;
+    // Update gravity immediately
     world.gravity.y = -Math.abs(cfg.gravity);
-    // Rebuild board if rows changed (or to refresh slot mults)
+    // Rebuild board when rows / mults changed
     rebuildBoard();
-    showDrawer(false);
     saveConfig();
+    showDrawer(false);
   });
 
   btnResetCfg.addEventListener('click', () => {
     cfg = Object.assign({}, Defaults);
     syncUIFromConfig();
   });
-
   btnSaveCfg.addEventListener('click', () => {
     readConfigFromUI();
     saveConfig();
     alert('Saved controls locally.');
   });
 
-  // -------------------------
   // Helpers
   function sanitizeUsername(u) {
     const s = String(u || '').trim();
     return s ? s.slice(0, 24) : 'viewer';
   }
-  function encodeKey(k) {
-    return encodeURIComponent(k.replace(/[.#$[\]]/g, '_'));
-  }
 
-  // -------------------------
+  // Start
   function start() {
     initThree();
     initMatter();
