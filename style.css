@@ -75,7 +75,7 @@ html, body, #app { height: 100%; margin: 0; background: var(--bg-0); color: var(
 /* Content layout: Sidebar + Board */
 #content {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 300px 1fr;
   gap: 16px;
   height: calc(100% - 56px);
   padding: 10px 14px 14px;
@@ -130,7 +130,7 @@ html, body, #app { height: 100%; margin: 0; background: var(--bg-0); color: var(
   pointer-events: none;
 }
 #board-viewport {
-  position: absolute; inset: 20px 20px 90px 20px; /* leave space for slot labels bottom */
+  position: absolute; inset: 20px 20px 100px 20px; /* bottom space for slots */
   overflow: hidden; border-radius: 16px;
 }
 #board-viewport canvas#confetti-canvas {
@@ -140,7 +140,7 @@ html, body, #app { height: 100%; margin: 0; background: var(--bg-0); color: var(
 #board-hud {
   position: absolute; left: 0; right: 0; bottom: 8px;
   display: grid; gap: 10px;
-  padding: 0 20px;
+  padding: 0 20px 8px;
 }
 #board-hud .stats {
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
@@ -171,7 +171,7 @@ html, body, #app { height: 100%; margin: 0; background: var(--bg-0); color: var(
 }
 #drawer[aria-hidden="false"] { display: grid; }
 #drawer .drawer-content {
-  width: min(560px, 92vw);
+  width: min(620px, 92vw);
   max-height: 86vh; overflow: auto;
   background: var(--bg-1);
   border: 1px solid var(--card-strong);
@@ -185,8 +185,10 @@ html, body, #app { height: 100%; margin: 0; background: var(--bg-0); color: var(
 .control { display: grid; gap: 6px; margin-top: 10px; }
 .control label { display: flex; align-items: baseline; justify-content: space-between; color: var(--muted); font-size: 13px; }
 .control input[type="range"] { width: 100%; }
+.control .row { display: grid; grid-template-columns: repeat(2,1fr); gap: 10px; align-items: center; }
+.control .toggle { display: flex; align-items: center; justify-content: space-between; }
 
-.drawer-actions { display: flex; gap: 8px; margin-top: 12px; }
+.drawer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .drawer-actions button {
   background: #162346; border: 1px solid #274579; color: var(--txt);
   padding: 8px 12px; border-radius: 10px; cursor: pointer;
