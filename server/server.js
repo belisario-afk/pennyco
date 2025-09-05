@@ -7,12 +7,15 @@ const { WebcastPushConnection } = require('tiktok-live-connector');
 
 dotenv.config();
 
+// Config (env + runtime)
 const PORT = process.env.PORT || 3000;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const DATABASE_URL = process.env.DATABASE_URL || 'https://plinkoo-82abc-default-rtdb.firebaseio.com/';
 const TIKTOK_USERNAME = (process.env.TIKTOK_USERNAME || 'lmohss').replace(/^@/, '');
-const SPAWN_COOLDOWN_MS = Number(process.env.SPAWN_COOLDOWN_MS || 7500);
+let SPAWN_COOLDOWN_MS = Number(process.env.SPAWN_COOLDOWN_MS || 1200); // lower default for snappier spawns
 let SPAWN_ENABLED = String(process.env.SPAWN_ENABLED || 'true').toLowerCase() === 'true';
+// How to handle streak gifts: 'repeatEnd' (default), 'first' (spawn on first gift), 'every' (spawn each event - use with low cooldown)
+let STREAK_MODE = String(process.env.STREAK_MODE || 'repeatEnd'); // 'repeatEnd' | 'first' | 'every'
 const DEV_MODE = String(process.env.DEV_MODE || 'true').toLowerCase() === 'true';
 
 const serviceAccountJSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -38,7 +41,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Simple root page
+// Root page (info)
 app.get('/', (req, res) => {
   res.type('html').send(`
     <!doctype html>
@@ -51,6 +54,7 @@ app.get('/', (req, res) => {
         <li>POST <code>/admin/spawn</code> (DEV_MODE only) { "username": "Test", "avatarUrl": "", "command": "!drop" }</li>
         <li>POST <code>/admin/spawn-toggle?enabled=true|false</code> (requires x-admin-token)</li>
         <li>POST <code>/admin/reset-leaderboard</code> (requires x-admin-token)</li>
+        <li>GET/POST <code>/admin/config</code> (requires x-admin-token) to tune cooldown and streak mode</li>
       </ul>
     </body></html>
   `);
@@ -58,7 +62,14 @@ app.get('/', (req, res) => {
 
 // Health
 app.get('/health', (req, res) => {
-  res.json({ ok: true, spawnEnabled: SPAWN_ENABLED, username: TIKTOK_USERNAME, devMode: DEV_MODE });
+  res.json({
+    ok: true,
+    spawnEnabled: SPAWN_ENABLED,
+    username: TIKTOK_USERNAME,
+    devMode: DEV_MODE,
+    streakMode: STREAK_MODE,
+    cooldownMs: SPAWN_COOLDOWN_MS
+  });
 });
 
 // Admin guard
@@ -94,6 +105,36 @@ app.post('/admin/spawn-toggle', requireAdmin, async (req, res) => {
   }
 });
 
+// Admin: config (cooldown + streak mode)
+app.get('/admin/config', requireAdmin, async (req, res) => {
+  res.json({
+    ok: true,
+    spawnEnabled: SPAWN_ENABLED,
+    cooldownMs: SPAWN_COOLDOWN_MS,
+    streakMode: STREAK_MODE
+  });
+});
+
+app.post('/admin/config', requireAdmin, async (req, res) => {
+  try {
+    const { cooldownMs, streakMode, spawnEnabled } = req.body || {};
+    if (typeof cooldownMs === 'number' && cooldownMs >= 0) SPAWN_COOLDOWN_MS = cooldownMs;
+    if (typeof spawnEnabled === 'boolean') SPAWN_ENABLED = spawnEnabled;
+    if (typeof streakMode === 'string' && ['repeatEnd','first','every'].includes(streakMode)) {
+      STREAK_MODE = streakMode;
+    }
+    await db.ref('config').update({
+      spawnEnabled: SPAWN_ENABLED,
+      cooldownMs: SPAWN_COOLDOWN_MS,
+      streakMode: STREAK_MODE
+    });
+    res.json({ ok: true, cooldownMs: SPAWN_COOLDOWN_MS, streakMode: STREAK_MODE, spawnEnabled: SPAWN_ENABLED });
+  } catch (e) {
+    console.error('admin/config failed', e);
+    res.status(500).json({ error: 'failed' });
+  }
+});
+
 // Dev simulate spawn
 app.post('/admin/spawn', async (req, res) => {
   if (!DEV_MODE) return res.status(403).json({ error: 'DEV_MODE disabled' });
@@ -109,10 +150,7 @@ app.post('/admin/spawn', async (req, res) => {
 });
 
 // TikTok connection
-const tiktok = new WebcastPushConnection(TIKTOK_USERNAME, {
-  // Defaults usually fine
-});
-
+const tiktok = new WebcastPushConnection(TIKTOK_USERNAME, {});
 const lastEventByUser = new Map();
 
 function allowedByCooldown(username) {
@@ -128,7 +166,6 @@ async function enqueueEvent({ username, avatarUrl, command }) {
     console.log('[enqueueEvent] blocked (spawn disabled)', username, command);
     return;
   }
-
   const event = {
     username,
     command,
@@ -139,15 +176,28 @@ async function enqueueEvent({ username, avatarUrl, command }) {
   console.log('[enqueueEvent] pushed', ref.key, { username, command });
 }
 
+function shouldSpawnForGift(gift) {
+  // TikTok gift fields commonly used: repeatEnd (boolean), repeatCount (number), giftType
+  // Non-streak gifts typically have repeatEnd undefined and repeatCount 0/undefined.
+  const isStreak = typeof gift.repeatEnd === 'boolean' || (gift.repeatCount && gift.repeatCount > 0);
+  if (!isStreak) return true; // single gift: spawn immediately
+
+  if (STREAK_MODE === 'every') return true;
+  if (STREAK_MODE === 'first') {
+    // as soon as streak starts OR first count observed
+    return gift.repeatStart === true || gift.repeatCount === 1 || gift.repeatEnd === true;
+  }
+  // default 'repeatEnd': only spawn when streak ends
+  return gift.repeatEnd === true;
+}
+
 async function handleChat(data) {
   try {
     const username = data?.uniqueId || data?.nickname || 'viewer';
     const avatarUrl = data?.profilePictureUrl || '';
     const comment = (data?.comment || '').trim();
-
     if (!comment) return;
     const normalized = comment.toLowerCase();
-
     if (normalized.includes('!drop') || normalized === 'drop') {
       if (!allowedByCooldown(username)) return;
       await enqueueEvent({ username, avatarUrl, command: '!drop' });
@@ -164,10 +214,9 @@ async function handleGift(gift) {
     const giftName = gift?.giftName || 'gift';
     const diamonds = Number(gift?.diamondCount || 0);
 
-    // Only when the streak ends (repeatEnd true) or for non-streak gifts
-    if (gift?.repeatEnd === false && gift?.repeatCount && gift?.repeatCount > 0) return;
-
+    if (!shouldSpawnForGift(gift)) return;
     if (!allowedByCooldown(username)) return;
+
     await enqueueEvent({ username, avatarUrl, command: `gift:${giftName}:${diamonds}` });
   } catch (e) {
     console.error('handleGift error', e);
@@ -194,7 +243,11 @@ async function startTikTok() {
 }
 
 (async () => {
-  await db.ref('config').update({ spawnEnabled: SPAWN_ENABLED }).catch(() => {});
+  await db.ref('config').update({
+    spawnEnabled: SPAWN_ENABLED,
+    cooldownMs: SPAWN_COOLDOWN_MS,
+    streakMode: STREAK_MODE
+  }).catch(() => {});
   startTikTok().catch(console.error);
 })();
 

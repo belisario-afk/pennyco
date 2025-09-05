@@ -1,4 +1,5 @@
-// Plinkoo — Calm drops + Neon, fixed leaderboard reset, audio guarded behind user gesture
+// Faster visual spawn: create ball and placeholder instantly, load avatar texture asynchronously.
+// Calm physics (no launch impulse), fixed leaderboard reset handling, audio only after user gesture.
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
@@ -59,6 +60,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const processedEvents = new Set();
   const ballCountForUser = new Map();
 
+  // top row Y for precise spawn
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
@@ -138,7 +140,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const md = Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value = String(md);
     optNeon.checked = (localStorage.getItem('plk_neon') ?? 'true') === 'true';
     optParticles.checked = (localStorage.getItem('plk_particles') ?? 'true') === 'true';
-    const vol = Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value = String(vol); setAudioVolume(vol); // does not create AudioContext
+    const vol = Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value = String(vol); setAudioVolume(vol); // no AudioContext creation
     const saved = getBackendBaseUrl(); if (saved) backendUrlInput.value = saved;
     const tok = localStorage.getItem('adminToken') || ''; if (tok) adminTokenInput.value = tok;
     applySettings();
@@ -459,19 +461,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  async function spawnBall({ username, avatarUrl }) {
-    const multi = Math.max(1, Math.min(5, Number(optMultiDrop.value || 1)));
-    for (let i=0;i<multi;i++) await spawnSingleBall({ username, avatarUrl }, i);
-  }
+  // Texture cache to avoid reloading same avatar URLs
+  const avatarTextureCache = new Map(); // url -> Promise<THREE.Texture>
 
-  async function spawnSingleBall({ username, avatarUrl }, iOffset=0) {
-    const count = ballCountForUser.get(username) || 0;
-    if (count > 18) return;
-
-    // Spawn centered at the top row, with tiny horizontal jitter
+  async function spawn({ username, avatarUrl }) {
+    // Immediate physics + placeholder mesh
     const jitter = PEG_SPACING * 0.35;
     const dropX = Math.max(-BOARD_WIDTH/2 + 4, Math.min(BOARD_WIDTH/2 - 4, (Math.random()-0.5) * jitter));
-    const dropY = TOP_ROW_Y + PEG_SPACING * 0.8; // just above top pegs
+    const dropY = TOP_ROW_Y + PEG_SPACING * 0.8;
 
     const ball = Bodies.circle(dropX, dropY, BALL_RADIUS, {
       restitution: BALL_RESTITUTION,
@@ -484,35 +481,53 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     World.add(world, ball);
     dynamicBodies.add(ball);
 
-    // No launch impulse. Start calm.
     Body.setVelocity(ball, { x: 0, y: 0 });
     Body.setAngularVelocity(ball, 0);
 
-    const tex = await loadAvatarTexture(avatarUrl, 128);
-    const geo = new THREE.SphereGeometry(BALL_RADIUS, 24, 18);
+    // Fast placeholder mesh (no texture yet)
+    const geo = new THREE.SphereGeometry(BALL_RADIUS, 20, 14);
     const mat = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
-      map: tex,
-      metalness: 0.25,
-      roughness: 0.55,
-      clearcoat: 0.8,
-      clearcoatRoughness: 0.2,
-      sheen: 0.15,
-      sheenRoughness: 0.6,
-      sheenColor: new THREE.Color(0x88ffff),
-      emissive: NEON ? new THREE.Color(0x00ffff) : new THREE.Color(0x000000),
+      metalness: 0.2,
+      roughness: 0.6,
+      clearcoat: 0.7,
+      clearcoatRoughness: 0.25,
+      emissive: NEON ? new THREE.Color(0x00c6ff) : new THREE.Color(0x000000),
       emissiveIntensity: NEON ? 0.04 : 0.0
     });
     const mesh = new THREE.Mesh(geo, mat);
     scene.add(mesh);
     meshById.set(ball.id, mesh);
 
+    // Name sprite (can afford to add now)
     const nameSprite = buildNameSprite(username);
     scene.add(nameSprite);
     labelById.set(ball.id, nameSprite);
 
-    ballCountForUser.set(username, count + 1 + iOffset);
+    // Async avatar map swap (does not block spawn)
+    try {
+      let texPromise = avatarTextureCache.get(avatarUrl || '');
+      if (!texPromise) {
+        texPromise = loadAvatarTexture(avatarUrl, 128);
+        avatarTextureCache.set(avatarUrl || '', texPromise);
+      }
+      const tex = await texPromise;
+      // it's possible the ball was already removed (scored). Guard:
+      const liveMesh = meshById.get(ball.id);
+      if (liveMesh && liveMesh.material) {
+        liveMesh.material.map = tex;
+        liveMesh.material.needsUpdate = true;
+      }
+    } catch (e) {
+      // ignore texture failures
+    }
+
     sfxDrop();
+  }
+
+  async function spawnBall({ username, avatarUrl }) {
+    const multi = Math.max(1, Math.min(5, Number(optMultiDrop.value || 1)));
+    for (let i=0;i<multi;i++) spawn({ username, avatarUrl }); // fire-and-forget for speed
   }
 
   function tryRemoveBall(body) {
@@ -576,10 +591,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
-  // Clear leaderboard immediately in UI
   function clearLeaderboardLocal() {
     for (const k of Object.keys(leaderboard)) delete leaderboard[k];
-    refreshLeaderboard();
+    leaderboardList.innerHTML = '';
   }
 
   // Firebase listeners
@@ -592,12 +606,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const username = sanitizeUsername(obj.username || 'viewer');
       const avatarUrl = obj.avatarUrl || '';
       const command = (obj.command || '').toLowerCase();
+      // Gift or command -> spawn
       if (command.includes('drop') || command.startsWith('gift')) spawnBall({ username, avatarUrl });
     });
 
     FirebaseREST.onValue('/leaderboard', (data) => {
       if (data && typeof data === 'object' && Object.keys(data).length) {
-        // populate from DB
         for (const k of Object.keys(data)) {
           const entry = data[k];
           if (entry?.username) {
@@ -609,12 +623,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
             };
           }
         }
+        refreshLeaderboard();
       } else {
-        // data is null or empty => clear UI immediately
         clearLeaderboardLocal();
-        return;
       }
-      refreshLeaderboard();
     });
 
     FirebaseREST.onValue('/config', (data) => {
@@ -630,9 +642,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
   function encodeKey(k) { return encodeURIComponent(k.replace(/[.#$[\]]/g, '_')); }
 
-  // Settings bindings + Audio gesture unlock (no repeated attempts)
+  // Settings bindings + Audio unlock
   btnGear.addEventListener('click', showSettings);
   btnCloseSettings.addEventListener('click', hideSettings);
+
   let audioBound = false;
   function bindAudioUnlockOnce() {
     if (audioBound) return;
@@ -671,8 +684,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     try {
       const res = await adminFetch('/admin/reset-leaderboard', { method:'POST', headers:{'x-admin-token': token} });
       if (!res.ok) throw new Error('reset failed');
-      // Clear immediately in UI so a new game starts clean, even before RTDB event arrives
-      clearLeaderboardLocal();
+      clearLeaderboardLocal(); // immediate local clear
       alert('Leaderboard reset.');
     } catch {
       alert('Failed to reset leaderboard. Check Backend URL and token.');
