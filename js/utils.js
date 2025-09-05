@@ -1,12 +1,13 @@
-// Utilities: audio (gesture-gated), textures, labels, projections, geometry helpers
-import * as THREE from 'three';
+// Utilities: audio (gesture-gated), textures, labels, projections, helpers for neon frame and normal maps
+import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 
 let audioCtx = null;
 let masterGain = null;
 let storedVolume = clamp01(Number(localStorage.getItem('plk_volume') ?? '0.5'));
+
 function clamp01(v) { return Math.max(0, Math.min(1, v)); }
 
-// Create/resume AudioContext ONLY after a user gesture
+// Create or resume AudioContext ONLY after a user gesture
 export async function initAudioOnce() {
   try {
     if (!audioCtx) {
@@ -18,11 +19,13 @@ export async function initAudioOnce() {
     if (audioCtx.state === 'suspended') await audioCtx.resume();
   } catch {}
 }
+
 export function setAudioVolume(v) {
   storedVolume = clamp01(Number(v));
   localStorage.setItem('plk_volume', String(storedVolume));
   if (masterGain) masterGain.gain.value = storedVolume;
 }
+
 function now() { return audioCtx ? audioCtx.currentTime : 0; }
 function beep(freq, dur, type, gain) {
   if (!audioCtx || audioCtx.state !== 'running') return;
@@ -50,11 +53,13 @@ export async function loadAvatarTexture(url, diameter = 96) {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = size;
     const ctx = canvas.getContext('2d');
+
     const done = () => {
       const tex = new THREE.CanvasTexture(canvas);
       tex.anisotropy = 4;
       resolve(tex);
     };
+
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
@@ -97,7 +102,7 @@ export function buildNameSprite(username) {
   const scale = 0.009; sprite.scale.set(w*scale, h*scale, 1);
   return sprite;
 }
-function roundRect(ctx,x,y,w,h,r){const rr=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+rr,y);ctx.arcTo(x+w,y,x+w,y+h,rr);ctx.arcTo(x+w,y+h,x,y,h);ctx.arcTo(x,y+h,x,y,rr);ctx.arcTo(x,y,x+w,y,rr);ctx.closePath();}
+function roundRect(ctx,x,y,w,h,r){const rr=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+rr,y);ctx.arcTo(x+w,y,x+w,y+h,rr);ctx.arcTo(x+w,y+h,x,y+h,rr);ctx.arcTo(x,y+h,x,y,rr);ctx.arcTo(x,y,x+w,y,rr);ctx.closePath();}
 
 export function worldToScreen(vec3, camera, renderer) {
   const v = vec3.clone().project(camera);
@@ -142,17 +147,18 @@ export function createRadialNormalMap(size = 64) {
       const dx = (x + 0.5 - cx) / rMax;
       const dy = (y + 0.5 - cy) / rMax;
       const r2 = dx*dx + dy*dy;
-      let nx=0, ny=0, nz=1.0;
+      let nx=0, ny=0, nz=1;
       if (r2 <= 1.0) {
         const z = Math.sqrt(1.0 - r2);
-        const inv = 1.0 / Math.sqrt(dx*dx + dy*dy + z*z);
-        nx = dx*inv; ny = dy*inv; nz = z*inv;
+        const invLen = 1.0 / Math.sqrt(dx*dx + dy*dy + z*z);
+        nx = dx * invLen; ny = dy * invLen; nz = z * invLen;
       }
+      // Pack normal in RGB [0..255]
       const R = Math.round((nx * 0.5 + 0.5) * 255);
       const G = Math.round((ny * 0.5 + 0.5) * 255);
       const B = Math.round((nz * 0.5 + 0.5) * 255);
-      const i = (y*size + x) * 4;
-      img.data[i] = R; img.data[i+1] = G; img.data[i+2] = B; img.data[i+3] = 255;
+      const idx = (y*size + x) * 4;
+      img.data[idx] = R; img.data[idx+1] = G; img.data[idx+2] = B; img.data[idx+3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);

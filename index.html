@@ -12,16 +12,6 @@
   <!-- GSAP for UI transitions -->
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
 
-  <!-- Import map to resolve "three" and examples -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
-      "three/examples/jsm/": "https://unpkg.com/three@0.157.0/examples/jsm/"
-    }
-  }
-  </script>
-
   <!-- Favicon (inline SVG) -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='100%25' height='100%25' rx='12' ry='12' fill='%230b0f1a'/%3E%3Ccircle cx='32' cy='32' r='18' fill='%230ff'/%3E%3Ctext x='32' y='40' font-size='24' text-anchor='middle' fill='%23fff' font-family='Arial'%3EP%3C/text%3E%3C/svg%3E">
 </head>
@@ -41,7 +31,7 @@
           </div>
 
           <div class="controls">
-            <button id="btn-gear" aria-label="Settings" title="Settings" type="button">
+            <button id="btn-gear" aria-label="Settings" title="Settings">
               <span class="gear">⚙️</span>
             </button>
           </div>
@@ -57,7 +47,7 @@
         <div id="settings-panel" class="panel glass">
           <div class="panel-header">
             <h3>Game Settings</h3>
-            <button id="btn-close-settings" title="Close" type="button">✖</button>
+            <button id="btn-close-settings" title="Close">✖</button>
           </div>
 
           <div class="settings-group">
@@ -111,30 +101,27 @@
           <hr class="divider">
 
           <h4>Admin</h4>
-          <!-- Wrap password field in a form to satisfy Chrome’s password manager -->
-          <form id="admin-form" autocomplete="on" onsubmit="return false;">
-            <div class="settings-group">
-              <label>
-                Backend URL (Render)
-                <input id="backend-url" name="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url" />
-              </label>
-              <label>
-                Admin Token
-                <input id="admin-token" name="admin-token" type="password" placeholder="Enter admin token" autocomplete="current-password" />
-              </label>
-              <div class="admin-actions">
-                <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
-                <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
-              </div>
-              <div class="admin-actions">
-                <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
-                <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
-              </div>
-              <div class="admin-status">
-                <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
-              </div>
+          <div class="settings-group">
+            <label>
+              Backend URL (Render)
+              <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="off" />
+            </label>
+            <label>
+              Admin Token
+              <input id="admin-token" type="password" placeholder="Enter admin token" autocomplete="off" />
+            </label>
+            <div class="admin-actions">
+              <button id="btn-save-admin" class="btn">Save Admin Settings</button>
+              <button id="btn-reset-leaderboard" class="btn danger">Reset Leaderboard</button>
             </div>
-          </form>
+            <div class="admin-actions">
+              <button id="btn-toggle-spawn" class="btn alt">Toggle Spawn</button>
+              <button id="btn-simulate" class="btn alt">Simulate Drop</button>
+            </div>
+            <div class="admin-status">
+              <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
+            </div>
+          </div>
         </div>
       </div>
 
