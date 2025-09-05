@@ -1,4 +1,4 @@
-// ESM Game (vertical, auto-scale, provably-fair with robust collisions)
+// ESM Game (smoother physics, anti-tunneling, gentler fall)
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 import {
   loadAvatarTexture,
@@ -19,18 +19,18 @@ import {
   const Defaults = {
     rows: 12,
     bet: 100,
-    timeScale: 0.9,   // 0.5..1.5 (also scales physics step)
-    gravity: 0.7,     // magnitude, always downward on screen
-    air: 0.02,        // ball air drag
-    restitution: 0.25,// bounciness
-    risk: 0.5,        // 0..1 (edge bias -> higher risk)
-    nudge: 0.0005,    // tiny per-row impulse (guided path)
+    timeScale: 0.85,   // a bit slower by default
+    gravity: 0.55,     // gentler gravity -> smoother
+    air: 0.028,        // a little more air drag
+    restitution: 0.18, // less bounce
+    risk: 0.5,         // 0..1 (edge bias -> higher risk)
+    nudge: 0.00045,    // tiny per-row impulse (guided path)
   };
 
   // Geometry
   const PEG_SPACING = 1.2;
   const PEG_RADIUS_VIS = 0.18;
-  const PEG_RADIUS_PHYS = PEG_RADIUS_VIS * 1.15; // slightly larger hitbox for stable contacts
+  const PEG_RADIUS_PHYS = PEG_RADIUS_VIS * 1.22; // slightly larger hitbox for stable contacts
   const BALL_RADIUS = 0.45;
   const SLOT_HEIGHT = 1.2;
   const WALL_THICKNESS = 1;
@@ -40,10 +40,14 @@ import {
   const HIDDEN_FPS = 6;
   const PIXEL_RATIO_CAP = 1.5;
 
-  // Physics loop (fixed step to avoid tunneling)
-  const PHYS_HZ = 120;                  // physics substeps per second
-  const PHYS_DT_MS = 1000 / PHYS_HZ;    // fixed dt in ms
-  const MAX_SUBSTEPS_PER_FRAME = 6;     // clamp to avoid spiral of death
+  // Physics loop (fixed step + substeps to avoid tunneling)
+  const PHYS_HZ = 240;                 // simulate at 240 Hz internally
+  const PHYS_DT_MS = 1000 / PHYS_HZ;   // base dt in ms
+  const MAX_SUBSTEPS_PER_FRAME = 12;   // clamp per frame
+
+  // Velocity clamps to prevent ballistic jumps through pegs
+  const MAX_VEL_X = 8.0;
+  const MAX_VEL_Y = 12.0;
 
   // State
   let cfg = loadConfig();
@@ -235,15 +239,15 @@ import {
     confettiCanvas.height = h;
   }
 
-  // Matter.js setup with fixed timestep
+  // Matter.js setup with robust collisions
   function initMatter() {
     engine = Engine.create();
     world = engine.world;
 
-    // Stronger solver to avoid tunneling
-    engine.positionIterations = 12;
-    engine.velocityIterations = 8;
-    engine.constraintIterations = 4;
+    // Stronger solver to avoid tunneling / missed contacts
+    engine.positionIterations = 16;
+    engine.velocityIterations = 12;
+    engine.constraintIterations = 8;
     engine.enableSleeping = false;
 
     // Gravity downward on screen
@@ -251,7 +255,7 @@ import {
 
     rebuildBoard();
 
-    // Collisions
+    // Scoring collisions
     Events.on(engine, 'collisionStart', (ev) => {
       ev.pairs.forEach(({ bodyA, bodyB }) => {
         handleCollision(bodyA, bodyB);
@@ -259,7 +263,7 @@ import {
       });
     });
 
-    // Loops: physics at fixed step, render throttled to FPS cap
+    // Loops: physics at fixed step, render throttled
     let physAccumulator = 0;
     let lastTime = 0;
     let lastRender = 0;
@@ -270,13 +274,13 @@ import {
       const rawDelta = time - lastTime;
       lastTime = time;
 
-      // Accumulate and step physics at fixed dt (scaled by timeScale)
+      // Accumulate and step physics at fixed dt (slowed by cfg.timeScale)
       physAccumulator += rawDelta;
+      const effectiveDt = PHYS_DT_MS * cfg.timeScale; // smaller -> slower, smoother
       let substeps = 0;
-      const scaledDt = PHYS_DT_MS * (1 / Math.max(0.25, Math.min(2.0, 1 / cfg.timeScale))); // inverse scale keeps perceived speed consistent with cfg.timeScale
-      while (physAccumulator >= scaledDt && substeps < MAX_SUBSTEPS_PER_FRAME) {
-        Engine.update(engine, scaledDt);
-        physAccumulator -= scaledDt;
+      while (physAccumulator >= effectiveDt && substeps < MAX_SUBSTEPS_PER_FRAME) {
+        Engine.update(engine, effectiveDt);
+        physAccumulator -= effectiveDt;
         substeps++;
       }
 
@@ -352,9 +356,9 @@ import {
         const peg = Bodies.circle(x, y, PEG_RADIUS_PHYS, {
           isStatic: true,
           restitution: 0.0,
-          friction: 0.1,
+          friction: 0.12,
           frictionStatic: 0.0,
-          slop: 0.01
+          slop: 0.004 // tighter contacts
         });
         World.add(world, peg);
         pegPositions.push({ x, y });
@@ -412,12 +416,29 @@ import {
   }
 
   // Game loop helpers
+  function clampVelocity(body) {
+    // Prevent ballistic jumps that can tunnel through pegs
+    let { x: vx, y: vy } = body.velocity;
+    if (vx > MAX_VEL_X) vx = MAX_VEL_X; else if (vx < -MAX_VEL_X) vx = -MAX_VEL_X;
+    if (vy > MAX_VEL_Y) vy = MAX_VEL_Y; else if (vy < -MAX_VEL_Y) vy = -MAX_VEL_Y;
+    if (vx !== body.velocity.x || vy !== body.velocity.y) {
+      Body.setVelocity(body, { x: vx, y: vy });
+    }
+  }
+
   function updateThreeFromMatter() {
-    // Remove balls that leave safe bounds (fail-safe; not on peg hit)
-    const OOB_Y = -BASE.height/2 - 10;
-    const OOB_X = BASE.width/2 + 6;
+    // Very generous OOB bounds so we don't remove early
+    const OOB_Y = -BASE.height - 60;
+    const OOB_X = BASE.width + 60;
 
     dynamicBodies.forEach((body) => {
+      if (!body || !body.position) return;
+
+      // Soft clamps and damping for smoothness
+      clampVelocity(body);
+      Body.setAngularVelocity(body, body.angularVelocity * 0.985); // tiny angular damping
+
+      // Remove only far OOB (safety)
       if (Math.abs(body.position.x) > OOB_X || body.position.y < OOB_Y) {
         tryRemoveBody(body);
         return;
@@ -430,7 +451,10 @@ import {
       }
       const label = labelsById.get(body.id);
       if (label) {
-        label.position.set(body.position.x, body.position.y + BALL_RADIUS * 2, 0);
+        // slight smoothing of label follow
+        const ly = label.position.y + (body.position.y + BALL_RADIUS * 2 - label.position.y) * 0.6;
+        const lx = label.position.x + (body.position.x - label.position.x) * 0.6;
+        label.position.set(lx, ly, 0);
       }
 
       // Guided nudges (tiny and once per row)
@@ -442,7 +466,7 @@ import {
     const data = body.plugin;
     if (!data || !Array.isArray(data.decisions)) return;
 
-    const zone = 0.20;
+    const zone = 0.22;
     for (let k = data.lastRowIndex + 1; k < rowY.length; k++) {
       const y = rowY[k];
       if (body.position.y < y + zone && body.position.y > y - zone) {
@@ -479,7 +503,7 @@ import {
     const decisions = [];
     for (let i = 0; i < cfg.rows; i++) decisions.push(rng() < 0.5 ? 0 : 1);
 
-    // Drop near top center with tiny offset
+    // Drop near top center with small seeded offset
     const centerOffset = (rng() - 0.5) * 2.0;
     const dropX = centerOffset * Math.min(BASE.width/2 - 1, 3.0);
     const dropY = BASE.height/2 - 1;
@@ -490,7 +514,7 @@ import {
       friction: 0.02,
       frictionStatic: 0,
       density: 0.002,
-      slop: 0.01
+      slop: 0.004
     });
     ball.label = `BALL_${username}`;
     ball.plugin = {
@@ -519,7 +543,9 @@ import {
     if (!body || !body.plugin || !String(body.label || '').startsWith('BALL_')) return;
     if (body.plugin.scored) return;
 
-    // Mark scored and award
+    // Avoid scoring on a grazing pass: ensure ball is below sensor center
+    if (body.position.y > sensor.body.position.y + 0.1) return;
+
     body.plugin.scored = true;
     const username = body.plugin.username;
     const avatarUrl = body.plugin.avatarUrl || '';
@@ -529,7 +555,7 @@ import {
     if (sensor.mult >= 3) fireworks(confettiCanvas, 1600);
 
     // Remove only after scoring
-    setTimeout(() => tryRemoveBody(body), 1100);
+    setTimeout(() => tryRemoveBody(body), 1200);
   }
 
   function tryRemoveBody(body) {
@@ -692,8 +718,8 @@ import {
 
   // Drawer (controls)
   function showDrawer(v) { drawer.setAttribute('aria-hidden', v ? 'false' : 'true'); }
-  document.getElementById('btn-gear').addEventListener('click', () => showDrawer(true));
-  document.getElementById('drawer-close').addEventListener('click', () => showDrawer(false));
+  btnGear.addEventListener('click', () => showDrawer(true));
+  btnClose.addEventListener('click', () => showDrawer(false));
   drawer.addEventListener('click', (e) => { if (e.target === drawer) showDrawer(false); });
 
   // Live output updates
@@ -708,9 +734,8 @@ import {
 
   btnApply.addEventListener('click', () => {
     readConfigFromUI();
-    // Update gravity immediately
     world.gravity.y = -Math.abs(cfg.gravity);
-    // Rebuild board when rows / mults changed
+    // Rebuild board when rows/mults changed
     rebuildBoard();
     saveConfig();
     showDrawer(false);
