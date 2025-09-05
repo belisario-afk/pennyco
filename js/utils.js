@@ -1,252 +1,175 @@
-:root {
-  --bg: #0b0f1a;
-  --bg-2: #0e1322;
-  --txt: #e7edf4;
-  --muted: #a7b1c2;
-  --cyan: #00f2ea;
-  --pink: #ff0050;
-  --glass: rgba(255,255,255,0.06);
-  --glass-strong: rgba(255,255,255,0.12);
-  --good: #5df28f;
-  --danger: #ff6b6b;
-}
+// Utilities: textures, labels, audio synth, projections, 2D FX manager (no auto AudioContext)
+import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 
-* { box-sizing: border-box; }
+let audioCtx = null;
+let masterGain = null;
+let storedVolume = clamp01(Number(localStorage.getItem('plk_volume') ?? '0.5'));
 
-html, body, #app, #game-container {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  height: 100%;
-  background: radial-gradient(1200px 900px at 40% 10%, #0f1627, var(--bg));
-  color: var(--txt);
-  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
-  overflow: hidden;
-}
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
 
-#game-container { position: relative; }
-
-#fx-canvas,
-#board-frame,
-#board-divider,
-#slot-tray,
-#board-title {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-/* FX canvas is transparent, above WebGL but does not darken it (cleared every frame) */
-#fx-canvas { z-index: 2; }
-
-/* Neon frame/tray */
-#board-frame {
-  border-radius: 22px;
-  border: 2px solid var(--cyan);
-  box-shadow:
-    0 0 18px rgba(0,242,234,0.65),
-    0 0 36px rgba(0,242,234,0.35),
-    inset 0 0 120px rgba(0,0,0,0.6),
-    inset 0 0 24px rgba(0,242,234,0.08);
-  background: linear-gradient(180deg, rgba(6,12,22,0.65), rgba(6,12,22,0.84));
-  z-index: 1;
-}
-#board-divider {
-  height: 2px;
-  background: var(--cyan);
-  filter: drop-shadow(0 0 8px rgba(0,242,234,0.9));
-  border-radius: 1px;
-  transform: translateY(-1px);
-  display: none;
-  z-index: 1;
-}
-#slot-tray {
-  background: linear-gradient(180deg, rgba(255,0,80,0.12), rgba(255,0,80,0.28));
-  border-bottom-left-radius: 20px;
-  border-bottom-right-radius: 20px;
-  box-shadow: inset 0 8px 18px rgba(255,0,80,0.2), 0 0 16px rgba(255,0,80,0.18);
-  z-index: 1;
-}
-#tray-dividers {
-  position: absolute;
-  inset: 0;
-  background:
-    repeating-linear-gradient(
-      90deg,
-      rgba(255,255,255,0.0) 0 calc(var(--slot-width, 60px) - 1px),
-      rgba(0,242,234,0.9) calc(var(--slot-width, 60px) - 1px) calc(var(--slot-width, 60px) + 1px),
-      rgba(255,255,255,0.0) calc(var(--slot-width, 60px) + 1px) calc(var(--slot-width, 60px) + 2px)
-    );
-  filter: drop-shadow(0 0 6px rgba(0,242,234,0.7));
-  opacity: 0.9;
-}
-#board-title {
-  display: inline-block;
-  color: #ffffff;
-  font-weight: 900;
-  letter-spacing: 1px;
-  text-shadow: 0 0 12px rgba(255,255,255,0.7), 0 0 26px rgba(0,242,234,0.5);
-  width: max-content;
-  z-index: 1;
-}
-
-/* Overlay */
-#overlay {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  grid-template-columns: 320px 1fr auto;
-  grid-template-rows: auto 1fr;
-  gap: 12px;
-  padding: 12px;
-  pointer-events: none;
-}
-#overlay > * { z-index: 3; } /* UI above frame */
-
-#top-bar {
-  grid-column: 1 / span 3;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.branding {
-  display: inline-flex;
-  gap: 10px;
-  align-items: center;
-  background: var(--glass);
-  border: 1px solid var(--glass-strong);
-  padding: 8px 12px;
-  border-radius: 12px;
-  pointer-events: auto;
-  backdrop-filter: blur(6px);
-  box-shadow: 0 0 14px rgba(0,242,234,0.35);
-}
-.branding .logo { font-weight: 800; letter-spacing: 0.6px; }
-.branding .live { color: var(--cyan); font-weight: 700; }
-
-.controls { pointer-events: auto; }
-#btn-gear {
-  background: var(--bg-2);
-  color: var(--txt);
-  border: 1px solid #1e2b4d;
-  border-radius: 10px;
-  padding: 8px 10px;
-  cursor: pointer;
-  box-shadow: 0 0 14px rgba(0,242,234,0.35);
-}
-
-#leaderboard {
-  grid-row: 2;
-  grid-column: 1;
-  min-width: 260px;
-  max-height: calc(100vh - 120px);
-  overflow: hidden auto;
-  padding: 14px 12px;
-  pointer-events: auto;
-}
-.panel {
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 18px;
-  backdrop-filter: blur(6px);
-}
-.lb-head {
-  font-weight: 800;
-  letter-spacing: 0.8px;
-  color: #dfe7f2;
-  margin: 2px 6px 10px 6px;
-}
-.lb-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.lb-item {
-  display: grid;
-  grid-template-columns: 44px 1fr auto;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 6px;
-  border-radius: 12px;
-}
-.lb-item + .lb-item { margin-top: 4px; }
-.lb-ava {
-  width: 44px; height: 44px; border-radius: 50%;
-  background: #0f1b2e center/cover no-repeat;
-  border: 2px solid transparent;
-  box-shadow:
-    0 0 0 2px #0b1426,
-    0 0 0 3px rgba(0,242,234,0.9),
-    0 0 10px rgba(0,242,234,0.55);
-}
-.lb-name { font-weight: 700; color: #dfe7f2; font-size: 14px; }
-.lb-score { color: var(--cyan); font-weight: 800; text-shadow: 0 0 8px rgba(0,242,234,0.6); }
-
-#slot-labels {
-  position: absolute;
-  left: 0; right: 0;
-  bottom: 0;
-  display: flex;
-  justify-content: space-between;
-  align-items: end;
-  padding: 8px 10px;
-  gap: 4px;
-  pointer-events: none;
-}
-.slot-label {
-  color: #dfe7f2;
-  font-weight: 700;
-  font-size: 14px;
-  text-shadow: 0 0 8px rgba(255,255,255,0.5), 0 0 12px rgba(255,0,80,0.5);
-  min-width: 36px;
-  text-align: center;
-}
-
-/* Settings panel */
-#settings-panel {
-  position: absolute;
-  top: 64px;
-  right: 12px;
-  width: min(92vw, 360px);
-  max-height: calc(100vh - 80px);
-  overflow: hidden auto;
-  padding: 12px;
-  transform: translateX(110%);
-  will-change: transform, opacity;
-  pointer-events: auto;
-}
-.panel-header { display:flex; align-items:center; justify-content:space-between; }
-#btn-close-settings {
-  background: transparent;
-  border: 1px solid #2c3b66;
-  color: var(--txt);
-  border-radius: 8px;
-  cursor: pointer;
-  padding: 4px 8px;
-}
-.settings-group { display: grid; gap: 10px; margin-top: 8px; }
-.settings-group label { display: grid; gap: 6px; font-size: 14px; color: var(--muted); }
-.settings-group label.row { display: flex; align-items: center; gap: 10px; }
-.settings-group input[type="range"],
-.settings-group input[type="url"],
-.settings-group input[type="password"] {
-  width: 100%;
-  background: #0f1626;
-  border: 1px solid #22314f;
-  color: var(--txt);
-  padding: 8px 10px;
-  border-radius: 8px;
-}
-.admin-actions { margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap; }
-.btn { background: #17223a; border: 1px solid #23365f; color: var(--txt); padding: 6px 10px; border-radius: 8px; cursor: pointer; }
-.btn.alt { background: #122b27; border-color: #1a4e45; }
-.btn.danger { background: #2b1420; border-color: #3d2230; }
-.divider { border: 0; height: 1px; background: linear-gradient(90deg, rgba(255,0,80,0.2), rgba(0,242,234,0.2)); margin: 12px 0; }
-
-@media (max-width: 1000px) {
-  #overlay {
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto 1fr auto;
+// Create or resume AudioContext ONLY after a user gesture
+export async function initAudioOnce() {
+  try {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = storedVolume;
+      masterGain.connect(audioCtx.destination);
+    }
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
+  } catch (e) {
+    // fail silently; browser may still block until an explicit user gesture
   }
-  #leaderboard { grid-column: 1 / span 2; order: 3; }
 }
+
+// Update saved volume; do not create AudioContext here
+export function setAudioVolume(v) {
+  storedVolume = clamp01(Number(v));
+  localStorage.setItem('plk_volume', String(storedVolume));
+  if (masterGain) masterGain.gain.value = storedVolume;
+}
+
+function now() { return audioCtx ? audioCtx.currentTime : 0; }
+
+function beep(freq, dur, type, gain) {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  const t0 = now();
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, t0);
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(gain, t0 + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(masterGain);
+  o.start(t0);
+  o.stop(t0 + dur);
+}
+
+export function sfxBounce() { beep(520 + Math.random()*80, 0.03, 'square', 0.12); }
+export function sfxDrop()   { beep(420, 0.05, 'triangle', 0.18); }
+export function sfxScore(big=false) {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  if (big) {
+    beep(880, 0.08, 'triangle', 0.25);
+    setTimeout(() => beep(1100, 0.12, 'triangle', 0.22), 70);
+  } else {
+    beep(760, 0.08, 'triangle', 0.22);
+  }
+}
+
+export async function loadAvatarTexture(url, diameter = 96) {
+  return new Promise((resolve) => {
+    const size = Math.max(32, Math.min(256, diameter));
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    const done = () => {
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.anisotropy = 4;
+      resolve(tex);
+    };
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      ctx.clearRect(0,0,size,size);
+      ctx.save();
+      ctx.beginPath(); ctx.arc(size/2,size/2,size/2,0,Math.PI*2); ctx.closePath(); ctx.clip();
+      ctx.drawImage(img,0,0,size,size);
+      ctx.restore();
+      done();
+    };
+    img.onerror = () => {
+      ctx.fillStyle = '#132035';
+      ctx.beginPath(); ctx.arc(size/2,size/2,size/2,0,Math.PI*2); ctx.fill();
+      ctx.font = `${Math.floor(size*0.6)}px serif`; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('🎯', size/2, size/2+2); done();
+    };
+    try { img.src = url || ''; } catch { img.onerror(); }
+  });
+}
+
+export function buildNameSprite(username) {
+  const text = username || 'viewer';
+  const fontSize = 54, padding = 16;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.font = `900 ${fontSize}px Inter, system-ui, Arial`;
+  const w = Math.ceil(ctx.measureText(text).width) + padding*2;
+  const h = fontSize + padding*2;
+  canvas.width = w; canvas.height = h;
+
+  // Neon bubble
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  roundRect(ctx,0,0,w,h,12); ctx.fill();
+  ctx.shadowColor = 'rgba(0,242,234,0.9)'; ctx.shadowBlur = 18;
+  ctx.fillStyle = '#fff'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(text, w/2, h/2+4);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true });
+  const sprite = new THREE.Sprite(mat);
+  const scale = 0.009; sprite.scale.set(w*scale, h*scale, 1);
+  return sprite;
+}
+function roundRect(ctx,x,y,w,h,r){const rr=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+rr,y);ctx.arcTo(x+w,y,x+w,y+h,rr);ctx.arcTo(x+w,y+h,x,y+h,rr);ctx.arcTo(x,y+h,x,y,rr);ctx.arcTo(x,y,x+w,y,rr);ctx.closePath();}
+
+export function worldToScreen(vec3, camera, renderer) {
+  const v = vec3.clone().project(camera);
+  const halfW = renderer.domElement.clientWidth / 2;
+  const halfH = renderer.domElement.clientHeight / 2;
+  return { x: v.x*halfW + halfW, y: -v.y*halfH + halfH };
+}
+
+// 2D FX manager (clears only its own canvas each frame)
+export class FXManager2D {
+  constructor(canvas) { this.canvas = canvas; this.parts = []; }
+  addSparks(x, y, color = '#00f2ea', count = 16) {
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 1 + Math.random() * 2.5;
+      this.parts.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp, life: 240 + Math.random()*160, color, size: 2 });
+    }
+  }
+  update(ctx, deltaMs) {
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of this.parts) {
+      p.x += p.vx; p.y += p.vy;
+      p.vx *= 0.97; p.vy *= 0.97; p.life -= deltaMs;
+      if (p.life > 0) { ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size); }
+    }
+    this.parts = this.parts.filter(p => p.life > 0);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+}
+
+export function colorFromString(str) {
+  let hash = 0; for (let i=0;i<str.length;i++) hash = str.charCodeAt(i) + ((hash<<5)-hash);
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 70%, 55%)`;
+}
+
+// Keep a minimal legacy function for compatibility (uses the manager internally)
+export function sparks2D(ctx, x, y, color='#00f2ea', count=14) {
+  const mgr = new FXManager2D(ctx.canvas);
+  mgr.addSparks(x, y, color, count);
+  let last = performance.now();
+  function step(t) {
+    const dt = t - last; last = t;
+    mgr.update(ctx, dt);
+    if (mgr.parts.length) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+window.PlinkoUtils = {
+  loadAvatarTexture, buildNameSprite, worldToScreen,
+  FXManager2D, sparks2D,
+  initAudioOnce, setAudioVolume,
+  sfxBounce, sfxDrop, sfxScore
+};
