@@ -1,173 +1,130 @@
 :root {
-  --bg: #0b0f1a;
-  --panel: rgba(255,255,255,0.06);
-  --panel-strong: rgba(255,255,255,0.12);
-  --txt: #e7edf4;
-  --muted: #a7b1c2;
+  --bg-0: #05070d;
+  --bg-1: #0b1020;
+  --bg-2: #0f1630;
+  --card: rgba(255,255,255,0.06);
+  --card-strong: rgba(255,255,255,0.12);
+  --txt: #eaf1ff;
+  --muted: #9fb0d7;
   --accent: #5df2d6;
-  --accent-2: #ffb86b;
-  --danger: #ff6b6b;
-  --success: #5df28f;
+  --accent-2: #a88bff;
+  --good: #4be38b;
+  --warn: #ffb86b;
+  --bad: #ff6b6b;
 }
 
 * { box-sizing: border-box; }
-
 html, body, #app, #game-container {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  height: 100%;
-  background: radial-gradient(1200px 600px at 35% 15%, #18243d, #0b0f1a);
+  margin: 0; padding: 0; width: 100%; height: 100%;
   color: var(--txt);
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif;
+  background: radial-gradient(1200px 900px at 50% 10%, var(--bg-2), var(--bg-0));
   overflow: hidden;
 }
 
-#game-container {
+#game-container.vertical {
   position: relative;
+  display: grid;
+  grid-template-rows: 1fr;
+  grid-template-columns: 1fr;
+  place-items: center;
 }
 
-canvas#confetti-canvas {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
+/* Top overlay grid */
 #overlay {
-  position: absolute;
-  inset: 0;
+  position: absolute; inset: 0;
   display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-rows: auto 1fr;
-  gap: 16px;
+  grid-template-rows: auto 1fr auto;
+  grid-template-columns: 1fr;
+  pointer-events: none;
   padding: 16px;
-  pointer-events: none;
 }
 
+/* Three.js canvas will be injected in container (below overlay) */
+canvas#confetti-canvas {
+  position: absolute; inset: 0; pointer-events: none;
+}
+
+/* Header */
 #top-bar {
-  grid-column: 1 / span 2;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.branding {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  background: var(--panel);
-  padding: 8px 12px;
-  border-radius: 10px;
-  pointer-events: auto;
-  backdrop-filter: blur(6px);
-  border: 1px solid var(--panel-strong);
-}
-.branding .logo {
-  font-weight: 800;
-  letter-spacing: 0.5px;
-}
-.branding .live {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-#admin-panel {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 6px 10px;
   pointer-events: auto;
 }
-#admin-panel details {
-  background: var(--panel);
-  border: 1px solid var(--panel-strong);
-  border-radius: 10px;
-  padding: 8px 12px;
+.brand {
+  display: flex; align-items: baseline; gap: 10px;
+  background: var(--card);
+  border: 1px solid var(--card-strong);
+  padding: 8px 12px; border-radius: 12px; backdrop-filter: blur(6px);
 }
-#admin-panel summary {
-  cursor: pointer;
-  color: var(--muted);
-}
-#admin-panel .admin-content {
-  margin-top: 8px;
-  display: grid;
-  gap: 8px;
-}
-#admin-panel input {
-  width: 240px;
-  background: #0f1626;
-  border: 1px solid #22314f;
-  color: var(--txt);
-  padding: 6px 8px;
-  border-radius: 8px;
-}
-#admin-panel button {
-  background: #17223a;
-  border: 1px solid #23365f;
-  color: var(--txt);
-  padding: 6px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-}
-#admin-panel .admin-actions {
-  display: flex;
-  gap: 8px;
-}
-#admin-panel #btn-reset-leaderboard { border-color: #3d2230; background: #2b1420; }
-#admin-panel #btn-toggle-spawn { border-color: #234639; background: #142b20; }
-#admin-panel #btn-simulate { border-color: #3a2f23; background: #2b2116; }
+.brand .mark { font-weight: 800; letter-spacing: 0.5px; font-size: 18px; }
+.brand .live-tag { color: var(--accent); font-weight: 700; }
 
-#leaderboard {
-  grid-row: 2;
-  grid-column: 2;
-  min-width: 260px;
-  max-height: calc(100vh - 120px);
-  overflow: hidden auto;
-  background: var(--panel);
-  border: 1px solid var(--panel-strong);
-  border-radius: 12px;
+#status {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--card);
+  border: 1px solid var(--card-strong);
+  padding: 6px 10px; border-radius: 10px; backdrop-filter: blur(6px);
+}
+#status #spawn-status { color: var(--good); }
+
+/* HUD column (right on desktop, bottom on mobile) */
+#hud {
+  display: grid; gap: 12px; align-content: start; justify-items: stretch;
+  pointer-events: auto;
+}
+.panel {
+  background: var(--card);
+  border: 1px solid var(--card-strong);
+  border-radius: 14px;
   padding: 12px;
-  pointer-events: auto;
   backdrop-filter: blur(6px);
 }
-#leaderboard h3 {
-  margin: 4px 0 8px 0;
-  font-size: 16px;
-  color: var(--accent-2);
+.panel h3 { margin: 0 0 8px 0; color: var(--accent-2); font-size: 14px; letter-spacing: 0.2px; }
+.panel.leaderboard { max-height: 38vh; overflow: auto; }
+.panel.admin details summary { cursor: pointer; color: var(--muted); }
+.panel.admin form { margin-top: 8px; display: grid; gap: 8px; }
+.panel.admin input {
+  width: 100%; background: #0e162b; border: 1px solid #203459; color: var(--txt);
+  padding: 6px 8px; border-radius: 10px;
 }
-#leaderboard-list {
-  margin: 0;
-  padding: 0 0 0 18px;
+.panel.admin .buttons { display: grid; grid-template-columns: repeat(2,1fr); gap: 8px; }
+.panel.admin button {
+  background: #162346; border: 1px solid #274579; color: var(--txt);
+  padding: 8px 10px; border-radius: 10px; cursor: pointer;
 }
-#leaderboard-list li {
-  margin: 6px 0;
-}
+.panel.admin button.danger { background: #311823; border-color: #4c2437; }
 
-#slot-labels {
-  grid-row: 2;
-  grid-column: 1;
-  align-self: end;
-  display: flex;
-  justify-content: center;
-  gap: 8px;
+/* Stats row */
+.panel .row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.panel .stat .label { color: var(--muted); font-size: 12px; }
+.panel .stat .value { font-weight: 700; }
+
+/* Leaderboard */
+#leaderboard-list { margin: 0; padding: 0 0 0 18px; }
+#leaderboard-list li { margin: 6px 0; }
+
+/* Slot footer */
+#slot-footer {
+  display: flex; align-items: center; justify-content: center;
   pointer-events: none;
+}
+#slot-labels {
+  display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
 }
 .slot-label {
   background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.18);
+  border: 1px solid rgba(255,255,255,0.16);
   color: #e7edf4;
   padding: 4px 8px;
-  border-radius: 8px;
+  border-radius: 10px;
   font-size: 12px;
-  min-width: 40px;
+  min-width: 44px;
   text-align: center;
 }
 
-@media (max-width: 900px) {
-  #overlay {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr auto;
-  }
-  #leaderboard {
-    grid-column: 1;
-  }
-  #slot-labels {
-    grid-column: 1;
-  }
+/* Responsive vertical-first */
+@media (min-aspect-ratio: 9/16) {
+  /* Wider screens: clamp overlay width for readable HUD (still vertical playfield) */
+  #overlay { max-width: 520px; margin: 0 auto; left: 0; right: 0; }
 }

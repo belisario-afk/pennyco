@@ -1,4 +1,4 @@
-// ESM Utils for Plinkoo
+// ESM Utilities for Plinkoo
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 
 /**
@@ -7,7 +7,8 @@ import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 export function colorFromString(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
-    hash = str.charCodeAt(i) + ((hash << 5) - hash); // eslint-disable-line no-bitwise
+    // eslint-disable-next-line no-bitwise
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
   }
   const hue = Math.abs(hash) % 360;
   return `hsl(${hue}, 70%, 55%)`;
@@ -42,25 +43,19 @@ export async function loadAvatarTexture(url, diameter = 64) {
       finalize();
     };
     img.onerror = () => {
-      // Fallback: draw an emoji on a colored circle
-      const bg = '#1b2740';
-      ctx.fillStyle = bg;
+      // Fallback: emoji on colored circle
+      ctx.fillStyle = '#1b2740';
       ctx.beginPath();
       ctx.arc(size/2, size/2, size/2, 0, Math.PI * 2);
       ctx.closePath();
       ctx.fill();
-
       ctx.font = `${Math.floor(size * 0.6)}px serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('🎲', size/2, size/2 + 2);
+      ctx.fillText('🎯', size/2, size/2 + 2);
       finalize();
     };
-    try {
-      img.src = url || '';
-    } catch (e) {
-      img.onerror();
-    }
+    try { img.src = url || ''; } catch { img.onerror(); }
   });
 }
 
@@ -75,7 +70,7 @@ export function buildNameSprite(username) {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
 
-  ctx.font = `bold ${fontSize}px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+  ctx.font = `800 ${fontSize}px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
   const textMetrics = ctx.measureText(text);
   const w = Math.ceil(textMetrics.width) + padding * 2;
   const h = fontSize + padding * 2;
@@ -84,12 +79,12 @@ export function buildNameSprite(username) {
   canvas.height = h;
 
   // Background bubble
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
   roundRect(ctx, 0, 0, w, h, 12);
   ctx.fill();
 
   // Text
-  ctx.font = `bold ${fontSize}px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+  ctx.font = `800 ${fontSize}px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = 'white';
@@ -98,7 +93,7 @@ export function buildNameSprite(username) {
   const tex = new THREE.CanvasTexture(canvas);
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
   const sprite = new THREE.Sprite(mat);
-  const scaleFactor = 0.008; // pixels to world units
+  const scaleFactor = 0.008; // px -> world units
   sprite.scale.set(w * scaleFactor, h * scaleFactor, 1);
   sprite.userData = { username: text };
   return sprite;
@@ -116,7 +111,7 @@ function roundRect(ctx, x, y, width, height, radius) {
 }
 
 /**
- * Small confetti celebration on jackpot.
+ * Fireworks confetti
  */
 export function fireworks(canvas, durationMs = 1200) {
   const ctx = canvas.getContext('2d');
@@ -138,29 +133,93 @@ export function fireworks(canvas, durationMs = 1200) {
   let start = performance.now();
   let raf;
   const step = (t) => {
-    const dt = Math.min(32, t - start);
     start = t;
     ctx.clearRect(0, 0, W, H);
     parts.forEach(p => {
-      p.x += p.vx;
-      p.vy += p.g;
-      p.y += p.vy;
+      p.x += p.vx; p.vy += p.g; p.y += p.vy;
       ctx.fillStyle = p.color;
       ctx.fillRect(p.x, p.y, p.size, p.size);
     });
     raf = requestAnimationFrame(step);
   };
   raf = requestAnimationFrame(step);
-  setTimeout(() => {
-    cancelAnimationFrame(raf);
-    ctx.clearRect(0, 0, W, H);
-  }, durationMs);
+  setTimeout(() => { cancelAnimationFrame(raf); ctx.clearRect(0,0,W,H); }, durationMs);
 }
 
-// Optional: also expose on window for any non-module code
+/* =============================== */
+/* Provably-fair RNG (seeded)      */
+/* =============================== */
+
+/**
+ * xmur3 32-bit hash of a string, returns a seed function.
+ */
+function xmur3(str) {
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return function() {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    return (h ^= h >>> 16) >>> 0;
+  };
+}
+
+/**
+ * mulberry32 RNG from a 32-bit seed
+ */
+function mulberry32(a) {
+  return function() {
+    let t = a += 0x6D2B79F5;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Create a seeded RNG from a string seed (e.g., Firebase event id + username).
+ */
+export function createSeededRNG(seedString) {
+  const s = xmur3(seedString)();
+  return mulberry32(s);
+}
+
+/**
+ * Compute binomial distribution for n rows (p=0.5), returning probability array of length n+1.
+ */
+export function binomialProbabilities(n) {
+  const probs = [];
+  const denom = Math.pow(2, n);
+  let c = 1; // C(n,0)
+  for (let k = 0; k <= n; k++) {
+    if (k > 0) {
+      c = (c * (n - k + 1)) / k;
+    }
+    probs.push(c / denom);
+  }
+  return probs;
+}
+
+/**
+ * Compute RTP (expected multiplier) from multipliers and binomial probabilities.
+ */
+export function computeRTP(multipliers) {
+  const n = multipliers.length - 1;
+  const probs = binomialProbabilities(n);
+  let rtp = 0;
+  for (let i = 0; i <= n; i++) rtp += probs[i] * multipliers[i];
+  return rtp; // as "x" (e.g., 0.96 means 96%)
+}
+
+// Optional: expose some for debugging
 window.PlinkoUtils = {
   colorFromString,
   loadAvatarTexture,
   buildNameSprite,
   fireworks,
+  createSeededRNG,
+  binomialProbabilities,
+  computeRTP
 };

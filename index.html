@@ -1,68 +1,103 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
   <title>Plinkoo — TikTok Live Plinko</title>
   <link rel="stylesheet" href="./style.css"/>
 
-  <!-- Favicon to avoid 404 -->
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%235df2d6'/%3E%3Ctext x='32' y='39' font-size='28' text-anchor='middle' fill='%230b0f1a' font-family='Arial'%3EP%3C/text%3E%3C/svg%3E">
-</head>
-<body>
-  <div id="app">
-    <div id="game-container">
-      <canvas id="confetti-canvas"></canvas>
-      <div id="overlay">
-        <div id="top-bar">
-          <div class="branding">
-            <span class="logo">Plinkoo</span>
-            <span class="live">@lmohss</span>
-          </div>
-          <div id="admin-panel">
-            <details>
-              <summary>Admin</summary>
-              <div class="admin-content">
-                <form id="admin-form" onsubmit="return false;">
-                  <label>
-                    Admin Token:
-                    <input id="admin-token" type="password" placeholder="Enter admin token" autocomplete="off" />
-                  </label>
-                  <label>
-                    Backend URL (Render):
-                    <input id="backend-url" type="url" placeholder="https://your-relay.onrender.com" autocomplete="off" />
-                  </label>
-                  <div class="admin-actions">
-                    <button id="btn-save-admin" type="button">Save Admin Settings</button>
-                    <button id="btn-reset-leaderboard" type="button">Reset Leaderboard</button>
-                    <button id="btn-toggle-spawn" type="button">Toggle Spawn</button>
-                    <button id="btn-simulate" type="button">Simulate Drop</button>
-                  </div>
-                </form>
-                <div class="admin-status">
-                  <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
-                </div>
-              </div>
-            </details>
-          </div>
-        </div>
+  <!-- Favicon -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%235df2d6'/%3E%3Cstop offset='1' stop-color='%23a88bff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='32' cy='32' r='30' fill='url(%23g)'/%3E%3Ctext x='32' y='39' font-size='28' text-anchor='middle' fill='%230b0f1a' font-family='Arial, Helvetica, sans-serif'%3EP%3C/text%3E%3C/svg%3E">
 
-        <div id="leaderboard">
-          <h3>Leaderboard</h3>
-          <ol id="leaderboard-list"></ol>
-        </div>
-
-        <div id="slot-labels"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Order matters: firebase (classic) first, modules after -->
+  <!-- Firebase REST (classic, attaches window.FirebaseREST) -->
   <script src="./js/firebase.js"></script>
-  <!-- Matter.js UMD is fine -->
+  <!-- Matter.js UMD -->
   <script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>
   <!-- ESM modules -->
   <script type="module" src="./js/utils.js"></script>
   <script type="module" src="./js/game.js"></script>
+</head>
+<body>
+  <div id="app">
+    <div id="game-container" class="vertical">
+      <canvas id="confetti-canvas"></canvas>
+
+      <div id="overlay">
+        <header id="top-bar">
+          <div class="brand">
+            <div class="mark">Plinkoo</div>
+            <div class="live-tag">@lmohss</div>
+          </div>
+
+          <div id="status">
+            <span>Spawn:</span>
+            <strong id="spawn-status">unknown</strong>
+          </div>
+        </header>
+
+        <section id="hud">
+          <div class="panel">
+            <div class="row">
+              <div class="col">
+                <div class="stat">
+                  <div class="label">Rows</div>
+                  <div class="value">12</div>
+                </div>
+                <div class="stat">
+                  <div class="label">RTP</div>
+                  <div class="value" id="rtp-label">~96%</div>
+                </div>
+                <div class="stat">
+                  <div class="label">Seed</div>
+                  <div class="value" id="seed-label">—</div>
+                </div>
+              </div>
+              <div class="col">
+                <div class="stat">
+                  <div class="label">Bet</div>
+                  <div class="value">100 pts</div>
+                </div>
+                <div class="stat">
+                  <div class="label">Volatility</div>
+                  <div class="value">Medium</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel leaderboard">
+            <h3>Leaderboard</h3>
+            <ol id="leaderboard-list"></ol>
+          </div>
+
+          <div class="panel admin">
+            <details>
+              <summary>Admin</summary>
+              <form id="admin-form" onsubmit="return false;">
+                <label>
+                  Backend URL
+                  <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" />
+                </label>
+                <label>
+                  Admin Token
+                  <input id="admin-token" type="password" placeholder="Token" autocomplete="off"/>
+                </label>
+                <div class="buttons">
+                  <button type="button" id="btn-save-admin">Save</button>
+                  <button type="button" id="btn-simulate">Simulate Drop</button>
+                  <button type="button" id="btn-toggle-spawn">Toggle Spawn</button>
+                  <button type="button" id="btn-reset-leaderboard" class="danger">Reset Leaderboard</button>
+                </div>
+              </form>
+            </details>
+          </div>
+        </section>
+
+        <footer id="slot-footer">
+          <div id="slot-labels"></div>
+        </footer>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
