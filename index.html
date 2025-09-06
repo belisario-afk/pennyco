@@ -26,12 +26,9 @@
 </head>
 <body>
   <div id="app">
-    <!-- Vibrance animated overlays -->
-    <div id="vibe-bg"></div>
-    <div id="vibe-waves"></div>
-
     <div id="game-container">
       <canvas id="fx-canvas"></canvas>
+      <div id="vibrance-overlay" aria-hidden="true"></div>
 
       <div id="board-frame" aria-hidden="true"></div>
       <div id="board-divider" aria-hidden="true"></div>
@@ -69,64 +66,76 @@
             </div>
           </div>
 
-          <!-- NEW: More comprehensible commands panel -->
-          <section id="commands-panel" aria-label="Commands List">
-            <div class="cmd-header drag-handle" title="Drag to move panel">
-              <span class="cmd-title">COMMANDS & GIFTS</span>
-              <span class="cmd-sub">Earn points • Redeem crates • Gifts drop balls</span>
+          <!-- REWORKED COMMANDS PANEL -->
+          <section id="commands-panel" aria-label="Commands / How To Play">
+            <div class="cmd-title drag-handle" title="Drag to move panel">
+              COMMANDS
+              <span class="cmd-pulse"></span>
             </div>
 
-            <ul class="cmd-list" role="list">
-              <li class="cmd-row tier-t1">
-                <span class="cmd-key">!t1</span>
-                <span class="cmd-arrow">→</span>
-                <span class="cmd-desc"><strong>Redeem 1,000 points</strong> (Starter Crate)</span>
+            <ul class="command-list">
+              <li class="cmd-row tier t1">
+                <span class="c-badge">!t1</span>
+                <span class="c-text">
+                  Redeem Tier 1 Mystery
+                  <span class="c-sub">Costs 1,000 points</span>
+                </span>
               </li>
-              <li class="cmd-row tier-t2">
-                <span class="cmd-key">!t2</span>
-                <span class="cmd-arrow">→</span>
-                <span class="cmd-desc"><strong>Redeem 5,000 points</strong> (Elite Crate)</span>
+              <li class="cmd-row tier t2">
+                <span class="c-badge">!t2</span>
+                <span class="c-text">
+                  Redeem Tier 2 Mystery
+                  <span class="c-sub">Costs 5,000 points</span>
+                </span>
               </li>
-              <li class="cmd-row tier-t3">
-                <span class="cmd-key">!t3</span>
-                <span class="cmd-arrow">→</span>
-                <span class="cmd-desc"><strong>Redeem 10,000 points</strong> (Ultimate Crate)</span>
+              <li class="cmd-row tier t3">
+                <span class="c-badge">!t3</span>
+                <span class="c-text">
+                  Redeem Tier 3 Mystery
+                  <span class="c-sub">Costs 10,000 points</span>
+                </span>
               </li>
-              <li class="cmd-row gift-row">
-                <span class="cmd-key gift-key">Gift</span>
-                <span class="cmd-arrow">=</span>
-                <span class="cmd-desc"><strong>Drop a ball</strong> (any supported TikTok gift)</span>
+              <li class="cmd-sep"></li>
+              <li class="cmd-row gift">
+                <span class="c-badge gift-badge">GIFT</span>
+                <span class="c-text">
+                  Send a TikTok Gift
+                  <span class="c-sub">Each gift = Drop 1 ball</span>
+                </span>
+              </li>
+              <li class="gift-icons-row">
+                <div class="gift-icon">
+                  <img src="./assets/gifts/rose.png" alt="Rose Gift">
+                  <span>Rose</span>
+                </div>
+                <div class="gift-icon">
+                  <img src="./assets/gifts/heart.png" alt="Heart Gift">
+                  <span>Heart</span>
+                </div>
+                <div class="gift-icon">
+                  <img src="./assets/gifts/lion.png" alt="Lion Gift">
+                  <span>Lion</span>
+                </div>
+                <div class="gift-icon">
+                  <img src="./assets/gifts/universe.png" alt="Universe Gift">
+                  <span>Universe</span>
+                </div>
+              </li>
+              <li class="cmd-sep subtle"></li>
+              <li class="cmd-row multi">
+                <span class="c-badge">!multi N</span>
+                <span class="c-text">
+                  Multi Drop (1–5)
+                  <span class="c-sub">Use before a gift or drop command</span>
+                </span>
               </li>
             </ul>
 
-            <div class="gift-strip-label">TikTok Gifts (Examples)</div>
-            <div class="gift-strip" aria-label="TikTok gifts that trigger drops">
-              <!-- Example gift items (clickable in dev mode) -->
-              <div class="gift-item" data-gift="rose" title="Rose Gift">
-                <img src="assets/gifts/rose.png" alt="Rose gift" onerror="this.dataset.fallback='🌹';this.replaceWith(fallbackEmoji(this));">
-                <span>Rose</span>
-              </div>
-              <div class="gift-item" data-gift="heart" title="Heart Gift">
-                <img src="assets/gifts/heart.png" alt="Heart gift" onerror="this.dataset.fallback='💖';this.replaceWith(fallbackEmoji(this));">
-                <span>Heart</span>
-              </div>
-              <div class="gift-item" data-gift="star" title="Star Gift">
-                <img src="assets/gifts/star.png" alt="Star gift" onerror="this.dataset.fallback='⭐';this.replaceWith(fallbackEmoji(this));">
-                <span>Star</span>
-              </div>
-              <div class="gift-item" data-gift="fire" title="Fire Gift">
-                <img src="assets/gifts/fire.png" alt="Fire gift" onerror="this.dataset.fallback='🔥';this.replaceWith(fallbackEmoji(this));">
-                <span>Fire</span>
-              </div>
-              <div class="gift-item" data-gift="gg" title="GG Gift">
-                <img src="assets/gifts/gg.png" alt="GG gift" onerror="this.dataset.fallback='🎉';this.replaceWith(fallbackEmoji(this));">
-                <span>GG</span>
-              </div>
+            <div class="cmd-footer-hint">
+              Panel position & size saved • Drag the title • Scroll to resize
             </div>
 
-            <div class="cmd-foot">
-              <span class="hint">Panel is draggable • Position saved locally • Gifts auto-detect in live chat</span>
-            </div>
+            <div class="panel-resize-handle" title="Scroll to scale crates / Drag to move panel"></div>
           </section>
         </div>
 
@@ -202,15 +211,6 @@
     </div>
   </div>
 
-  <script>
-    // inline helper for gift image fallback (kept tiny)
-    function fallbackEmoji(img){
-      const span=document.createElement('span');
-      span.className='gift-fallback';
-      span.textContent=img.dataset.fallback||'🎁';
-      return span;
-    }
-  </script>
   <script src="./js/firebase.js"></script>
   <script type="module" src="./js/utils.js"></script>
   <script type="module" src="./js/rewardModel.js"></script>
