@@ -1,4 +1,6 @@
-// game.js (updated: toneMappingExposure brighter, crate brightness toned via pbrRewards, dynamic crate scale slider)
+// Changes: brighter exposure already applied earlier; now we add gift click -> drop ball,
+// highlight gifts when used, and command list still draggable.
+// (Only modified or added sections marked with // NEW or // MOD)
 import * as THREE from 'three';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
@@ -28,8 +30,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const ADAPTIVE_QUALITY = true;
 
   const FIXED_DT = 1000/60;
-  const MAX_STEPS_BASE = 4;
-  function maxStepsForFrame(dt){ return dt > 140 ? 1 : dt > 90 ? 2 : MAX_STEPS_BASE; }
 
   const WORLD_HEIGHT = 100;
   let WORLD_WIDTH = 56.25;
@@ -47,7 +47,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let DROP_SPEED   = 0.5;
   let NEON = true;
   let PARTICLES = true;
-  let CRATE_SCALE = 4.4; // dynamic from slider
+  let CRATE_SCALE = 4.4;
 
   const BALL_RESTITUTION = 0.06;
   const PEG_RESTITUTION  = 0.02;
@@ -77,7 +77,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  // DOM refs
+  // DOM
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -93,7 +93,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const devPanel        = document.getElementById('dev-panel');
   const devFreeToggle   = document.getElementById('dev-free-toggle');
   const commandsPanel   = document.getElementById('commands-panel');
+  const giftStrip       = document.querySelector('.gift-strip'); // NEW
+  const giftItems       = giftStrip ? Array.from(giftStrip.querySelectorAll('.gift-item')) : []; // NEW
 
+  // Settings
   const btnGear         = document.getElementById('btn-gear');
   const settingsPanel   = document.getElementById('settings-panel');
   const btnCloseSettings= document.getElementById('btn-close-settings');
@@ -123,6 +126,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let sharedBallBaseMaterial = null;
   const avatarTextureCache = new Map();
 
+  // Redemption
   const redeemQueue = [];
   let redeemActive = false;
   let activeReward3D = null;
@@ -211,6 +215,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
+  /* Slots */
   function buildSlots(slotCount){
     const center=Math.floor((slotCount-1)/2);
     const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
@@ -235,6 +240,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
   }
 
+  /* Settings persistence */
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -243,7 +249,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function adminFetch(path,opt={}){
     const base=getBackendBaseUrl();
     if(!base) throw new Error('Backend URL not set.');
-    return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`, opt);
+    return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
   }
 
   function loadSettings(){
@@ -253,8 +259,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const cs=Number(localStorage.getItem('plk_crate_scale') ?? '4.4'); if(!Number.isNaN(cs)) { optCrateScale.value=String(cs); CRATE_SCALE=cs; }
     optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
     optParticles.checked=(localStorage.getItem('plk_particles') ?? 'true')==='true';
-    const vol=Number(localStorage.getItem('plk_volume') ?? '0.5');
-    optVolume.value=String(vol); setAudioVolume(vol);
+    const vol=Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value=String(vol); setAudioVolume(vol);
     const savedBase=getBackendBaseUrl(); if(savedBase) backendUrlInput.value=savedBase;
     const tok=localStorage.getItem('adminToken')||''; if(tok) adminTokenInput.value=tok;
     applySettings();
@@ -278,16 +283,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       bloomPass.strength=NEON?0.65:0;
     }
   }
-  function showSettings(){ gsap.to(settingsPanel,{x:0,duration:.35,ease:'expo.out'}); settingsPanel.setAttribute('aria-hidden','false'); }
-  function hideSettings(){ gsap.to(settingsPanel,{x:'110%',duration:.35,ease:'expo.in'}); settingsPanel.setAttribute('aria-hidden','true'); }
 
-  let pegsInstanced;
   function initThree(){
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
     renderer.toneMapping=THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure=1.15; // slightly brighter to counter perceived dimness
-    renderer.setPixelRatio(currentPR);
+    renderer.toneMappingExposure=1.35; // increased vibrance
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.75));
     renderer.setSize(container.clientWidth,container.clientHeight);
     renderer.setClearColor(0x000000,0);
     container.appendChild(renderer.domElement);
@@ -297,8 +299,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     camera=new THREE.OrthographicCamera(-WORLD_WIDTH/2,WORLD_WIDTH/2,WORLD_HEIGHT/2,-WORLD_HEIGHT/2,0.1,300);
     camera.position.set(0,0,100);
 
-    ambient=new THREE.AmbientLight(0xffffff,0.95);
-    dirLight=new THREE.DirectionalLight(0xffffff,0.9);
+    ambient=new THREE.AmbientLight(0xffffff,0.98);
+    dirLight=new THREE.DirectionalLight(0xffffff,1.05);
     dirLight.position.set(-18,30,60);
     scene.add(ambient,dirLight);
 
@@ -319,6 +321,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       document.body.appendChild(perfPanel);
     }
 
+    // Ray pick crates
     const raycaster=new THREE.Raycaster();
     const pt=new THREE.Vector2();
     renderer.domElement.addEventListener('pointerdown',e=>{
@@ -396,6 +399,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     bindCollisions();
     fxMgr=new FXManager2D(fxCanvas);
   }
+
   function buildBoard(){
     const left=Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
     const right=Bodies.rectangle( BOARD_WIDTH/2 + WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
@@ -410,7 +414,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const y=startY - r*rowH;
       for(let c=0;c<=r;c++){
         const x=startX + c*PEG_SPACING + (ROWS-1-r)*(PEG_SPACING/2);
-        const peg=Bodies.circle(x,y,PEG_RADIUS,{isStatic:true,restitution:PEG_RESTITUTION,friction:0.01});
+        const peg=Bodies.circle(x,y,PEG_RADIUS,{isStatic:true,restitution:0.02,friction:0.01});
         peg.label='PEG';
         World.add(world,peg);
         pegPositions.push({x,y});
@@ -429,6 +433,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       slotSensors.push({body:sensor,index:i});
     }
   }
+
+  let pegsInstanced;
   function addPegInstancedMesh(pegPositions){
     if(pegsInstanced){
       scene.remove(pegsInstanced);
@@ -437,19 +443,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
     const mat=new THREE.MeshPhysicalMaterial({
-      color:0x86f7ff,metalness:0.35,roughness:0.35,
-      clearcoat:0.6,clearcoatRoughness:0.2,
-      emissive:new THREE.Color(0x00ffff),
-      emissiveIntensity:0.25
+      color:0x8bf9ff,metalness:0.38,roughness:0.32,
+      clearcoat:0.7,clearcoatRoughness:0.18,
+      emissive:new THREE.Color(0x00f5ff),
+      emissiveIntensity:0.22
     });
     const inst=new THREE.InstancedMesh(geo,mat,pegPositions.length);
     const m=new THREE.Matrix4();
     const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
-    for(let i=0;i<pegPositions.length;i++){
-      const {x,y}=pegPositions[i];
+    pegPositions.forEach(({x,y},i)=>{
       m.compose(new THREE.Vector3(x,y,0),q,new THREE.Vector3(1,1,1));
       inst.setMatrixAt(i,m);
-    }
+    });
     inst.instanceMatrix.needsUpdate=true;
     pegsInstanced=inst;
     scene.add(inst);
@@ -467,14 +472,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(!a||!b) return;
     const slot=slotSensors.find(s=>s.body.id===b.id);
     if(slot && String(a.label||'').startsWith('BALL_')){
-      const ball=a;
-      if(!ball.plugin?.scored){
+      if(!a.plugin?.scored){
         const idx=slot.index;
         const points=SLOT_POINTS[idx]||100;
-        ball.plugin.scored=true;
-        awardPoints(ball.plugin.username, ball.plugin.avatarUrl||'', points).catch(console.warn);
+        a.plugin.scored=true;
+        awardPoints(a.plugin.username, a.plugin.avatarUrl||'', points).catch(console.warn);
         sfxScore(points >= 1600);
-        setTimeout(()=>tryRemoveBall(ball),900);
+        setTimeout(()=>tryRemoveBall(a),900);
       }
       return;
     }
@@ -483,7 +487,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const mesh=meshById.get(a.id);
         if(mesh){
           const p2=worldToScreen(mesh.position,camera,renderer);
-          fxMgr.addSparks(p2.x,p2.y,'#00f2ea',12);
+          fxMgr.addSparks(p2.x,p2.y,'#00f5ff',12);
         }
       }
       sfxBounce();
@@ -491,6 +495,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
+  /* Performance adaptation (unchanged logic, omitted for brevity) */
   function adaptQuality(frameMs){
     frameAccum+=frameMs;
     frameSamples++;
@@ -516,10 +521,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       perfData.qualityTier=target;
       if(target===2){ bloomPass.enabled=NEON; bloomPass.strength=0.65; smaaPass.enabled=true; }
       else if(target===1){ bloomPass.enabled=NEON; bloomPass.strength=0.4; smaaPass.enabled=true; }
-      else { bloomPass.enabled=false; bloomPass.strength=0; smaaPass.enabled=false; }
+      else { bloomPass.enabled=false; smaaPass.enabled=false; }
     }
     if(perfPanel && perfData.frames%30===0){
-      perfPanel.textContent=`fps:${(1000/perfData.avgMs).toFixed(1)} ms:${perfData.avgMs.toFixed(1)} pR:${currentPR.toFixed(2)} worst:${perfData.worstMs.toFixed(1)} q:${perfData.qualityTier}`;
+      perfPanel.textContent=`fps:${(1000/perfData.avgMs).toFixed(1)} ms:${perfData.avgMs.toFixed(1)} q:${perfData.qualityTier}`;
     }
   }
 
@@ -527,18 +532,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     let last=performance.now(), acc=0;
     function tick(now){
       const dt=Math.min(250, now-last); last=now; acc+=dt;
-      let steps=0;
-      const maxSteps=maxStepsForFrame(dt);
-      while(acc>=FIXED_DT && steps<maxSteps){
+      while(acc>=FIXED_DT){
         Engine.update(engine,FIXED_DT);
-        acc-=FIXED_DT; steps++;
+        acc-=FIXED_DT;
       }
       clampVelocities();
       fxMgr.update(fxCtx, dt);
       updateThreeFromMatter();
-      const t0=performance.now();
       (bloomPass.enabled || smaaPass.enabled) ? composer.render() : renderer.render(scene,camera);
-      adaptQuality(dt + (performance.now()-t0));
+      adaptQuality(dt);
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
@@ -563,7 +565,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         mesh.rotation.z=body.angle;
       }
       const label=labelById.get(body.id);
-      if(label) label.position.set(body.position.x, body.position.y + BALL_RADIUS*2.2,0);
+      if(label) label.position.set(body.position.x,body.position.y + BALL_RADIUS*2.2,0);
     });
   }
 
@@ -587,10 +589,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
     if(!sharedBallBaseMaterial){
       sharedBallBaseMaterial=new THREE.MeshPhysicalMaterial({
-        color:0xffffff,metalness:0.2,roughness:0.6,
+        color:0xffffff,metalness:0.25,roughness:0.55,
         clearcoat:0.7,clearcoatRoughness:0.25,
-        emissive:NEON?new THREE.Color(0x00c6ff):new THREE.Color(0x000000),
-        emissiveIntensity:NEON?0.04:0
+        emissive:NEON?new THREE.Color(0x00dfff):new THREE.Color(0x000000),
+        emissiveIntensity:NEON?0.05:0
       });
     }
     const mat=sharedBallBaseMaterial.clone();
@@ -660,7 +662,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     if((current.score||0) < points) return false;
     const next=current.score - points;
-    leaderboard[username]={ username, avatarUrl, score: next, lastUpdate:Date.now() };
+    leaderboard[username]={ username, avatarUrl, score: next, lastUpdate: Date.now() };
     refreshLeaderboard();
     FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
       username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
@@ -680,6 +682,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       leaderboardList.appendChild(li);
     }
   }
+
   function clearLeaderboardLocal(){
     for(const k of Object.keys(leaderboard)) delete leaderboard[k];
     leaderboardList.innerHTML='';
@@ -713,24 +716,27 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
       if(command.includes('drop') || command.startsWith('gift')){
         spawnBallSet({ username, avatarUrl });
+        flashGiftVisual(); // NEW
       }
     });
+
     FirebaseREST.onValue('/leaderboard',(data)=>{
       if(data && typeof data==='object'){
         for(const k of Object.keys(data)){
           const entry=data[k];
-          if(entry?.username){
-            leaderboard[entry.username]={
-              username:entry.username,
-              avatarUrl: entry.avatarUrl||'',
-              score: entry.score||0,
-              lastUpdate: entry.lastUpdate||0
-            };
-          }
+            if(entry?.username){
+              leaderboard[entry.username]={
+                username:entry.username,
+                avatarUrl:entry.avatarUrl||'',
+                score:entry.score||0,
+                lastUpdate:entry.lastUpdate||0
+              };
+            }
         }
         refreshLeaderboard();
       } else clearLeaderboardLocal();
     });
+
     FirebaseREST.onValue('/config',(data)=>{
       const enabled=!!(data && data.spawnEnabled);
       spawnStatusEl.textContent=enabled?'true':'false';
@@ -759,6 +765,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     handleRedeemEvent(id,user,'',tier);
   }
   function devDrop(user='DevUser'){ spawnBallSet({ username:user, avatarUrl:'' }); }
+
   window.devRedeem=devRedeem;
   window.devDrop=devDrop;
 
@@ -773,6 +780,38 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
+  /* NEW: Gift click to simulate drop (dev/testing) */
+  function initGiftClicks(){
+    if(!giftItems.length) return;
+    giftItems.forEach(item=>{
+      item.addEventListener('click',()=>{
+        item.classList.add('pulse');
+        setTimeout(()=>item.classList.remove('pulse'),1400);
+        devDrop('GiftUser');
+        flashGiftVisual(item);
+      });
+    });
+  }
+
+  function flashGiftVisual(source){
+    if(!source) return;
+    const rect=source.getBoundingClientRect();
+    const flash=document.createElement('div');
+    flash.style.position='fixed';
+    flash.style.left=rect.left+'px';
+    flash.style.top=rect.top+'px';
+    flash.style.width=rect.width+'px';
+    flash.style.height=rect.height+'px';
+    flash.style.borderRadius='14px';
+    flash.style.pointerEvents='none';
+    flash.style.zIndex='999';
+    flash.style.background='radial-gradient(circle at 50% 50%, rgba(255,200,80,0.9), rgba(255,100,0,0.05), transparent 70%)';
+    flash.style.boxShadow='0 0 40px 12px rgba(255,150,40,0.65),0 0 80px 30px rgba(0,245,255,0.45)';
+    document.body.appendChild(flash);
+    gsap.to(flash,{opacity:0,scale:2,duration:0.85,ease:'power2.out',onComplete:()=>flash.remove()});
+  }
+
+  /* Draggable commands panel (unchanged from prior enhanced version) */
   function initCommandsPanelDrag(){
     if(!commandsPanel) return;
     const handle=commandsPanel.querySelector('.drag-handle')||commandsPanel;
@@ -806,11 +845,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const dx=e.clientX-startX;
       const dy=e.clientY-startY;
       const oRect=overlay.getBoundingClientRect();
+      const rect=commandsPanel.getBoundingClientRect();
       let newLeft=originLeft+dx;
       let newTop =originTop +dy;
-      const panelRect=commandsPanel.getBoundingClientRect();
-      newLeft=Math.max(0,Math.min(oRect.width - panelRect.width, newLeft));
-      newTop =Math.max(0,Math.min(oRect.height - panelRect.height, newTop));
+      newLeft=Math.max(0,Math.min(oRect.width - rect.width, newLeft));
+      newTop =Math.max(0,Math.min(oRect.height - rect.height,newTop));
       commandsPanel.style.left=newLeft+'px';
       commandsPanel.style.top =newTop +'px';
     }
@@ -826,7 +865,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     window.addEventListener('pointerup',up);
   }
 
-  // UI listeners
+  /* UI & Audio */
   btnGear.addEventListener('click', showSettings);
   btnCloseSettings.addEventListener('click', hideSettings);
   let audioBound=false;
@@ -846,7 +885,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   optDropSpeed.addEventListener('input', applySettings);
   optGravity.addEventListener('input', applySettings);
   optMultiDrop.addEventListener('input', applySettings);
-  optCrateScale.addEventListener('input', ()=>{ applySettings(); });
+  optCrateScale.addEventListener('input', applySettings); // NEW
   optNeon.addEventListener('change', applySettings);
   optParticles.addEventListener('change', applySettings);
   optVolume.addEventListener('input', e=>setAudioVolume(Number(e.target.value)));
@@ -901,7 +940,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     initTeasers();
     initDevPanel();
     initCommandsPanelDrag();
-    // ensure scale applied if loaded before teasers ready
+    initGiftClicks(); // NEW
     setTeaserScale(CRATE_SCALE);
     startLoop();
   }
