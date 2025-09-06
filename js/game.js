@@ -1,6 +1,4 @@
-// Changes: brighter exposure already applied earlier; now we add gift click -> drop ball,
-// highlight gifts when used, and command list still draggable.
-// (Only modified or added sections marked with // NEW or // MOD)
+// Game modifications: added vibrance pulse (bloom modulation), parallax camera motion, vibrance slider, increased exposure, crate scale integration (already), brighter ambience.
 import * as THREE from 'three';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
@@ -30,9 +28,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const ADAPTIVE_QUALITY = true;
 
   const FIXED_DT = 1000/60;
+  const MAX_STEPS_BASE = 4;
+  function maxStepsForFrame(dt){ return dt > 140 ? 1 : dt > 90 ? 2 : MAX_STEPS_BASE; }
 
   const WORLD_HEIGHT = 100;
   let WORLD_WIDTH = 56.25;
+
   let BOARD_HEIGHT = WORLD_HEIGHT * 0.82;
   let BOARD_WIDTH  = 0;
   let PEG_SPACING  = 4.2;
@@ -48,6 +49,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let NEON = true;
   let PARTICLES = true;
   let CRATE_SCALE = 4.4;
+  let VIBRANCE_PULSE = 0.4;
 
   const BALL_RESTITUTION = 0.06;
   const PEG_RESTITUTION  = 0.02;
@@ -67,7 +69,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const dynamicBodies = new Set();
   const meshById = new Map();
   const labelById = new Map();
-
   const leaderboard = {};
   const processedEvents = new Set();
   const processedRedemptions = new Set();
@@ -93,8 +94,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const devPanel        = document.getElementById('dev-panel');
   const devFreeToggle   = document.getElementById('dev-free-toggle');
   const commandsPanel   = document.getElementById('commands-panel');
-  const giftStrip       = document.querySelector('.gift-strip'); // NEW
-  const giftItems       = giftStrip ? Array.from(giftStrip.querySelectorAll('.gift-item')) : []; // NEW
 
   // Settings
   const btnGear         = document.getElementById('btn-gear');
@@ -106,6 +105,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const optCrateScale   = document.getElementById('opt-crate-scale');
   const optNeon         = document.getElementById('opt-neon');
   const optParticles    = document.getElementById('opt-particles');
+  const optVibrance     = document.getElementById('opt-vibrance');
   const optVolume       = document.getElementById('opt-volume');
   const adminTokenInput = document.getElementById('admin-token');
   const backendUrlInput = document.getElementById('backend-url');
@@ -117,6 +117,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
   devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
+  // Perf
   let perfPanel, perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
   const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
   let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
@@ -126,13 +127,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let sharedBallBaseMaterial = null;
   const avatarTextureCache = new Map();
 
-  // Redemption
   const redeemQueue = [];
   let redeemActive = false;
   let activeReward3D = null;
   let activeRewardDisposeFn = null;
   let activeRedemptionCrate = null;
 
+  /* Redemption queue & model handling -------------------------------- */
   function enqueueRedemption(evId,tier,username,avatarUrl){
     redeemQueue.push({evId,tier,username,avatarUrl});
     runNextRedemption();
@@ -142,9 +143,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const item=redeemQueue.shift();
     if(!item) return;
     redeemActive=true;
-    playRedemptionAnimation(item).then(()=>{ redeemActive=false; runNextRedemption(); });
+    playRedemptionAnimation(item).then(()=>{redeemActive=false;runNextRedemption();});
   }
-
   async function prepare3DModel(){
     try{ await ensureRewardModelLoaded(); return true; }catch{ return false; }
   }
@@ -171,7 +171,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         x:activeReward3D.scale.x*0.01,
         y:activeReward3D.scale.y*0.01,
         z:activeReward3D.scale.z*0.01,
-        duration:.35,ease:'power2.in',
+        duration:.35,
+        ease:'power2.in',
         onComplete:()=>{
           if(activeReward3D) scene.remove(activeReward3D);
           if(activeRewardDisposeFn) activeRewardDisposeFn();
@@ -180,42 +181,33 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       });
     }
   }
-
   function playRedemptionAnimation({evId,tier,username,avatarUrl}){
     return new Promise(async resolve=>{
       const hud=document.createElement('div');
       hud.className=`redeem-user-card tier-${tier}`;
-      hud.innerHTML=`
-        <img class="redeem-ava" src="${avatarUrl||''}" alt="">
-        <div class="redeem-name">@${username}</div>
-        <div class="redeem-tier-label">${REWARD_NAMES[tier]} • -${REWARD_COSTS[tier]||0}</div>
-      `;
+      hud.innerHTML=`<img class="redeem-ava" src="${avatarUrl||''}" alt=""><div class="redeem-name">@${username}</div><div class="redeem-tier-label">${REWARD_NAMES[tier]} • -${REWARD_COSTS[tier]||0}</div>`;
       redeemLayer.appendChild(hud);
       gsap.to(hud,{opacity:1,y:0,scale:1,duration:.55,ease:'back.out(1.6)'});
-
-      activeRedemptionCrate = createRedemptionCrate(tier);
+      activeRedemptionCrate=createRedemptionCrate(tier);
       activeRedemptionCrate.position.set(0,WORLD_HEIGHT*0.1,10);
       scene.add(activeRedemptionCrate);
       animateCrateEntrance(activeRedemptionCrate, gsap);
-
-      const modelLoaded = await prepare3DModel().catch(()=>false);
+      const modelLoaded=await prepare3DModel().catch(()=>false);
       setTimeout(async ()=>{
         await openCrate(activeRedemptionCrate, gsap);
         if(modelLoaded) attachReward3D(tier);
-      }, 850);
-
+      },850);
       setTimeout(()=>{
-        gsap.to(hud,{opacity:0,y:20,scale:0.9,duration:.45,ease:'power1.in',
-          onComplete:()=>redeemLayer.removeChild(hud)});
+        gsap.to(hud,{opacity:0,y:24,scale:0.85,duration:.45,ease:'power1.in',onComplete:()=>redeemLayer.removeChild(hud)});
         detachReward3D();
         disposeRedemptionCrate(activeRedemptionCrate, gsap);
         activeRedemptionCrate=null;
         resolve();
-      }, 4200);
+      },4200);
     });
   }
 
-  /* Slots */
+  /* Slots ----------------------------------------------------------- */
   function buildSlots(slotCount){
     const center=Math.floor((slotCount-1)/2);
     const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
@@ -237,10 +229,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       div.innerHTML=`<span class="x">x</span><span class="val">${m}</span>`;
       slotLabelsEl.appendChild(div);
     });
-    trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
+    trayDividers.style.setProperty('--slot-width',`${framePx.width/slotCount}px`);
   }
 
-  /* Settings persistence */
+  /* Backend / settings ---------------------------------------------- */
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -253,13 +245,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   function loadSettings(){
-    const g=Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value=String(g);
-    const ds=Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value=String(ds);
-    const md=Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value=String(md);
-    const cs=Number(localStorage.getItem('plk_crate_scale') ?? '4.4'); if(!Number.isNaN(cs)) { optCrateScale.value=String(cs); CRATE_SCALE=cs; }
+    const g = Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value=String(g);
+    const ds= Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value=String(ds);
+    const md= Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value=String(md);
+    const cs= Number(localStorage.getItem('plk_crate_scale') ?? '4.4'); if(!Number.isNaN(cs)) { optCrateScale.value=String(cs); CRATE_SCALE=cs; }
+    const vb= Number(localStorage.getItem('plk_vibrance') ?? '0.4'); if(!Number.isNaN(vb)) { optVibrance.value=String(vb); VIBRANCE_PULSE=vb; }
     optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
     optParticles.checked=(localStorage.getItem('plk_particles') ?? 'true')==='true';
-    const vol=Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value=String(vol); setAudioVolume(vol);
+    const vol=Number(localStorage.getItem('plk_volume') ?? '0.5');
+    optVolume.value=String(vol); setAudioVolume(vol);
     const savedBase=getBackendBaseUrl(); if(savedBase) backendUrlInput.value=savedBase;
     const tok=localStorage.getItem('adminToken')||''; if(tok) adminTokenInput.value=tok;
     applySettings();
@@ -270,12 +264,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     NEON=!!optNeon.checked;
     PARTICLES=!!optParticles.checked;
     CRATE_SCALE=Number(optCrateScale.value);
+    VIBRANCE_PULSE=Number(optVibrance.value);
     localStorage.setItem('plk_dropSpeed',String(DROP_SPEED));
     localStorage.setItem('plk_gravity',String(GRAVITY_MAG));
     localStorage.setItem('plk_multiDrop',String(optMultiDrop.value));
     localStorage.setItem('plk_crate_scale',String(CRATE_SCALE));
     localStorage.setItem('plk_neon',String(NEON));
     localStorage.setItem('plk_particles',String(PARTICLES));
+    localStorage.setItem('plk_vibrance',String(VIBRANCE_PULSE));
     if(world) world.gravity.y=-Math.abs(GRAVITY_MAG);
     setTeaserScale(CRATE_SCALE);
     if(bloomPass){
@@ -284,12 +280,16 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
+  /* Three.js -------------------------------------------------------- */
+  let pegsInstanced;
+  let baseCamPos = new THREE.Vector3(0,0,100);
+  let targetCamOffset = new THREE.Vector3();
   function initThree(){
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
     renderer.toneMapping=THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure=1.35; // increased vibrance
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.75));
+    renderer.toneMappingExposure=1.25;
+    renderer.setPixelRatio(currentPR);
     renderer.setSize(container.clientWidth,container.clientHeight);
     renderer.setClearColor(0x000000,0);
     container.appendChild(renderer.domElement);
@@ -297,10 +297,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     scene=new THREE.Scene();
     computeWorldSize();
     camera=new THREE.OrthographicCamera(-WORLD_WIDTH/2,WORLD_WIDTH/2,WORLD_HEIGHT/2,-WORLD_HEIGHT/2,0.1,300);
-    camera.position.set(0,0,100);
+    camera.position.copy(baseCamPos);
 
-    ambient=new THREE.AmbientLight(0xffffff,0.98);
-    dirLight=new THREE.DirectionalLight(0xffffff,1.05);
+    ambient=new THREE.AmbientLight(0xffffff,1.05);
+    dirLight=new THREE.DirectionalLight(0xffffff,1.15);
     dirLight.position.set(-18,30,60);
     scene.add(ambient,dirLight);
 
@@ -321,15 +321,16 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       document.body.appendChild(perfPanel);
     }
 
-    // Ray pick crates
-    const raycaster=new THREE.Raycaster();
-    const pt=new THREE.Vector2();
-    renderer.domElement.addEventListener('pointerdown',e=>{
-      const rect=renderer.domElement.getBoundingClientRect();
-      pt.x=((e.clientX-rect.left)/rect.width)*2 -1;
-      pt.y= -((e.clientY-rect.top)/rect.height)*2 +1;
-      raycaster.setFromCamera(pt,camera);
-      raycastTeasers(raycaster);
+    // Pointer parallax
+    const rectTarget = { w:0,h:0 };
+    function updateRect(){ const r=renderer.domElement.getBoundingClientRect(); rectTarget.w=r.width; rectTarget.h=r.height; }
+    updateRect();
+    window.addEventListener('resize',updateRect);
+    renderer.domElement.addEventListener('pointermove', e=>{
+      const xNorm=(e.clientX / rectTarget.w)*2 - 1;
+      const yNorm=(e.clientY / rectTarget.h)*2 - 1;
+      targetCamOffset.x = xNorm * 3;
+      targetCamOffset.y = yNorm * 2;
     });
   }
 
@@ -366,18 +367,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const pTopLeft=worldToScreen(new THREE.Vector3(left,top,0),camera,renderer);
     const pBottomRight=worldToScreen(new THREE.Vector3(right,bottom,0),camera,renderer);
     const pTrayTopLeft=worldToScreen(new THREE.Vector3(left,trayTop,0),camera,renderer);
-    const frame={
-      x:Math.round(pTopLeft.x),
-      y:Math.round(pTopLeft.y),
+    const frame={x:Math.round(pTopLeft.x),y:Math.round(pTopLeft.y),
       width:Math.round(pBottomRight.x-pTopLeft.x),
-      height:Math.round(pBottomRight.y-pTopLeft.y)
-    };
-    const tray={
-      x:frame.x,
-      width:frame.width,
+      height:Math.round(pBottomRight.y-pTopLeft.y)};
+    const tray={x:frame.x,width:frame.width,
       height:Math.round(pBottomRight.y-pTrayTopLeft.y),
-      top:Math.round(pTrayTopLeft.y)
-    };
+      top:Math.round(pTrayTopLeft.y)};
     Object.assign(boardFrame.style,{left:frame.x+'px',top:frame.y+'px',width:frame.width+'px',height:frame.height+'px'});
     Object.assign(slotTray.style,{left:tray.x+'px',top:tray.top+'px',width:tray.width+'px',height:tray.height+'px'});
     boardDivider.style.left=frame.x+'px';
@@ -391,6 +386,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderSlotLabels(slotCount, frame);
   }
 
+  /* Matter ---------------------------------------------------------- */
   function initMatter(){
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
@@ -399,7 +395,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     bindCollisions();
     fxMgr=new FXManager2D(fxCanvas);
   }
-
   function buildBoard(){
     const left=Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
     const right=Bodies.rectangle( BOARD_WIDTH/2 + WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
@@ -414,7 +409,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const y=startY - r*rowH;
       for(let c=0;c<=r;c++){
         const x=startX + c*PEG_SPACING + (ROWS-1-r)*(PEG_SPACING/2);
-        const peg=Bodies.circle(x,y,PEG_RADIUS,{isStatic:true,restitution:0.02,friction:0.01});
+        const peg=Bodies.circle(x,y,PEG_RADIUS,{isStatic:true,restitution:PEG_RESTITUTION,friction:0.01});
         peg.label='PEG';
         World.add(world,peg);
         pegPositions.push({x,y});
@@ -433,8 +428,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       slotSensors.push({body:sensor,index:i});
     }
   }
-
-  let pegsInstanced;
   function addPegInstancedMesh(pegPositions){
     if(pegsInstanced){
       scene.remove(pegsInstanced);
@@ -443,23 +436,23 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
     const mat=new THREE.MeshPhysicalMaterial({
-      color:0x8bf9ff,metalness:0.38,roughness:0.32,
-      clearcoat:0.7,clearcoatRoughness:0.18,
-      emissive:new THREE.Color(0x00f5ff),
-      emissiveIntensity:0.22
+      color:0x86f7ff,metalness:0.35,roughness:0.35,
+      clearcoat:0.6,clearcoatRoughness:0.2,
+      emissive:new THREE.Color(0x00ffff),
+      emissiveIntensity:0.25
     });
     const inst=new THREE.InstancedMesh(geo,mat,pegPositions.length);
     const m=new THREE.Matrix4();
     const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
-    pegPositions.forEach(({x,y},i)=>{
+    for(let i=0;i<pegPositions.length;i++){
+      const {x,y}=pegPositions[i];
       m.compose(new THREE.Vector3(x,y,0),q,new THREE.Vector3(1,1,1));
       inst.setMatrixAt(i,m);
-    });
+    }
     inst.instanceMatrix.needsUpdate=true;
     pegsInstanced=inst;
     scene.add(inst);
   }
-
   function bindCollisions(){
     Events.on(engine,'collisionStart', ev=>{
       for(const {bodyA,bodyB} of ev.pairs){
@@ -472,13 +465,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(!a||!b) return;
     const slot=slotSensors.find(s=>s.body.id===b.id);
     if(slot && String(a.label||'').startsWith('BALL_')){
-      if(!a.plugin?.scored){
+      const ball=a;
+      if(!ball.plugin?.scored){
         const idx=slot.index;
         const points=SLOT_POINTS[idx]||100;
-        a.plugin.scored=true;
-        awardPoints(a.plugin.username, a.plugin.avatarUrl||'', points).catch(console.warn);
+        ball.plugin.scored=true;
+        awardPoints(ball.plugin.username, ball.plugin.avatarUrl||'', points).catch(console.warn);
         sfxScore(points >= 1600);
-        setTimeout(()=>tryRemoveBall(a),900);
+        setTimeout(()=>tryRemoveBall(ball),900);
       }
       return;
     }
@@ -487,7 +481,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const mesh=meshById.get(a.id);
         if(mesh){
           const p2=worldToScreen(mesh.position,camera,renderer);
-          fxMgr.addSparks(p2.x,p2.y,'#00f5ff',12);
+          fxMgr.addSparks(p2.x,p2.y,'#00f2ea',12);
         }
       }
       sfxBounce();
@@ -495,7 +489,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
-  /* Performance adaptation (unchanged logic, omitted for brevity) */
+  /* Performance & render loop -------------------------------------- */
   function adaptQuality(frameMs){
     frameAccum+=frameMs;
     frameSamples++;
@@ -507,40 +501,58 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if(avg>22 && currentPR>0.75){
         currentPR=Math.max(0.75,currentPR-0.1);
         renderer.setPixelRatio(currentPR);
-      }else if(avg<15 && currentPR<BASE_DEVICE_PR){
+      } else if(avg<15 && currentPR<BASE_DEVICE_PR){
         currentPR=Math.min(BASE_DEVICE_PR,currentPR+0.1);
         renderer.setPixelRatio(currentPR);
       }
       frameAccum=0; frameSamples=0;
     }
-    if(!ADAPTIVE_QUALITY) return;
+    if(!ADAPTIVE_QUALITY)return;
     const avg=perfData.avgMs;
     let target=2;
-    if(avg>30) target=0; else if(avg>23) target=1;
+    if(avg>30)target=0; else if(avg>23)target=1;
     if(target!==perfData.qualityTier){
       perfData.qualityTier=target;
       if(target===2){ bloomPass.enabled=NEON; bloomPass.strength=0.65; smaaPass.enabled=true; }
       else if(target===1){ bloomPass.enabled=NEON; bloomPass.strength=0.4; smaaPass.enabled=true; }
-      else { bloomPass.enabled=false; smaaPass.enabled=false; }
+      else { bloomPass.enabled=false; bloomPass.strength=0; smaaPass.enabled=false; }
     }
     if(perfPanel && perfData.frames%30===0){
-      perfPanel.textContent=`fps:${(1000/perfData.avgMs).toFixed(1)} ms:${perfData.avgMs.toFixed(1)} q:${perfData.qualityTier}`;
+      perfPanel.textContent=`fps:${(1000/perfData.avgMs).toFixed(1)} ms:${perfData.avgMs.toFixed(1)} pR:${currentPR.toFixed(2)} worst:${perfData.worstMs.toFixed(1)} q:${perfData.qualityTier}`;
     }
   }
 
+  let vibranceTime = 0;
   function startLoop(){
     let last=performance.now(), acc=0;
     function tick(now){
-      const dt=Math.min(250, now-last); last=now; acc+=dt;
-      while(acc>=FIXED_DT){
+      const dt=Math.min(250,now-last); last=now; acc+=dt;
+      let steps=0;
+      const maxSteps=maxStepsForFrame(dt);
+      while(acc>=FIXED_DT && steps<maxSteps){
         Engine.update(engine,FIXED_DT);
-        acc-=FIXED_DT;
+        acc-=FIXED_DT; steps++;
       }
       clampVelocities();
-      fxMgr.update(fxCtx, dt);
+      fxMgr.update(fxCtx,dt);
       updateThreeFromMatter();
-      (bloomPass.enabled || smaaPass.enabled) ? composer.render() : renderer.render(scene,camera);
-      adaptQuality(dt);
+
+      // Camera parallax smoothing
+      camera.position.x += (baseCamPos.x + targetCamOffset.x - camera.position.x)*0.06;
+      camera.position.y += (baseCamPos.y + targetCamOffset.y - camera.position.y)*0.06;
+
+      // Vibrance pulse
+      if(NEON){
+        vibranceTime += dt*0.001;
+        const pulse = 1 + Math.sin(vibranceTime*2.2)*0.15*VIBRANCE_PULSE;
+        bloomPass.strength = (perfData.qualityTier===0?0.35:0.55)*pulse + (NEON?0.1:0);
+        renderer.toneMappingExposure = 1.18 * (1 + 0.08*VIBRANCE_PULSE*Math.sin(vibranceTime*1.5+1));
+      }
+
+      const t0=performance.now();
+      (bloomPass.enabled || smaaPass.enabled)?composer.render():renderer.render(scene,camera);
+      adaptQuality(dt + (performance.now()-t0));
+
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
@@ -569,6 +581,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
+  /* Spawning -------------------------------------------------------- */
   function spawnBallSet({username,avatarUrl}){
     const multi=Math.max(1,Math.min(5,Number(optMultiDrop.value||1)));
     for(let i=0;i<multi;i++) spawnSingle({username,avatarUrl});
@@ -577,21 +590,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const jitter=PEG_SPACING*0.35;
     const dropX=Math.max(-BOARD_WIDTH/2+4,Math.min(BOARD_WIDTH/2-4,(Math.random()-0.5)*jitter));
     const dropY=TOP_ROW_Y + PEG_SPACING*0.8;
-    const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{
-      restitution:BALL_RESTITUTION,friction:BALL_FRICTION,frictionAir:BALL_FRICTION_AIR,density:0.0018
-    });
+    const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{restitution:BALL_RESTITUTION,friction:BALL_FRICTION,frictionAir:BALL_FRICTION_AIR,density:0.0018});
     body.label=`BALL_${username}`;
     body.plugin={username,avatarUrl,scored:false};
     World.add(world,body);
     dynamicBodies.add(body);
     Body.setVelocity(body,{x:0,y:0});
     Body.setAngularVelocity(body,0);
-
     if(!sharedBallBaseMaterial){
       sharedBallBaseMaterial=new THREE.MeshPhysicalMaterial({
-        color:0xffffff,metalness:0.25,roughness:0.55,
+        color:0xffffff,metalness:0.25,roughness:0.5,
         clearcoat:0.7,clearcoatRoughness:0.25,
-        emissive:NEON?new THREE.Color(0x00dfff):new THREE.Color(0x000000),
+        emissive:NEON?new THREE.Color(0x00c6ff):new THREE.Color(0x000000),
         emissiveIntensity:NEON?0.05:0
       });
     }
@@ -599,7 +609,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const mesh=new THREE.Mesh(sharedBallGeo,mat);
     scene.add(mesh);
     meshById.set(body.id,mesh);
-
     const sprite=buildNameSprite(username);
     scene.add(sprite);
     labelById.set(body.id,sprite);
@@ -607,10 +616,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const applyTex=async()=>{
       try{
         let prom=avatarTextureCache.get(avatarUrl||'');
-        if(!prom){
-          prom=loadAvatarTexture(avatarUrl,128);
-          avatarTextureCache.set(avatarUrl||'',prom);
-        }
+        if(!prom){ prom=loadAvatarTexture(avatarUrl,128); avatarTextureCache.set(avatarUrl||'',prom); }
         const tex=await prom;
         const live=meshById.get(body.id);
         if(live && live.material){
@@ -643,6 +649,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{}
   }
 
+  /* Points / leaderboard -------------------------------------------- */
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=(current.score||0)+points;
@@ -662,7 +669,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     if((current.score||0) < points) return false;
     const next=current.score - points;
-    leaderboard[username]={ username, avatarUrl, score: next, lastUpdate: Date.now() };
+    leaderboard[username]={ username, avatarUrl, score: next, lastUpdate:Date.now() };
     refreshLeaderboard();
     FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
       username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
@@ -682,12 +689,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       leaderboardList.appendChild(li);
     }
   }
-
   function clearLeaderboardLocal(){
     for(const k of Object.keys(leaderboard)) delete leaderboard[k];
     leaderboardList.innerHTML='';
   }
-
   function handleRedeemEvent(eventId, username, avatarUrl, tier){
     if(processedRedemptions.has(eventId)) return;
     processedRedemptions.add(eventId);
@@ -700,6 +705,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
+  /* Events ---------------------------------------------------------- */
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
@@ -716,39 +722,36 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
       if(command.includes('drop') || command.startsWith('gift')){
         spawnBallSet({ username, avatarUrl });
-        flashGiftVisual(); // NEW
       }
     });
-
     FirebaseREST.onValue('/leaderboard',(data)=>{
       if(data && typeof data==='object'){
         for(const k of Object.keys(data)){
           const entry=data[k];
-            if(entry?.username){
-              leaderboard[entry.username]={
-                username:entry.username,
-                avatarUrl:entry.avatarUrl||'',
-                score:entry.score||0,
-                lastUpdate:entry.lastUpdate||0
-              };
-            }
+          if(entry?.username){
+            leaderboard[entry.username]={
+              username:entry.username,
+              avatarUrl:entry.avatarUrl||'',
+              score:entry.score||0,
+              lastUpdate:entry.lastUpdate||0
+            };
+          }
         }
         refreshLeaderboard();
       } else clearLeaderboardLocal();
     });
-
     FirebaseREST.onValue('/config',(data)=>{
       const enabled=!!(data && data.spawnEnabled);
       spawnStatusEl.textContent=enabled?'true':'false';
       spawnStatusEl.style.color=enabled?'var(--good)':'var(--danger)';
     });
   }
-
   function sanitizeUsername(u){
     const s=String(u||'').trim();
     return s ? s.slice(0,24) : 'viewer';
   }
 
+  /* Teasers & dev panel --------------------------------------------- */
   function initTeasers(){
     initPBRTeasers({
       scene,
@@ -759,16 +762,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       initialScale: CRATE_SCALE
     });
   }
-
   function devRedeem(tier='t1', user='DevUser'){
     const id='dev_'+Date.now()+'_'+Math.random().toString(36).slice(2);
     handleRedeemEvent(id,user,'',tier);
   }
   function devDrop(user='DevUser'){ spawnBallSet({ username:user, avatarUrl:'' }); }
-
   window.devRedeem=devRedeem;
   window.devDrop=devDrop;
-
   function initDevPanel(){
     if(!devPanel) return;
     devPanel.querySelectorAll('button[data-act]').forEach(btn=>{
@@ -780,38 +780,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* NEW: Gift click to simulate drop (dev/testing) */
-  function initGiftClicks(){
-    if(!giftItems.length) return;
-    giftItems.forEach(item=>{
-      item.addEventListener('click',()=>{
-        item.classList.add('pulse');
-        setTimeout(()=>item.classList.remove('pulse'),1400);
-        devDrop('GiftUser');
-        flashGiftVisual(item);
-      });
-    });
-  }
-
-  function flashGiftVisual(source){
-    if(!source) return;
-    const rect=source.getBoundingClientRect();
-    const flash=document.createElement('div');
-    flash.style.position='fixed';
-    flash.style.left=rect.left+'px';
-    flash.style.top=rect.top+'px';
-    flash.style.width=rect.width+'px';
-    flash.style.height=rect.height+'px';
-    flash.style.borderRadius='14px';
-    flash.style.pointerEvents='none';
-    flash.style.zIndex='999';
-    flash.style.background='radial-gradient(circle at 50% 50%, rgba(255,200,80,0.9), rgba(255,100,0,0.05), transparent 70%)';
-    flash.style.boxShadow='0 0 40px 12px rgba(255,150,40,0.65),0 0 80px 30px rgba(0,245,255,0.45)';
-    document.body.appendChild(flash);
-    gsap.to(flash,{opacity:0,scale:2,duration:0.85,ease:'power2.out',onComplete:()=>flash.remove()});
-  }
-
-  /* Draggable commands panel (unchanged from prior enhanced version) */
+  /* Commands panel drag (same as previous version) ------------------ */
   function initCommandsPanelDrag(){
     if(!commandsPanel) return;
     const handle=commandsPanel.querySelector('.drag-handle')||commandsPanel;
@@ -837,19 +806,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         commandsPanel.style.left=originLeft+'px';
         commandsPanel.style.top =originTop +'px';
       }
-      commandsPanel.classList.add('dragging');
-      e.preventDefault();
+      commandsPanel.classList.add('dragging'); e.preventDefault();
     }
     function move(e){
       if(!dragging) return;
       const dx=e.clientX-startX;
       const dy=e.clientY-startY;
       const oRect=overlay.getBoundingClientRect();
-      const rect=commandsPanel.getBoundingClientRect();
+      const panelRect=commandsPanel.getBoundingClientRect();
       let newLeft=originLeft+dx;
       let newTop =originTop +dy;
-      newLeft=Math.max(0,Math.min(oRect.width - rect.width, newLeft));
-      newTop =Math.max(0,Math.min(oRect.height - rect.height,newTop));
+      newLeft=Math.max(0,Math.min(oRect.width - panelRect.width,newLeft));
+      newTop =Math.max(0,Math.min(oRect.height - panelRect.height,newTop));
       commandsPanel.style.left=newLeft+'px';
       commandsPanel.style.top =newTop +'px';
     }
@@ -865,7 +833,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     window.addEventListener('pointerup',up);
   }
 
-  /* UI & Audio */
+  /* UI & audio ------------------------------------------------------ */
   btnGear.addEventListener('click', showSettings);
   btnCloseSettings.addEventListener('click', hideSettings);
   let audioBound=false;
@@ -885,9 +853,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   optDropSpeed.addEventListener('input', applySettings);
   optGravity.addEventListener('input', applySettings);
   optMultiDrop.addEventListener('input', applySettings);
-  optCrateScale.addEventListener('input', applySettings); // NEW
+  optCrateScale.addEventListener('input', ()=>applySettings());
   optNeon.addEventListener('change', applySettings);
   optParticles.addEventListener('change', applySettings);
+  optVibrance.addEventListener('input', ()=>applySettings());
   optVolume.addEventListener('input', e=>setAudioVolume(Number(e.target.value)));
 
   btnSaveAdmin.addEventListener('click',()=>{
@@ -922,16 +891,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   btnSimulate.addEventListener('click', async ()=>{
     try{
       const name='LocalTester'+Math.floor(Math.random()*1000);
-      const res=await adminFetch('/admin/spawn',{
-        method:'POST',
-        headers:{'content-type':'application/json'},
-        body:JSON.stringify({ username:name, avatarUrl:'', command:'!drop' })
-      });
+      const res=await adminFetch('/admin/spawn',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ username:name, avatarUrl:'', command:'!drop' })});
       if(!res.ok) throw new Error();
       alert('Simulated drop sent.');
     }catch{ alert('Simulation failed.'); }
   });
 
+  /* Start ----------------------------------------------------------- */
   function start(){
     loadSettings();
     initThree();
@@ -940,7 +906,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     initTeasers();
     initDevPanel();
     initCommandsPanelDrag();
-    initGiftClicks(); // NEW
     setTeaserScale(CRATE_SCALE);
     startLoop();
   }
