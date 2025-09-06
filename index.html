@@ -94,7 +94,7 @@
               <div class="gift-hint">Send real gifts to drop balls live.</div>
             </div>
 
-            <div class="cmd-move-hint">Alt + Scroll to scale • Drag to move • Click panels to reposition</div>
+            <div class="cmd-move-hint">Alt + Scroll to scale • Drag to move • Reset to reposition</div>
             <button id="btn-reset-ui" class="btn tiny-reset" type="button">Reset Panel Position</button>
           </section>
         </div>
@@ -116,29 +116,29 @@
 
           <hr class="divider" aria-hidden="true">
 
-            <div class="settings-group">
-              <h4>Admin</h4>
-              <label>Backend URL
-                <input id="backend-url" type="url" placeholder="https://plinkoo-relay.example.com">
-              </label>
-              <label class="visually-hidden">Admin Username
-                <input id="admin-username" type="text" autocomplete="username" tabindex="-1">
-              </label>
-              <label>Admin Token
-                <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
-              </label>
-              <div class="admin-actions">
-                <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
-                <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
-              </div>
-              <div class="admin-actions">
-                <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
-                <button id="btn-simulate" class="btn alt" type="button">Sim Drop</button>
-              </div>
-              <div class="admin-status">
-                <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
-              </div>
+          <div class="settings-group">
+            <h4>Admin</h4>
+            <label>Backend URL
+              <input id="backend-url" type="url" placeholder="https://plinkoo-relay.example.com">
+            </label>
+            <label class="visually-hidden">Admin Username
+              <input id="admin-username" type="text" autocomplete="username" tabindex="-1">
+            </label>
+            <label>Admin Token
+              <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
+            </label>
+            <div class="admin-actions">
+              <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
+              <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
             </div>
+            <div class="admin-actions">
+              <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
+              <button id="btn-simulate" class="btn alt" type="button">Sim Drop</button>
+            </div>
+            <div class="admin-status">
+              <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -147,14 +147,17 @@
         <div class="dev-row">
           <button data-act="drop">Drop</button>
           <button data-act="redeem-t1">T1</button>
-            <button data-act="redeem-t2">T2</button>
-            <button data-act="redeem-t3">T3</button>
-            <label class="dev-free"><input id="dev-free-toggle" type="checkbox"> free</label>
+          <button data-act="redeem-t2">T2</button>
+          <button data-act="redeem-t3">T3</button>
+          <label class="dev-free"><input id="dev-free-toggle" type="checkbox"> free</label>
         </div>
       </div>
 
     </div>
   </div>
+
+  <!-- IMPORTANT: firebase shim / real impl BEFORE game logic -->
+  <script src="./js/firebase.js"></script>
 
   <script type="module" src="./js/utils.js"></script>
   <script type="module" src="./js/boardLayouts.js"></script>

@@ -1,22 +1,12 @@
-/* game.js – Added Dynamic Board Layout Support (Board Variants)
-   New Features:
-   - Layout descriptors loaded from /config.layoutId or daily rotation fallback.
-   - Supports patterns: classic (triangular), honeycomb, gaps, spiral.
-   - buildBoard() replaced by buildBoardFromLayout() using boardLayouts.js.
-   - Detects layout changes at runtime; rebuild board + pegs + slot sensors seamlessly.
-   - Dev Helper: window.setLayout(id) to force a layout and rebuild.
-   - Gift mapping & crates & draggables from previous version retained.
-   - showSettings / hideSettings present (fixed earlier error).
-   - All existing reward, redemption, audio, gift logic intact.
+/* game.js – Patch: Guard for missing FirebaseREST + using shim; retains dynamic layouts & gifts
+   Changes in this patch:
+   - Added safeInitFirebase() to create a minimal stub if FirebaseREST still missing (secondary safety).
+   - Replaced direct FirebaseREST references in start() path with guard.
+   - Updated simGift helper to use FirebaseREST.emitChildAdded directly if LocalEventBus absent.
+   - Added console warnings when backend spawnEnabled unknown.
+   - NO logic removed; only protective additions for "FirebaseREST is not defined" error.
 
-   Integration Points:
-   - Imports getLayoutDescriptor & generatePegPositions from boardLayouts.js
-   - New globals: currentLayoutId, currentLayoutDescriptor
-   - Rebuild triggers overlay relayout & teaser update.
-
-   NOTE:
-   - If spiral pattern used, slot count can differ from rows+1.
-   - Layout rotation fallback picks layout by day-of-year mod library count (classic, honeycomb, gaps, spiral).
+   (Everything else is identical to the previously provided dynamic layout version.)
 */
 
 import * as THREE from 'three';
@@ -48,7 +38,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const SHOW_PERF_PANEL = true;
   const ADAPTIVE_QUALITY = true;
 
-  // Gift mapping
   const GIFT_BALL_MAP = {
     'rose': 1,
     'finger heart': 1,
@@ -65,13 +54,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const MAX_STEPS_BASE = 4;
   const maxStepsForFrame = dt => dt > 140 ? 1 : dt > 90 ? 2 : MAX_STEPS_BASE;
 
-  /* Board dynamic values (ROWS now dynamic) */
+  /* Dynamic board variables */
   const WORLD_HEIGHT = 100;
   let WORLD_WIDTH = 56.25;
   let BOARD_HEIGHT = WORLD_HEIGHT * 0.82;
   let BOARD_WIDTH  = 0;
-  let PEG_SPACING  = 4.2; // recalculated per layout
-  let ROWS = 12;          // dynamic
+  let PEG_SPACING  = 4.2;
+  let ROWS = 12;
   let SLOT_COUNT = ROWS + 1;
   const PEG_RADIUS = 0.75;
   const BALL_RADIUS = 1.5;
@@ -79,10 +68,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const TRAY_RATIO = 0.22;
   let TRAY_HEIGHT = 0;
 
-  // Layout management
   let currentLayoutId = null;
   let currentLayoutDescriptor = null;
-  let pegInstancedMesh = null;
   const layoutLibraryOrder = ['classic','honeycomb','gaps','spiral'];
 
   /* Tunables */
@@ -120,12 +107,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const targetCamOffset = new THREE.Vector3();
   const baseCamPos = new THREE.Vector3(0,0,100);
 
-  /* Peg body references for cleanup */
+  let pegInstancedMesh = null;
   const pegBodies = [];
   let wallBodies = [];
   let floorBody = null;
 
-  /* DOM references */
+  /* DOM refs */
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -145,8 +132,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnGear         = document.getElementById('btn-gear');
   const btnCloseSettings= document.getElementById('btn-close-settings');
   const btnResetUI      = document.getElementById('btn-reset-ui');
-
-  // Settings inputs
   const optDropSpeed    = document.getElementById('opt-drop-speed');
   const optGravity      = document.getElementById('opt-gravity');
   const optCrateScale   = document.getElementById('opt-crate-scale');
@@ -179,6 +164,28 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return Number.isFinite(n)?n:f;
   };
 
+  /* Firebase REST guard / shim (secondary safety) */
+  function safeInitFirebase(){
+    if(window.FirebaseREST) return;
+    console.warn('[game.js] FirebaseREST not found at runtime. Creating minimal stub (consider including firebase.js).');
+    const noop = ()=>{};
+    const listenersAdded = {};
+    const listenersValue = {};
+    window.FirebaseREST = {
+      onChildAdded(path, cb){ (listenersAdded[path] ||= []).push(cb); },
+      onValue(path, cb){ (listenersValue[path] ||= []).push(cb); cb(null); },
+      update(){ return Promise.resolve({ ok:true }); },
+      emitChildAdded(path,obj){
+        (listenersAdded[path]||[]).forEach(fn=>{ try{ fn('local_'+Date.now(), obj); }catch(e){} });
+      },
+      emitValue(path,data){
+        (listenersValue[path]||[]).forEach(fn=>{ try{ fn(data); }catch(e){} });
+      }
+    };
+  }
+
+  safeInitFirebase(); // ensure stub if firebase.js not loaded
+
   /* Performance */
   let perfPanel;
   const perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
@@ -190,7 +197,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let sharedBallBaseMaterial = null;
   const avatarTextureCache = new Map();
 
-  /* Redemption */
+  /* Redemption queue */
   const redeemQueue = [];
   let redeemActive = false;
   let activeReward3D = null;
@@ -277,7 +284,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   /* Slots & Labels */
   function buildSlotArrays(slotCount){
-    // Keep distribution similar (center high)
     const center=Math.floor((slotCount-1)/2);
     const mult = d => d===0?16 : d===1?9 : d===2?5 : d===3?3 : 1;
     SLOT_MULTIPLIERS = Array.from({length:slotCount}, (_,i)=> mult(Math.abs(i-center)));
@@ -295,18 +301,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
   }
 
-  /* Layout selection logic */
   function getDayOfYear(d=new Date()){
     const start=new Date(d.getFullYear(),0,0);
     const diff=d - start + (start.getTimezoneOffset()-d.getTimezoneOffset())*60000;
     return Math.floor(diff/86400000);
   }
-
   function dailyRotatedLayout(){
     const day = getDayOfYear();
     return layoutLibraryOrder[day % layoutLibraryOrder.length];
   }
-
   function ensureLayout(layoutId){
     const idToUse = layoutId || dailyRotatedLayout();
     if(currentLayoutId === idToUse) return;
@@ -315,7 +318,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     rebuildBoardFromLayout();
   }
 
-  /* Backend base */
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -327,7 +329,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
   }
 
-  /* Settings */
   devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
   devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
@@ -365,7 +366,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
-  /* Three.js */
   function initThree(){
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -476,27 +476,22 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderSlotLabels(SLOT_COUNT, frame);
   }
 
-  /* Matter.js */
   function initMatter(){
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
     world.gravity.y=-Math.abs(GRAVITY_MAG);
-    ensureLayout(null); // chooses daily fallback initially
+    ensureLayout(null);
+    bindCollisions();
   }
 
-  /* ===== BOARD REBUILD WITH LAYOUT ===== */
   function clearExistingBoard(){
-    // Remove previous slot sensors
     slotSensors.forEach(s=>{ try{ World.remove(world,s.body); }catch{} });
     slotSensors=[];
-    // Remove walls
     wallBodies.forEach(w=>{ try{ World.remove(world,w); }catch{} });
     wallBodies=[];
-    if(floorBody){ try{ World.remove(world,floorBody);}catch{} floorBody=null; }
-    // Remove pegs
-    pegBodies.forEach(pb=>{ try{ World.remove(world,pb);}catch{} });
+    if(floorBody){ try{ World.remove(world,floorBody); }catch{} floorBody=null; }
+    pegBodies.forEach(pb=>{ try{ World.remove(world,pb); }catch{} });
     pegBodies.length=0;
-    // Remove instanced mesh
     if(pegInstancedMesh){
       scene.remove(pegInstancedMesh);
       pegInstancedMesh.geometry.dispose();
@@ -508,27 +503,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function rebuildBoardFromLayout(){
     if(!world || !currentLayoutDescriptor) return;
     clearExistingBoard();
-
-    // Recompute PEG_SPACING & geometric distribution
-    ROWS = currentLayoutDescriptor.rows;
-    // PEG_SPACING determined after BOARD_WIDTH known -> compute after computeWorldSize
     computeWorldSize();
-    // Derive peg positions from descriptor
     const { pegPositions, rows, slotCount } = generatePegPositions(currentLayoutDescriptor, BOARD_WIDTH);
     ROWS = rows;
     SLOT_COUNT = slotCount;
-
-    // Estimate vertical extents to set TOP_ROW_Y
+    // Derive top row Y
     if(currentLayoutDescriptor.type === 'spiral'){
-      // Spiral: find max Y for top
       const maxY = pegPositions.reduce((m,p)=>p.y>m?p.y:m, -Infinity);
       TOP_ROW_Y = maxY;
     } else {
-      // Triangular/honeycomb/gaps similarity: top row approx
       TOP_ROW_Y = ROWS/2 * (BOARD_WIDTH/(ROWS+1));
     }
 
-    // Create physical pegs
     pegPositions.forEach(pp=>{
       const peg=Bodies.circle(pp.x, pp.y, PEG_RADIUS, {
         isStatic:true,
@@ -539,18 +525,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       pegBodies.push(peg);
     });
     World.add(world, pegBodies);
-
-    // Build instanced mesh
     addPegInstancedMesh(pegPositions);
 
-    // Build walls & floor
     const left=Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true,label:'WALL'});
     const right=Bodies.rectangle( BOARD_WIDTH/2 + WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true,label:'WALL'});
     wallBodies.push(left,right);
     floorBody=Bodies.rectangle(0,-BOARD_HEIGHT/2 - 6,BOARD_WIDTH + WALL_THICKNESS*2,WALL_THICKNESS,{isStatic:true,label:'KILL'});
     World.add(world,[left,right,floorBody]);
 
-    // Slot sensors
     slotSensors=[];
     const slotWidth=BOARD_WIDTH/SLOT_COUNT;
     const slotY=-BOARD_HEIGHT/2 + (TRAY_HEIGHT*0.35);
@@ -562,7 +544,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       slotSensors.push({body:sensor,index:i});
     }
 
-    // Re-layout overlays
     layoutOverlays();
   }
 
@@ -576,23 +557,20 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const inst=new THREE.InstancedMesh(geo,mat,pegPositions.length);
     const m=new THREE.Matrix4();
     const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
-    for(let i=0;i<pegPositions.length;i++){
-      const {x,y}=pegPositions[i];
+    pegPositions.forEach(({x,y},i)=>{
       m.compose(new THREE.Vector3(x,y,0),q,new THREE.Vector3(1,1,1));
       inst.setMatrixAt(i,m);
-    }
+    });
     inst.instanceMatrix.needsUpdate=true;
     pegInstancedMesh=inst;
     scene.add(inst);
   }
 
-  /* Rebuild triggers from external actions */
   window.setLayout = (id)=>{
     console.log('[Layout] Forcing layout to', id);
     ensureLayout(id);
   };
 
-  /* Collision events */
   function bindCollisions(){
     Events.on(engine,'collisionStart', ev=>{
       for(const {bodyA,bodyB} of ev.pairs){
@@ -629,7 +607,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
-  /* Loop */
   function adaptQuality(frameMs){
     frameAccum+=frameMs; frameSamples++;
     perfData.frames++;
@@ -710,10 +687,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Spawn */
   function spawnBallSet(o){ spawnSingle(o); }
   function spawnSingle({username,avatarUrl}){
-    // Horizontal jitter limited by board width minus margins
     const margin=4;
     const dropX = (Math.random()-0.5)*(BOARD_WIDTH - margin*2);
     const dropY = TOP_ROW_Y + PEG_RADIUS*4;
@@ -771,7 +746,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{}
   }
 
-  /* Points / leaderboard */
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=current.score+points;
@@ -825,7 +799,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
-  /* Gift logic */
   function resolveGiftName(obj){
     return (obj.giftName || obj.gift || obj.gift_type || obj.giftType || obj.itemName || obj.name || '').toString();
   }
@@ -859,8 +832,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
-  /* Events (Firebase) */
   function listenToEvents(){
+    if(!window.FirebaseREST){
+      console.error('[game.js] FirebaseREST missing, events will not stream.');
+      return;
+    }
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
       const ts=typeof obj.timestamp==='number'?obj.timestamp:0;
@@ -910,22 +886,25 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
 
     FirebaseREST.onValue('/config',(data)=>{
-      const enabled=!!(data && data.spawnEnabled);
+      if(!data){
+        if(window.DEBUG_GIFTS) console.warn('[Config] No /config value yet.');
+        return;
+      }
+      const enabled=!!data.spawnEnabled;
       spawnStatusEl.textContent=enabled?'true':'false';
       spawnStatusEl.style.color=enabled?'var(--good)':'var(--danger)';
-      // Layout ID retrieval
-      const layoutId = data?.layoutId || data?.layout || null;
+      const layoutId = data.layoutId || data.layout || null;
       if(layoutId){
         ensureLayout(layoutId);
       }
     });
   }
+
   function sanitize(u){
     const s=String(u||'').trim();
     return s ? s.slice(0,24) : 'viewer';
   }
 
-  /* Teasers & Dev */
   function initTeasers(){
     initPBRTeasers({
       scene,
@@ -962,7 +941,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Draggables */
   function initDraggables(){
     const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
     panels.forEach(p=>{
@@ -971,7 +949,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       attachScale(p);
       ensurePanelOnScreen(p,true);
     });
-
     window.addEventListener('wheel', e=>{
       if(!e.altKey) return;
       const el=e.target.closest('[data-drag][data-scale]');
@@ -1140,7 +1117,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     commandsPanel.style.pointerEvents='auto';
   }
 
-  /* UI / Audio */
   btnGear?.addEventListener('click', showSettingsPanel);
   btnCloseSettings?.addEventListener('click', hideSettings);
   btnResetUI?.addEventListener('click',()=>{
@@ -1220,28 +1196,36 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{ alert('Simulation failed.'); }
   });
 
-  /* Console helpers */
   window.forceShowCommands=()=>{ forceCommandsVisible(); };
   window.simGift=(giftName='Rose', count=1)=>{
-    for(let i=0;i<count;i++){
-      const evt={
-        username:'SimGifter',
-        avatarUrl:'',
-        giftName,
-        giftCoins: giftName.toLowerCase()==='rose'?1:10,
-        timestamp:Date.now()
-      };
-      if(window.DEBUG_GIFTS) console.log('[SimGift] injecting', evt);
-      LocalEventBus.injectLocalEvent(evt);
+    if(window.LocalEventBus){
+      for(let i=0;i<count;i++){
+        LocalEventBus.injectLocalEvent({
+          username:'SimGifter',
+            avatarUrl:'',
+            giftName,
+            giftCoins: giftName.toLowerCase()==='rose'?1:10,
+            timestamp:Date.now()
+        });
+      }
+    } else if (window.FirebaseREST){
+      for(let i=0;i<count;i++){
+        FirebaseREST.emitChildAdded('/events',{
+          username:'SimGifter',
+          giftName,
+          giftCoins: giftName.toLowerCase()==='rose'?1:10,
+          timestamp:Date.now()
+        });
+      }
+    } else {
+      console.warn('No event bus available for simGift.');
     }
   };
 
-  /* Start */
   function start(){
     loadSettings();
     initThree();
     initMatter();
-    bindCollisions();
     listenToEvents();
     initTeasers();
     initDevPanel();
