@@ -1,4 +1,4 @@
-// Game with reward system, adaptive performance (dynamic resolution & render skipping), local dev panel, improved multipliers.
+// Game with improved dev redeem (bypass cost when "free" toggle), clickable teaser boxes, metallic UI.
 import * as THREE from 'three';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
@@ -18,6 +18,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const REWARD_NAMES = { t1: 'Tier 1', t2: 'Tier 2', t3: 'Tier 3' };
   const REDEEM_PREFIX = 'redeem:';
 
+  const DEV_BYPASS_DEFAULT = true; // default dev free mode on
   const SHOW_PERF_PANEL = true;
   const ADAPTIVE_QUALITY = true;
 
@@ -72,7 +73,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  // DOM
+  // DOM references
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -87,8 +88,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const redeemLayer     = document.getElementById('redeem-layer');
   const rewardTeasersRoot = document.getElementById('reward-teasers');
   const devPanel        = document.getElementById('dev-panel');
+  const devFreeToggle   = document.getElementById('dev-free-toggle');
 
-  // Settings
+  // Settings / admin
   const btnGear         = document.getElementById('btn-gear');
   const settingsPanel   = document.getElementById('settings-panel');
   const btnCloseSettings= document.getElementById('btn-close-settings');
@@ -105,65 +107,70 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
   const btnSimulate     = document.getElementById('btn-simulate');
 
+  // Perf
   let perfPanel, perfData = { avgMs:0, worstMs:0, frames:0, qualityTier:2 };
-
-  // Performance: dynamic resolution
   const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
   let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
-  let frameSamples = 0;
-  let frameAccum = 0;
+  let frameSamples=0, frameAccum=0;
 
+  // Geometry / textures
   const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS, 20, 14);
   let sharedBallBaseMaterial = null;
-
   const avatarTextureCache = new Map();
 
+  // Redeem queue
   const redeemQueue = [];
   let redeemActive = false;
 
+  // Active reward model
   let activeReward3D = null;
   let activeRewardDisposeFn = null;
+
+  // Dev flags
+  devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT ? 'true':'false')) === 'true';
+  devFreeToggle.addEventListener('change', () => {
+    localStorage.setItem('plk_dev_free', devFreeToggle.checked ? 'true':'false');
+  });
 
   function enqueueRedemption(evId, tier, username, avatarUrl) {
     redeemQueue.push({ evId, tier, username, avatarUrl });
     runNextRedemption();
   }
-  function runNextRedemption() {
-    if (redeemActive) return;
-    const item = redeemQueue.shift();
-    if (!item) return;
-    redeemActive = true;
-    playRedemptionAnimation(item).then(() => {
-      redeemActive = false;
+  function runNextRedemption(){
+    if(redeemActive) return;
+    const item=redeemQueue.shift();
+    if(!item) return;
+    redeemActive=true;
+    playRedemptionAnimation(item).then(()=>{
+      redeemActive=false;
       runNextRedemption();
     });
   }
 
-  async function prepare3DModel() {
-    try { await ensureRewardModelLoaded(); return true; }
-    catch { return false; }
+  async function prepare3DModel(){
+    try{ await ensureRewardModelLoaded(); return true; } catch { return false; }
   }
 
-  function attachReward3D(tier) {
-    if (activeReward3D) {
+  function attachReward3D(tier){
+    if(activeReward3D){
       scene.remove(activeReward3D);
-      if (activeRewardDisposeFn) activeRewardDisposeFn();
-      activeReward3D = null; activeRewardDisposeFn = null;
+      if(activeRewardDisposeFn) activeRewardDisposeFn();
+      activeReward3D=null; activeRewardDisposeFn=null;
     }
-    try {
-      const model = createRewardModelInstance(tier === 't3' ? 22 : tier === 't2' ? 19 : 16);
-      model.position.set(0, WORLD_HEIGHT * 0.15, 30);
-      model.renderOrder = 999;
+    try{
+      const model=createRewardModelInstance(tier==='t3'?22:tier==='t2'?19:16);
+      model.position.set(0,WORLD_HEIGHT*0.15,30);
+      model.renderOrder=999;
       scene.add(model);
-      activeReward3D = model;
-      activeRewardDisposeFn = animateRewardModel(model, gsap);
+      activeReward3D=model;
+      activeRewardDisposeFn=animateRewardModel(model, gsap);
       model.scale.multiplyScalar(0.01);
       gsap.to(model.scale,{x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,duration:.55,ease:'back.out(1.7)'});
-      gsap.fromTo(model.rotation,{y:model.rotation.y + Math.PI*2},{y:model.rotation.y,duration:.65,ease:'expo.out'});
-    } catch {}
+      gsap.fromTo(model.rotation,{y:model.rotation.y+Math.PI*2},{y:model.rotation.y,duration:.65,ease:'expo.out'});
+    }catch{}
   }
-  function detachReward3D() {
-    if (activeReward3D) {
+  function detachReward3D(){
+    if(activeReward3D){
       gsap.to(activeReward3D.scale,{
         x:activeReward3D.scale.x*0.01,
         y:activeReward3D.scale.y*0.01,
@@ -178,12 +185,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
-  function playRedemptionAnimation({ evId, tier, username, avatarUrl }) {
+  function playRedemptionAnimation({evId,tier,username,avatarUrl}){
     return new Promise(async resolve=>{
-      const cost = REWARD_COSTS[tier]||0;
+      const cost=REWARD_COSTS[tier]||0;
       const wrapper=document.createElement('div');
       wrapper.className=`redeem-anim tier-${tier}`;
-      wrapper.setAttribute('data-event', evId);
+      wrapper.dataset.event=evId;
       wrapper.innerHTML=`
         <div class="redeem-box">
           <div class="box-core"></div>
@@ -193,22 +200,25 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         <div class="redeem-user">
           <img class="redeem-ava" src="${avatarUrl||''}" alt="">
           <div class="redeem-name">@${username}</div>
-          <div class="redeem-tier-label">${REWARD_NAMES[tier]} • -${cost}</div>
+          <div class="redeem-tier-label">${REWARD_NAMES[tier]||tier} • -${cost}</div>
         </div>`;
       redeemLayer.appendChild(wrapper);
       const lid=wrapper.querySelector('.box-lid');
       const prize=wrapper.querySelector('.prize');
       const emoji=wrapper.querySelector('.prize-emoji');
+
       const modelLoaded=await prepare3DModel().catch(()=>false);
+
       const tl=gsap.timeline({
         defaults:{ease:'expo.out'},
-        onComplete:()=>{
+        onComplete:()=> {
           gsap.to(wrapper,{
-            opacity:0, scale:0.8, duration:.45, ease:'power1.in', delay:1.6,
+            opacity:0,scale:0.8,duration:.45,ease:'power1.in',delay:1.6,
             onComplete:()=>{ redeemLayer.removeChild(wrapper); detachReward3D(); resolve(); }
           });
         }
       });
+
       tl.to(wrapper,{opacity:1,scale:1,duration:.45,ease:'elastic.out(1,0.55)'})
         .to(lid,{rotationX:-Math.PI*0.95,duration:.55,ease:'back.in(1.3)'},'-=0.15')
         .add(()=>{
@@ -219,13 +229,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
           } else {
             gsap.to(prize,{opacity:1,y:'-=60',scale:1,duration:.55,ease:'back.out(1.4)'});
           }
-        },'-=0.10');
+        },'-=0.1');
     });
   }
 
+  /* Slot / multipliers */
   function buildSlots(slotCount){
     const center=Math.floor((slotCount-1)/2);
-    const mult=d=>(d===0?16:d===1?9:d===2?5:d===3?3:1);
+    const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
     SLOT_MULTIPLIERS=Array.from({length:slotCount},(_,i)=>mult(Math.abs(i-center)));
     SLOT_POINTS=SLOT_MULTIPLIERS.map(m=>m*100);
   }
@@ -244,9 +255,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       div.innerHTML=`<span class="x">x</span><span class="val">${m}</span>`;
       slotLabelsEl.appendChild(div);
     });
-    trayDividers.style.setProperty('--slot-width', `${framePx.width / slotCount}px`);
+    trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
   }
 
+  /* Backend settings */
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -255,9 +267,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function adminFetch(path,opt={}){
     const base=getBackendBaseUrl();
     if(!base) throw new Error('Backend URL not set.');
-    return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`, opt);
+    return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
   }
 
+  /* Settings apply */
   function loadSettings(){
     const g=Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value=String(g);
     const ds=Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value=String(ds);
@@ -265,7 +278,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
     optParticles.checked=(localStorage.getItem('plk_particles') ?? 'true')==='true';
     const vol=Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value=String(vol); setAudioVolume(vol);
-    const saved=getBackendBaseUrl(); if(saved) backendUrlInput.value=saved;
+    const savedBase=getBackendBaseUrl(); if(savedBase) backendUrlInput.value=savedBase;
     const tok=localStorage.getItem('adminToken')||''; if(tok) adminTokenInput.value=tok;
     applySettings();
   }
@@ -274,32 +287,33 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     GRAVITY_MAG=Number(optGravity.value);
     NEON=!!optNeon.checked;
     PARTICLES=!!optParticles.checked;
-    localStorage.setItem('plk_dropSpeed', String(DROP_SPEED));
-    localStorage.setItem('plk_gravity',   String(GRAVITY_MAG));
-    localStorage.setItem('plk_multiDrop', String(optMultiDrop.value));
-    localStorage.setItem('plk_neon',      String(NEON));
-    localStorage.setItem('plk_particles', String(PARTICLES));
+    localStorage.setItem('plk_dropSpeed',String(DROP_SPEED));
+    localStorage.setItem('plk_gravity',String(GRAVITY_MAG));
+    localStorage.setItem('plk_multiDrop',String(optMultiDrop.value));
+    localStorage.setItem('plk_neon',String(NEON));
+    localStorage.setItem('plk_particles',String(PARTICLES));
     if(world) world.gravity.y=-Math.abs(GRAVITY_MAG);
     if(pegsInstanced){
       pegsInstanced.material.emissive.set(NEON?0x00ffff:0x000000);
-      pegsInstanced.material.emissiveIntensity = NEON?0.30:0.0;
+      pegsInstanced.material.emissiveIntensity=NEON?0.30:0.0;
     }
     if(bloomPass){
       bloomPass.enabled=NEON;
-      bloomPass.strength=NEON?0.75:0.0;
+      bloomPass.strength=NEON?0.75:0;
     }
   }
 
   function showSettings(){ gsap.to(settingsPanel,{x:0,duration:.35,ease:'expo.out'}); settingsPanel.setAttribute('aria-hidden','false'); }
   function hideSettings(){ gsap.to(settingsPanel,{x:'110%',duration:.35,ease:'expo.in'}); settingsPanel.setAttribute('aria-hidden','true'); }
 
+  /* Three init */
   function initThree(){
-    renderer=new THREE.WebGLRenderer({ antialias:true, alpha:true });
+    renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
     renderer.toneMapping=THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure=1.0;
     renderer.setPixelRatio(currentPR);
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setSize(container.clientWidth,container.clientHeight);
     renderer.setClearColor(0x000000,0);
     container.appendChild(renderer.domElement);
 
@@ -315,9 +329,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
     composer=new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene,camera));
-    smaaPass=new SMAAPass(renderer.domElement.width, renderer.domElement.height);
+    smaaPass=new SMAAPass(renderer.domElement.width,renderer.domElement.height);
     composer.addPass(smaaPass);
-    bloomPass=new UnrealBloomPass(new THREE.Vector2(renderer.domElement.width, renderer.domElement.height),0.75,0.6,0.2);
+    bloomPass=new UnrealBloomPass(new THREE.Vector2(renderer.domElement.width,renderer.domElement.height),0.75,0.6,0.2);
     composer.addPass(bloomPass);
 
     const ro=new ResizeObserver(onResize); ro.observe(container);
@@ -366,12 +380,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const pBottomRight=worldToScreen(new THREE.Vector3(right,bottom,0),camera,renderer);
     const pTrayTopLeft=worldToScreen(new THREE.Vector3(left,trayTop,0),camera,renderer);
     const frame={
-      x:Math.round(pTopLeft.x),y:Math.round(pTopLeft.y),
-      width:Math.round(pBottomRight.x-pTopLeft.x),
-      height:Math.round(pBottomRight.y-pTopLeft.y)
+      x:Math.round(pTopLeft.x),
+      y:Math.round(pTopLeft.y),
+      width:Math.round(pBottomRight.x - pTopLeft.x),
+      height:Math.round(pBottomRight.y - pTopLeft.y)
     };
     const tray={
-      x:frame.x,width:frame.width,
+      x:frame.x,
+      width:frame.width,
       height:Math.round(pBottomRight.y - pTrayTopLeft.y),
       top:Math.round(pTrayTopLeft.y)
     };
@@ -388,6 +404,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderSlotLabels(slotCount, frame);
   }
 
+  /* Matter init */
   function initMatter(){
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
@@ -405,7 +422,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const right=Bodies.rectangle( BOARD_WIDTH/2 + WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
     const floor=Bodies.rectangle(0,-BOARD_HEIGHT/2 - 6,BOARD_WIDTH + WALL_THICKNESS*2,WALL_THICKNESS,{isStatic:true,label:'KILL'});
     World.add(world,[left,right,floor]);
-    const startY=BOARD_HEIGHT/2 -10;
+
+    const startY=BOARD_HEIGHT/2 - 10;
     TOP_ROW_Y=startY;
     const rowH=PEG_SPACING*0.9;
     const startX=-((ROWS-1)*PEG_SPACING)/2;
@@ -447,8 +465,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
     const mat=new THREE.MeshPhysicalMaterial({
-      color:0x86f7ff,metalness:0.35,roughness:0.35,
-      clearcoat:0.6,clearcoatRoughness:0.2,
+      color:0x86f7ff, metalness:0.35, roughness:0.35,
+      clearcoat:0.6, clearcoatRoughness:0.2,
       emissive:new THREE.Color(0x00ffff),
       emissiveIntensity:0.30
     });
@@ -502,6 +520,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
+  /* Performance adaptation */
   function adaptQuality(frameMs){
     frameAccum += frameMs;
     frameSamples++;
@@ -511,7 +530,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
     if(frameSamples >= 60){
       const avg = frameAccum / frameSamples;
-      // Dynamic resolution scaling
       if(avg > 22 && currentPR > 0.75){
         currentPR = Math.max(0.75, currentPR - 0.1);
         renderer.setPixelRatio(currentPR);
@@ -529,51 +547,39 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(target!==perfData.qualityTier){
       perfData.qualityTier=target;
       if(target===2){
-        bloomPass.enabled=NEON;
-        bloomPass.strength=0.75;
-        smaaPass.enabled=true;
+        bloomPass.enabled=NEON; bloomPass.strength=0.75; smaaPass.enabled=true;
       } else if(target===1){
-        bloomPass.enabled=NEON;
-        bloomPass.strength=0.45;
-        smaaPass.enabled=true;
+        bloomPass.enabled=NEON; bloomPass.strength=0.45; smaaPass.enabled=true;
       } else {
-        bloomPass.enabled=false;
-        bloomPass.strength=0.0;
-        smaaPass.enabled=false;
+        bloomPass.enabled=false; bloomPass.strength=0; smaaPass.enabled=false;
       }
     }
     if(perfPanel && perfData.frames % 30 === 0){
-      perfPanel.textContent =
-        `fps:${(1000/perfData.avgMs).toFixed(1)} ms:${perfData.avgMs.toFixed(1)} pR:${currentPR.toFixed(2)} worst:${perfData.worstMs.toFixed(1)} q:${perfData.qualityTier}`;
+      perfPanel.textContent=`fps:${(1000/perfData.avgMs).toFixed(1)} ms:${perfData.avgMs.toFixed(1)} pR:${currentPR.toFixed(2)} worst:${perfData.worstMs.toFixed(1)} q:${perfData.qualityTier}`;
     }
   }
 
   function startLoop(){
     let last=performance.now(), acc=0;
     function tick(now){
-      const dt=Math.min(250, now-last);
-      last=now;
-      acc+=dt;
+      const dt=Math.min(250, now-last); last=now; acc+=dt;
       let steps=0;
       const maxSteps=maxStepsForFrame(dt);
       while(acc>=FIXED_DT && steps<maxSteps){
-        Engine.update(engine, FIXED_DT);
+        Engine.update(engine,FIXED_DT);
         acc-=FIXED_DT; steps++;
       }
       clampVelocities();
       fxMgr.update(fxCtx, dt);
       updateThreeFromMatter();
 
-      // Rendering strategy: skip heavy composer if low quality & no effects
-      const needComposer = bloomPass.enabled || smaaPass.enabled;
       const t0=performance.now();
-      if(needComposer){
+      if(bloomPass.enabled || smaaPass.enabled){
         composer.render();
       } else {
         renderer.render(scene,camera);
       }
-      const frameCost = performance.now()-t0;
-      adaptQuality(dt + frameCost);
+      adaptQuality(dt + (performance.now()-t0));
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
@@ -581,14 +587,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function clampVelocities(){
     for(const b of dynamicBodies){
-      let {x: vx, y: vy} = b.velocity;
-      let sx=vx, sy=vy;
-      if(Math.abs(sx)>MAX_H_SPEED) sx=Math.sign(sx)*MAX_H_SPEED;
-      const speed=Math.hypot(sx,sy);
+      let {x,y}=b.velocity;
+      if(Math.abs(x)>MAX_H_SPEED) x=Math.sign(x)*MAX_H_SPEED;
+      const speed=Math.hypot(x,y);
       if(speed>MAX_SPEED){
-        const k=MAX_SPEED/speed; sx*=k; sy*=k;
+        const k=MAX_SPEED/speed; x*=k; y*=k;
       }
-      if(sx!==vx || sy!==vy) Body.setVelocity(b,{x:sx,y:sy});
+      Body.setVelocity(b,{x,y});
     }
   }
 
@@ -604,16 +609,17 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  function spawnBallSet({ username, avatarUrl }){
+  /* Spawning */
+  function spawnBallSet({username, avatarUrl}){
     const multi=Math.max(1, Math.min(5, Number(optMultiDrop.value||1)));
-    for(let i=0;i<multi;i++) spawnSingle({ username, avatarUrl });
+    for(let i=0;i<multi;i++) spawnSingle({username, avatarUrl});
   }
 
-  function spawnSingle({ username, avatarUrl }){
+  function spawnSingle({username, avatarUrl}){
     const jitter=PEG_SPACING*0.35;
     const dropX=Math.max(-BOARD_WIDTH/2+4, Math.min(BOARD_WIDTH/2-4,(Math.random()-0.5)*jitter));
     const dropY=TOP_ROW_Y + PEG_SPACING*0.8;
-    const body = Bodies.circle(dropX,dropY,BALL_RADIUS,{
+    const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{
       restitution:BALL_RESTITUTION,
       friction:BALL_FRICTION,
       frictionAir:BALL_FRICTION_AIR,
@@ -623,17 +629,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     body.plugin={ username, avatarUrl, scored:false };
     World.add(world, body);
     dynamicBodies.add(body);
-    Body.setVelocity(body,{x:0,y:0});
-    Body.setAngularVelocity(body,0);
+    Body.setVelocity(body,{x:0,y:0}); Body.setAngularVelocity(body,0);
 
     if(!sharedBallBaseMaterial){
       sharedBallBaseMaterial=new THREE.MeshPhysicalMaterial({
-        color:0xffffff,
-        metalness:0.2,
-        roughness:0.6,
-        clearcoat:0.7,
-        clearcoatRoughness:0.25,
-        emissive: NEON ? new THREE.Color(0x00c6ff) : new THREE.Color(0x000000),
+        color:0xffffff, metalness:0.2, roughness:0.6,
+        clearcoat:0.7, clearcoatRoughness:0.25,
+        emissive: NEON? new THREE.Color(0x00c6ff): new THREE.Color(0x000000),
         emissiveIntensity: NEON?0.04:0
       });
     }
@@ -661,8 +663,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         }
       }catch{}
     };
-    if('requestIdleCallback' in window) requestIdleCallback(applyTex,{timeout:600});
-    else setTimeout(applyTex,0);
+    if('requestIdleCallback' in window) requestIdleCallback(applyTex,{timeout:600}); else setTimeout(applyTex,0);
     sfxDrop();
   }
 
@@ -689,16 +690,22 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{}
   }
 
+  /* Points / leaderboard */
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=(current.score||0)+points;
     leaderboard[username]={ username, avatarUrl, score:next, lastUpdate:Date.now() };
     refreshLeaderboard();
     try{
-      await FirebaseREST.update(`/leaderboard/${encodeKey(username)}`, {
+      await FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
         username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
       });
-    }catch(e){ /* ignore for now */ }
+    }catch{}
+  }
+
+  function setPointsLocal(username, avatarUrl, score){
+    leaderboard[username]={ username, avatarUrl, score, lastUpdate:Date.now() };
+    refreshLeaderboard();
   }
 
   function deductPoints(username, avatarUrl, points){
@@ -707,7 +714,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const next=current.score - points;
     leaderboard[username]={ username, avatarUrl, score: next, lastUpdate: Date.now() };
     refreshLeaderboard();
-    FirebaseREST.update(`/leaderboard/${encodeKey(username)}`, {
+    FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
       username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
     }).catch(()=>{});
     return true;
@@ -717,8 +724,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const entries=Object.values(leaderboard).sort((a,b)=>b.score-a.score).slice(0,50);
     leaderboardList.innerHTML='';
     for(const e of entries){
-      const li=document.createElement('li');
-      li.className='lb-item';
+      const li=document.createElement('li'); li.className='lb-item';
       const ava=document.createElement('div'); ava.className='lb-ava';
       if(e.avatarUrl) ava.style.backgroundImage=`url(${e.avatarUrl})`;
       const name=document.createElement('div'); name.className='lb-name'; name.textContent='@'+(e.username||'viewer');
@@ -733,15 +739,34 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     leaderboardList.innerHTML='';
   }
 
+  /* Redemption handling */
   function handleRedeemEvent(eventId, username, avatarUrl, tier){
     if(processedRedemptions.has(eventId)) return;
     processedRedemptions.add(eventId);
     const cost=REWARD_COSTS[tier];
     if(!cost) return;
-    if(!deductPoints(username, avatarUrl, cost)) return;
+    // Dev bypass
+    if(devFreeToggle.checked){
+      // Ensure local leaderboard has enough score or bypass
+      if(!(leaderboard[username]?.score >= cost)){
+        setPointsLocal(username, avatarUrl, cost); // seed exactly cost to allow deduct
+      }
+    }
+    if(!deductPoints(username, avatarUrl, cost)){
+      flashTeaserLack(tier);
+      return;
+    }
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
+  function flashTeaserLack(tier){
+    if(!rewardTeasersRoot) return;
+    const box=rewardTeasersRoot.querySelector(`.teaser-box[data-tier="${tier}"] .tb-core`);
+    if(!box) return;
+    gsap.fromTo(box,{filter:'brightness(1)'},{filter:'brightness(2.2)',duration:.15,yoyo:true,repeat:4,ease:'power2.inOut'});
+  }
+
+  /* Firebase / Poll listeners */
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
@@ -756,7 +781,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         handleRedeemEvent(id, username, avatarUrl, tier);
         return;
       }
-      if(command.includes('drop') || command.startsWith('gift')) spawnBallSet({ username, avatarUrl });
+      if(command.includes('drop') || command.startsWith('gift')){
+        spawnBallSet({ username, avatarUrl });
+      }
     });
 
     FirebaseREST.onValue('/leaderboard',(data)=>{
@@ -764,7 +791,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         for(const k of Object.keys(data)){
           const entry=data[k];
           if(entry?.username){
-            leaderboard[entry.username] = {
+            leaderboard[entry.username]={
               username: entry.username,
               avatarUrl: entry.avatarUrl || '',
               score: entry.score || 0,
@@ -773,9 +800,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
           }
         }
         refreshLeaderboard();
-      } else {
-        clearLeaderboardLocal();
-      }
+      } else clearLeaderboardLocal();
     });
 
     FirebaseREST.onValue('/config',(data)=>{
@@ -789,45 +814,38 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const s=String(u||'').trim();
     return s ? s.slice(0,24) : 'viewer';
   }
-  function encodeKey(k){ return encodeURIComponent(k.replace(/[.#$[\]]/g,'_')); }
 
+  /* Teaser box interactions */
   function initTeaserBoxes(){
     if(!rewardTeasersRoot) return;
-    const boxes=rewardTeasersRoot.querySelectorAll('.teaser-box');
-    boxes.forEach(box=>{
-      const lid=box.querySelector('.tb-lid');
-      const core=box.querySelector('.tb-core');
+    rewardTeasersRoot.querySelectorAll('.teaser-box').forEach(box=>{
+      const tier=box.dataset.tier;
+      const lid = box.querySelector('.tb-lid');
+      const core= box.querySelector('.tb-core');
+      // Idle lid float & subtle rotation
       const idle=gsap.timeline({repeat:-1});
-      idle.to(lid,{rotationX:-12*Math.PI/180,duration:1.6,ease:'sine.inOut'})
-          .to(lid,{rotationX:0,duration:1.4,ease:'sine.inOut'});
-      function tease(){
-        const t=gsap.timeline();
-        t.to(core,{rotationZ:0.05,duration:0.1})
-         .to(core,{rotationZ:-0.05,duration:0.12})
-         .to(core,{rotationZ:0,duration:0.1});
-        setTimeout(tease,4000+Math.random()*4000);
-      }
-      setTimeout(tease,1500+Math.random()*2000);
-    });
-  }
+      idle.to(lid,{rotationX:-14*Math.PI/180,duration:1.8,ease:'sine.inOut'})
+          .to(lid,{rotationX:0,duration:1.6,ease:'sine.inOut'});
+      const wobble=gsap.timeline({repeat:-1, delay:Math.random()*2});
+      wobble.to(core,{rotationZ:0.06,duration:.25})
+            .to(core,{rotationZ:-0.05,duration:.3})
+            .to(core,{rotationZ:0,duration:.25})
+            .to(core,{duration:2});
 
-  // Dev panel actions
-  function initDevPanel(){
-    if(!devPanel) return;
-    devPanel.querySelectorAll('button').forEach(btn=>{
-      btn.addEventListener('click',()=>{
-        const act=btn.getAttribute('data-act');
-        if(act==='drop'){
-          spawnBallSet({ username:'DevDrop', avatarUrl:'' });
-        } else if(act && act.startsWith('redeem-')){
-          const tier = act.split('-')[1];
-          devRedeem(tier,'DevUser');
+      box.addEventListener('click', ()=>{
+        // Attempt redeem using dev user
+        devRedeem(tier,'ClickUser');
+      });
+      box.addEventListener('keypress',e=>{
+        if(e.key==='Enter' || e.key===' '){
+          e.preventDefault(); box.click();
         }
       });
+      box.title=`${REWARD_NAMES[tier]} - ${REWARD_COSTS[tier].toLocaleString()} pts • Command !${tier}`;
     });
   }
 
-  // Dev helpers
+  /* Dev helpers */
   function devRedeem(tier='t1', user='DevUser'){
     const id='dev_'+Date.now()+'_'+Math.random().toString(36).slice(2);
     handleRedeemEvent(id, user, '', tier);
@@ -835,10 +853,23 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function devDrop(user='DevUser'){
     spawnBallSet({ username:user, avatarUrl:'' });
   }
-  window.devRedeem = devRedeem;
-  window.devDrop = devDrop;
+  window.devRedeem=devRedeem;
+  window.devDrop=devDrop;
 
-  // UI / Audio
+  function initDevPanel(){
+    if(!devPanel) return;
+    devPanel.querySelectorAll('button[data-act]').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        const act=btn.dataset.act;
+        if(act==='drop') devDrop('DevDrop');
+        else if(act.startsWith('redeem-')){
+          devRedeem(act.split('-')[1],'DevUser');
+        }
+      });
+    });
+  }
+
+  /* UI & Audio binding */
   btnGear.addEventListener('click', showSettings);
   btnCloseSettings.addEventListener('click', hideSettings);
   let audioBound=false;
@@ -867,15 +898,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const baseUrl=backendUrlInput.value.trim();
       const token=adminTokenInput.value.trim();
       setBackendBaseUrl(baseUrl);
-      if(token) localStorage.setItem('adminToken', token);
-      else localStorage.removeItem('adminToken');
+      token ? localStorage.setItem('adminToken',token) : localStorage.removeItem('adminToken');
       alert('Saved admin settings.');
     }catch{ alert('Save failed.'); }
   });
 
   btnReset.addEventListener('click', async ()=>{
     const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
-    if(!token) return alert('Provide admin token.');
+    if(!token) return alert('Provide token.');
     try{
       const res=await adminFetch('/admin/reset-leaderboard',{method:'POST',headers:{'x-admin-token':token}});
       if(!res.ok) throw new Error();
@@ -886,7 +916,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   btnToggleSpawn.addEventListener('click', async ()=>{
     const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
-    if(!token) return alert('Provide admin token.');
+    if(!token) return alert('Provide token.');
     try{
       const curr=spawnStatusEl.textContent==='true';
       const res=await adminFetch(`/admin/spawn-toggle?enabled=${!curr}`,{method:'POST',headers:{'x-admin-token':token}});
@@ -908,6 +938,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{ alert('Simulation failed.'); }
   });
 
+  /* Init */
   function start(){
     loadSettings();
     initThree();

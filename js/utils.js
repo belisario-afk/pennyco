@@ -1,4 +1,3 @@
-// (Unchanged functionality; kept for completeness)
 import * as THREE from 'three';
 
 let audioCtx = null;
@@ -22,6 +21,7 @@ export function setAudioVolume(v){
   localStorage.setItem('plk_volume', String(storedVolume));
   if (masterGain) masterGain.gain.value = storedVolume;
 }
+
 function now(){ return audioCtx ? audioCtx.currentTime : 0; }
 function beep(freq, dur, type, gain){
   if(!audioCtx || audioCtx.state!=='running') return;
@@ -94,7 +94,8 @@ export function buildNameSprite(username){
   const tex=new THREE.CanvasTexture(canvas);
   const mat=new THREE.SpriteMaterial({ map:tex, transparent:true });
   const sprite=new THREE.Sprite(mat);
-  const scale=0.009; sprite.scale.set(w*scale,h*scale,1);
+  const scale=0.009;
+  sprite.scale.set(w*scale,h*scale,1);
   return sprite;
 }
 function roundRect(ctx,x,y,w,h,r){const rr=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+rr,y);ctx.arcTo(x+w,y,x+w,y+h,rr);ctx.arcTo(x+w,y+h,x,y+h,rr);ctx.arcTo(x,y+h,x,y,rr);ctx.arcTo(x,y,x+w,y,rr);ctx.closePath();}

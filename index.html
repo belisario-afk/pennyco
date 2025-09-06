@@ -7,7 +7,7 @@
   <title>Plinkoo — Neon Plinko</title>
   <link rel="stylesheet" href="./style.css"/>
 
-  <!-- Prefetch (not preload) 3D reward model -->
+  <!-- Only prefetch (no preload spam) -->
   <link rel="prefetch" href="./tripo_pbr_model_b12fdae2-6adb-46bb-98bc-ebf0f5cd9e55.glb" crossorigin="anonymous">
 
   <script type="importmap">
@@ -59,13 +59,20 @@
           <ol id="leaderboard-list" class="lb-list"></ol>
         </aside>
 
-        <!-- Right side animated teaser boxes -->
+        <!-- RIGHT SIDE ADVANCED METALLIC TEASER BOXES -->
         <section id="reward-teasers" aria-label="Available Mystery Reward Tiers">
           <div class="teaser-box tier-t3" data-tier="t3" tabindex="0" role="button" aria-label="Tier 3 Mystery Box 10,000 points (command !t3)">
             <div class="tb-inner">
-              <div class="tb-glow"></div>
-              <div class="tb-core"></div>
-              <div class="tb-lid"></div>
+              <div class="tb-ring"></div>
+              <div class="tb-core">
+                <div class="tb-metal"></div>
+                <div class="tb-sheen"></div>
+                <div class="tb-particles"></div>
+              </div>
+              <div class="tb-lid">
+                <div class="tb-lid-metal"></div>
+                <div class="tb-lid-sheen"></div>
+              </div>
               <div class="tb-label">
                 <span class="tb-tier">T3</span>
                 <span class="tb-cost" data-cost="t3">10,000</span>
@@ -75,9 +82,16 @@
           </div>
           <div class="teaser-box tier-t2" data-tier="t2" tabindex="0" role="button" aria-label="Tier 2 Mystery Box 5,000 points (command !t2)">
             <div class="tb-inner">
-              <div class="tb-glow"></div>
-              <div class="tb-core"></div>
-              <div class="tb-lid"></div>
+              <div class="tb-ring"></div>
+              <div class="tb-core">
+                <div class="tb-metal"></div>
+                <div class="tb-sheen"></div>
+                <div class="tb-particles"></div>
+              </div>
+              <div class="tb-lid">
+                <div class="tb-lid-metal"></div>
+                <div class="tb-lid-sheen"></div>
+              </div>
               <div class="tb-label">
                 <span class="tb-tier">T2</span>
                 <span class="tb-cost" data-cost="t2">5,000</span>
@@ -87,9 +101,16 @@
           </div>
           <div class="teaser-box tier-t1" data-tier="t1" tabindex="0" role="button" aria-label="Tier 1 Mystery Box 1,000 points (command !t1)">
             <div class="tb-inner">
-              <div class="tb-glow"></div>
-              <div class="tb-core"></div>
-              <div class="tb-lid"></div>
+              <div class="tb-ring"></div>
+              <div class="tb-core">
+                <div class="tb-metal"></div>
+                <div class="tb-sheen"></div>
+                <div class="tb-particles"></div>
+              </div>
+              <div class="tb-lid">
+                <div class="tb-lid-metal"></div>
+                <div class="tb-lid-sheen"></div>
+              </div>
               <div class="tb-label">
                 <span class="tb-tier">T1</span>
                 <span class="tb-cost" data-cost="t1">1,000</span>
@@ -98,7 +119,7 @@
             </div>
           </div>
           <div class="teaser-hint" aria-hidden="true">
-            Type the command in chat to redeem your mystery prize!
+            Click or type the command in chat to redeem your mystery prize!
           </div>
         </section>
 
@@ -131,41 +152,42 @@
 
           <hr class="divider" aria-hidden="true">
 
-            <h4 id="admin-section-label">Admin</h4>
-            <form id="admin-form" autocomplete="on" novalidate aria-labelledby="admin-section-label">
-              <div class="settings-group">
-                <label>Backend URL (Render)
-                  <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url">
-                </label>
-                <label class="visually-hidden">Admin Username
-                  <input id="admin-username" name="username" type="text" value="admin" autocomplete="username" tabindex="-1">
-                </label>
-                <label>Admin Token / DB Auth
-                  <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
-                </label>
-                <div class="admin-actions">
-                  <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
-                  <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
-                </div>
-                <div class="admin-actions">
-                  <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
-                  <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
-                </div>
-                <div class="admin-status">
-                  <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
-                </div>
+          <h4 id="admin-section-label">Admin</h4>
+          <form id="admin-form" autocomplete="on" novalidate aria-labelledby="admin-section-label">
+            <div class="settings-group">
+              <label>Backend URL (Render)
+                <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url">
+              </label>
+              <label class="visually-hidden">Admin Username
+                <input id="admin-username" name="username" type="text" value="admin" autocomplete="username" tabindex="-1">
+              </label>
+              <label>Admin Token / DB Auth
+                <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
+              </label>
+              <div class="admin-actions">
+                <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
+                <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
               </div>
-            </form>
+              <div class="admin-actions">
+                <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
+                <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
+              </div>
+              <div class="admin-status">
+                <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
+              </div>
+            </div>
+          </form>
         </div>
       </div>
 
       <!-- Dev/Test Panel -->
       <div id="dev-panel" aria-hidden="true">
         <div class="dev-title">DEV</div>
-        <button data-act="drop">Test Drop</button>
-        <button data-act="redeem-t1">Redeem T1</button>
-        <button data-act="redeem-t2">Redeem T2</button>
-        <button data-act="redeem-t3">Redeem T3</button>
+        <button data-act="drop">Drop</button>
+        <button data-act="redeem-t1">T1</button>
+        <button data-act="redeem-t2">T2</button>
+        <button data-act="redeem-t3">T3</button>
+        <label class="dev-free"><input id="dev-free-toggle" type="checkbox"> free</label>
       </div>
 
     </div>
