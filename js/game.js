@@ -1,9 +1,10 @@
-/* game.js (commands panel visibility fix & multi-drop removal)
-   Changes:
-   - Removed references to multi-drop setting UI (slider & logic) and spawnBallSet loop for multi
-   - Added panel visibility recovery: if commands panel stored off-screen or scaled tiny, auto reset
-   - Added "Reset Panel Position" button (#btn-reset-ui)
-   - Ensured commands panel z-index high; auto center if missing
+/* game.js (Visibility Fix for Commands Panel)
+   Updates in this version:
+   - Added robust numeric parsing (safeNum) for panel position/scale
+   - Added ensureCommandsVisible() earlier & after every potential layout change
+   - Added force command panel opacity + fallback reapply each animation frame for first 2s
+   - Removed any multi-drop references (already removed)
+   - Added console helpers: window.showCommands(), window.resetCommandsPanel()
 */
 
 import * as THREE from 'three';
@@ -102,7 +103,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnCloseSettings= document.getElementById('btn-close-settings');
   const btnResetUI      = document.getElementById('btn-reset-ui');
 
-  // Settings inputs (multi-drop removed)
+  // Settings inputs
   const optDropSpeed    = document.getElementById('opt-drop-speed');
   const optGravity      = document.getElementById('opt-gravity');
   const optCrateScale   = document.getElementById('opt-crate-scale');
@@ -125,6 +126,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     settingsPanel?.classList.remove('open');
     settingsPanel?.setAttribute('aria-hidden','true');
   }
+
+  // Helpers for parsing
+  const safeNum=(v,fallback)=> {
+    const n=parseFloat(v);
+    return Number.isFinite(n)?n:fallback;
+  };
 
   // Performance
   let perfPanel;
@@ -217,6 +224,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         disposeRedemptionCrate(activeRedemptionCrate, gsap);
         activeRedemptionCrate=null;
         exitRedemptionFocus();
+        ensureCommandsVisible(true);
         resolve();
       }, 3600);
     });
@@ -376,7 +384,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     fxCanvas.height=container.clientHeight;
     layoutOverlays();
     updateTeaserLayout();
-    ensureCommandsVisible(); // re-check after resize
+    ensureCommandsVisible();
   }
 
   function layoutOverlays(){
@@ -591,7 +599,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   function spawnBallSet({username,avatarUrl}){
-    // Single spawn now (multi removed)
     spawnSingle({username,avatarUrl});
   }
   function spawnSingle({username,avatarUrl}){
@@ -793,7 +800,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  // ---- DRAG / SCALE (reused) ----
+  // ---- DRAG / SCALE ----
   function initDraggables(){
     const overlay=document.getElementById('overlay');
     const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
@@ -828,16 +835,16 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     const posKey=storageKey(panel,'pos');
     const scaleKey=storageKey(panel,'scale');
-    let left=40, top=80, scale=1;
+    let left=40, top=100, scale=1;
     try{
       const posJSON=localStorage.getItem(posKey);
       if(posJSON){
         const p=JSON.parse(posJSON);
-        if(typeof p.left==='number') left=p.left;
-        if(typeof p.top==='number') top=p.top;
+        left=safeNum(p.left,40);
+        top =safeNum(p.top ,100);
       }
       const sStr=localStorage.getItem(scaleKey);
-      if(sStr) scale=parseFloat(sStr);
+      if(sStr) scale=safeNum(sStr,1);
     }catch{}
     panel.dataset.x = left;
     panel.dataset.y = top;
@@ -857,8 +864,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         dragging=true;
         panel.classList.add('dragging');
         startX=e.clientX; startY=e.clientY;
-        startLeft=parseFloat(panel.dataset.x||'0');
-        startTop =parseFloat(panel.dataset.y||'0');
+        startLeft=safeNum(panel.dataset.x,40);
+        startTop =safeNum(panel.dataset.y,100);
         e.preventDefault();
       });
     });
@@ -895,7 +902,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       e.preventDefault();
       resizing=true;
       startX=e.clientX;
-      startScale=parseFloat(panel.dataset.scale||'1');
+      startScale=safeNum(panel.dataset.scale,1);
       panel.classList.add('dragging');
     });
     window.addEventListener('pointermove',e=>{
@@ -915,33 +922,38 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  function ensureCommandsVisible(forceResetIfOff=false){
+  function ensureCommandsVisible(force=false){
     if(!commandsPanel) return;
     const overlay=document.getElementById('overlay');
     const overlayRect=overlay.getBoundingClientRect();
-    // Calculate actual rect after transform
-    const s=parseFloat(commandsPanel.dataset.scale||'1');
-    const width=commandsPanel.offsetWidth * s;
-    const height=commandsPanel.offsetHeight * s;
-    let x=parseFloat(commandsPanel.dataset.x||'0');
-    let y=parseFloat(commandsPanel.dataset.y||'0');
+    let s=safeNum(commandsPanel.dataset.scale,1);
+    let x=safeNum(commandsPanel.dataset.x,40);
+    let y=safeNum(commandsPanel.dataset.y,100);
+    const baseW=commandsPanel.offsetWidth;
+    const baseH=commandsPanel.offsetHeight;
+    const width=baseW * s;
+    const height=baseH * s;
 
-    const outRight = x > overlayRect.width - 40;
-    const outBottom = y > overlayRect.height - 40;
-    const outLeft = x + width < 40;
-    const outTop = y + height < 40;
-    const tooSmall = s < 0.55;
+    const out = x > overlayRect.width - 40 ||
+                y > overlayRect.height - 40 ||
+                (x + width) < 40 ||
+                (y + height) < 40 ||
+                s < 0.45;
 
-    if(outRight || outBottom || outLeft || outTop || tooSmall || forceResetIfOff){
-      // Reset to safe center column
-      x = Math.min(Math.max(20, (overlayRect.width - width)/2), Math.max(0,overlayRect.width - width));
-      y = Math.min(Math.max(20, 120), Math.max(0,overlayRect.height - height));
+    if(out || force){
+      x = Math.min(Math.max(20,(overlayRect.width - baseW)/2), Math.max(0, overlayRect.width - baseW));
+      y = Math.min(Math.max(20,120), Math.max(0, overlayRect.height - baseH));
+      s = 1;
       commandsPanel.dataset.x = x;
       commandsPanel.dataset.y = y;
-      if(tooSmall) commandsPanel.dataset.scale = 1;
+      commandsPanel.dataset.scale = s;
       renderTransform(commandsPanel);
       saveState(commandsPanel);
     }
+
+    // Enforce visibility styles
+    commandsPanel.style.opacity='1';
+    commandsPanel.style.pointerEvents='auto';
   }
 
   function applyScale(panel,s){
@@ -949,17 +961,17 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderTransform(panel);
   }
   function renderTransform(panel){
-    const x=parseFloat(panel.dataset.x||'0');
-    const y=parseFloat(panel.dataset.y||'0');
-    const s=parseFloat(panel.dataset.scale||'1');
+    const x=safeNum(panel.dataset.x,40);
+    const y=safeNum(panel.dataset.y,100);
+    const s=safeNum(panel.dataset.scale,1);
     panel.style.transform=`translate(${x}px,${y}px) scale(${s})`;
   }
   function saveState(panel){
     const posKey=storageKey(panel,'pos');
     const scaleKey=storageKey(panel,'scale');
-    const x=parseFloat(panel.dataset.x||'0');
-    const y=parseFloat(panel.dataset.y||'0');
-    const s=parseFloat(panel.dataset.scale||'1');
+    const x=safeNum(panel.dataset.x,40);
+    const y=safeNum(panel.dataset.y,100);
+    const s=safeNum(panel.dataset.scale,1);
     localStorage.setItem(posKey,JSON.stringify({left:x,top:y}));
     localStorage.setItem(scaleKey,String(s));
   }
@@ -970,7 +982,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function clamp(v,a,b){ return v<a?a:v>b?b:v; }
 
   // UI events
-  btnGear?.addEventListener('click', showSettings);
+  btnGear?.addEventListener('click', ()=>{ showSettings(); ensureCommandsVisible(); });
   btnCloseSettings?.addEventListener('click', hideSettings);
   btnResetUI?.addEventListener('click', ()=>{
     if(!commandsPanel) return;
@@ -979,7 +991,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     commandsPanel.dataset.scale = 1;
     renderTransform(commandsPanel);
     saveState(commandsPanel);
+    ensureCommandsVisible(true);
   });
+
+  // Console helpers
+  window.showCommands = ()=>{ ensureCommandsVisible(true); commandsPanel?.classList.add('cmd-visible-debug'); };
+  window.resetCommandsPanel = ()=>{ localStorage.removeItem('plk_commands-panel_pos'); localStorage.removeItem('plk_commands-panel_scale'); btnResetUI.click(); };
 
   let audioBound=false;
   function bindAudioUnlockOnce(){
@@ -1045,6 +1062,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{ alert('Simulation failed.'); }
   });
 
+  // Safety loop for first 2 seconds to force visibility (guards race conditions)
+  function earlyVisibilityGuard(){
+    let start=performance.now();
+    function step(t){
+      if(t-start < 2000){
+        ensureCommandsVisible();
+        requestAnimationFrame(step);
+      }
+    }
+    requestAnimationFrame(step);
+  }
+
   function start(){
     loadSettings();
     initThree();
@@ -1055,7 +1084,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     initGiftCards();
     initDraggables();
     setTeaserScale(CRATE_SCALE);
-    ensureCommandsVisible();
+    earlyVisibilityGuard();
     startLoop();
   }
   start();
