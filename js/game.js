@@ -1,11 +1,22 @@
-/* game.js – Patch: restore missing hideSettings / showSettings, keep gift drop + all prior features
-   Fixes:
-   - Added back showSettings() and hideSettings() (ReferenceError fix).
-   - Ensures both buttons (gear / close) work.
-   - No other logic changed from previous gift-enabled version.
+/* game.js – Added Dynamic Board Layout Support (Board Variants)
+   New Features:
+   - Layout descriptors loaded from /config.layoutId or daily rotation fallback.
+   - Supports patterns: classic (triangular), honeycomb, gaps, spiral.
+   - buildBoard() replaced by buildBoardFromLayout() using boardLayouts.js.
+   - Detects layout changes at runtime; rebuild board + pegs + slot sensors seamlessly.
+   - Dev Helper: window.setLayout(id) to force a layout and rebuild.
+   - Gift mapping & crates & draggables from previous version retained.
+   - showSettings / hideSettings present (fixed earlier error).
+   - All existing reward, redemption, audio, gift logic intact.
 
-   NOTE: The warning about the password field not being in a form is harmless and can be ignored,
-   or you can wrap the admin inputs in a <form> if you want to silence the browser hint.
+   Integration Points:
+   - Imports getLayoutDescriptor & generatePegPositions from boardLayouts.js
+   - New globals: currentLayoutId, currentLayoutDescriptor
+   - Rebuild triggers overlay relayout & teaser update.
+
+   NOTE:
+   - If spiral pattern used, slot count can differ from rows+1.
+   - Layout rotation fallback picks layout by day-of-year mod library count (classic, honeycomb, gaps, spiral).
 */
 
 import * as THREE from 'three';
@@ -19,6 +30,7 @@ import {
   createRedemptionCrate, animateCrateEntrance, openCrate,
   disposeRedemptionCrate, setTeaserScale
 } from './pbrRewards.js';
+import { getLayoutDescriptor, generatePegPositions } from './boardLayouts.js';
 
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -53,18 +65,25 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const MAX_STEPS_BASE = 4;
   const maxStepsForFrame = dt => dt > 140 ? 1 : dt > 90 ? 2 : MAX_STEPS_BASE;
 
-  /* Board constants */
+  /* Board dynamic values (ROWS now dynamic) */
   const WORLD_HEIGHT = 100;
   let WORLD_WIDTH = 56.25;
   let BOARD_HEIGHT = WORLD_HEIGHT * 0.82;
   let BOARD_WIDTH  = 0;
-  let PEG_SPACING  = 4.2;
-  const ROWS = 12;
+  let PEG_SPACING  = 4.2; // recalculated per layout
+  let ROWS = 12;          // dynamic
+  let SLOT_COUNT = ROWS + 1;
   const PEG_RADIUS = 0.75;
   const BALL_RADIUS = 1.5;
   const WALL_THICKNESS = 2.0;
   const TRAY_RATIO = 0.22;
   let TRAY_HEIGHT = 0;
+
+  // Layout management
+  let currentLayoutId = null;
+  let currentLayoutDescriptor = null;
+  let pegInstancedMesh = null;
+  const layoutLibraryOrder = ['classic','honeycomb','gaps','spiral'];
 
   /* Tunables */
   let GRAVITY_MAG = 1.0;
@@ -100,6 +119,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   const targetCamOffset = new THREE.Vector3();
   const baseCamPos = new THREE.Vector3(0,0,100);
+
+  /* Peg body references for cleanup */
+  const pegBodies = [];
+  let wallBodies = [];
+  let floorBody = null;
 
   /* DOM references */
   const container       = document.getElementById('game-container');
@@ -137,7 +161,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
   const btnSimulate     = document.getElementById('btn-simulate');
 
-  /* ---- FIX: Define showSettings / hideSettings (were missing) ---- */
+  /* UI show / hide */
   function showSettings(){
     settingsPanel?.classList.add('open');
     settingsPanel?.setAttribute('aria-hidden','false');
@@ -146,7 +170,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     settingsPanel?.classList.remove('open');
     settingsPanel?.setAttribute('aria-hidden','true');
   }
-
   function showSettingsPanel(){ showSettings(); forceCommandsVisible(); }
 
   /* Helpers */
@@ -253,12 +276,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   /* Slots & Labels */
-  function buildSlots(slotCount){
+  function buildSlotArrays(slotCount){
+    // Keep distribution similar (center high)
     const center=Math.floor((slotCount-1)/2);
-    const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
-    SLOT_MULTIPLIERS=Array.from({length:slotCount},(_,i)=>mult(Math.abs(i-center)));
-    SLOT_POINTS=SLOT_MULTIPLIERS.map(m=>m*100);
+    const mult = d => d===0?16 : d===1?9 : d===2?5 : d===3?3 : 1;
+    SLOT_MULTIPLIERS = Array.from({length:slotCount}, (_,i)=> mult(Math.abs(i-center)));
+    SLOT_POINTS = SLOT_MULTIPLIERS.map(m=>m*100);
   }
+
   function renderSlotLabels(slotCount, framePx){
     slotLabelsEl.innerHTML='';
     SLOT_MULTIPLIERS.forEach(m=>{
@@ -268,6 +293,26 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       slotLabelsEl.appendChild(div);
     });
     trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
+  }
+
+  /* Layout selection logic */
+  function getDayOfYear(d=new Date()){
+    const start=new Date(d.getFullYear(),0,0);
+    const diff=d - start + (start.getTimezoneOffset()-d.getTimezoneOffset())*60000;
+    return Math.floor(diff/86400000);
+  }
+
+  function dailyRotatedLayout(){
+    const day = getDayOfYear();
+    return layoutLibraryOrder[day % layoutLibraryOrder.length];
+  }
+
+  function ensureLayout(layoutId){
+    const idToUse = layoutId || dailyRotatedLayout();
+    if(currentLayoutId === idToUse) return;
+    currentLayoutId = idToUse;
+    currentLayoutDescriptor = getLayoutDescriptor(idToUse, 'classic');
+    rebuildBoardFromLayout();
   }
 
   /* Backend base */
@@ -387,7 +432,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     WORLD_WIDTH=WORLD_HEIGHT*aspect;
     BOARD_HEIGHT=WORLD_HEIGHT*0.82;
     BOARD_WIDTH=Math.min(WORLD_WIDTH*0.88, BOARD_HEIGHT*0.9);
-    PEG_SPACING=BOARD_WIDTH/(ROWS+1);
     TRAY_HEIGHT=BOARD_HEIGHT*TRAY_RATIO;
   }
 
@@ -427,9 +471,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     boardDivider.style.display='block';
     boardTitle.style.left=(frame.x+22)+'px';
     boardTitle.style.top =(frame.y+18)+'px';
-    const slotCount=ROWS+1;
-    buildSlots(slotCount);
-    renderSlotLabels(slotCount, frame);
+
+    buildSlotArrays(SLOT_COUNT);
+    renderSlotLabels(SLOT_COUNT, frame);
   }
 
   /* Matter.js */
@@ -437,43 +481,91 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
     world.gravity.y=-Math.abs(GRAVITY_MAG);
-    buildBoard();
-    bindCollisions();
-    fxMgr=new FXManager2D(fxCanvas);
+    ensureLayout(null); // chooses daily fallback initially
   }
-  function buildBoard(){
-    const left=Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
-    const right=Bodies.rectangle( BOARD_WIDTH/2 + WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
-    const floor=Bodies.rectangle(0,-BOARD_HEIGHT/2 - 6,BOARD_WIDTH + WALL_THICKNESS*2,WALL_THICKNESS,{isStatic:true,label:'KILL'});
-    World.add(world,[left,right,floor]);
-    const startY=BOARD_HEIGHT/2 - 10;
-    TOP_ROW_Y=startY;
-    const rowH=PEG_SPACING*0.9;
-    const startX=-((ROWS-1)*PEG_SPACING)/2;
-    const pegPositions=[];
-    for(let r=0;r<ROWS;r++){
-      const y=startY - r*rowH;
-      for(let c=0;c<=r;c++){
-        const x=startX + c*PEG_SPACING + (ROWS-1-r)*(PEG_SPACING/2);
-        const peg=Bodies.circle(x,y,PEG_RADIUS,{isStatic:true,restitution:PEG_RESTITUTION,friction:0.01});
-        peg.label='PEG';
-        World.add(world,peg);
-        pegPositions.push({x,y});
-      }
-    }
-    addPegInstancedMesh(pegPositions);
+
+  /* ===== BOARD REBUILD WITH LAYOUT ===== */
+  function clearExistingBoard(){
+    // Remove previous slot sensors
+    slotSensors.forEach(s=>{ try{ World.remove(world,s.body); }catch{} });
     slotSensors=[];
-    const slotCount=ROWS+1;
-    const slotWidth=BOARD_WIDTH/slotCount;
+    // Remove walls
+    wallBodies.forEach(w=>{ try{ World.remove(world,w); }catch{} });
+    wallBodies=[];
+    if(floorBody){ try{ World.remove(world,floorBody);}catch{} floorBody=null; }
+    // Remove pegs
+    pegBodies.forEach(pb=>{ try{ World.remove(world,pb);}catch{} });
+    pegBodies.length=0;
+    // Remove instanced mesh
+    if(pegInstancedMesh){
+      scene.remove(pegInstancedMesh);
+      pegInstancedMesh.geometry.dispose();
+      pegInstancedMesh.material.dispose();
+      pegInstancedMesh=null;
+    }
+  }
+
+  function rebuildBoardFromLayout(){
+    if(!world || !currentLayoutDescriptor) return;
+    clearExistingBoard();
+
+    // Recompute PEG_SPACING & geometric distribution
+    ROWS = currentLayoutDescriptor.rows;
+    // PEG_SPACING determined after BOARD_WIDTH known -> compute after computeWorldSize
+    computeWorldSize();
+    // Derive peg positions from descriptor
+    const { pegPositions, rows, slotCount } = generatePegPositions(currentLayoutDescriptor, BOARD_WIDTH);
+    ROWS = rows;
+    SLOT_COUNT = slotCount;
+
+    // Estimate vertical extents to set TOP_ROW_Y
+    if(currentLayoutDescriptor.type === 'spiral'){
+      // Spiral: find max Y for top
+      const maxY = pegPositions.reduce((m,p)=>p.y>m?p.y:m, -Infinity);
+      TOP_ROW_Y = maxY;
+    } else {
+      // Triangular/honeycomb/gaps similarity: top row approx
+      TOP_ROW_Y = ROWS/2 * (BOARD_WIDTH/(ROWS+1));
+    }
+
+    // Create physical pegs
+    pegPositions.forEach(pp=>{
+      const peg=Bodies.circle(pp.x, pp.y, PEG_RADIUS, {
+        isStatic:true,
+        restitution:PEG_RESTITUTION,
+        friction:0.01,
+        label:'PEG'
+      });
+      pegBodies.push(peg);
+    });
+    World.add(world, pegBodies);
+
+    // Build instanced mesh
+    addPegInstancedMesh(pegPositions);
+
+    // Build walls & floor
+    const left=Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true,label:'WALL'});
+    const right=Bodies.rectangle( BOARD_WIDTH/2 + WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true,label:'WALL'});
+    wallBodies.push(left,right);
+    floorBody=Bodies.rectangle(0,-BOARD_HEIGHT/2 - 6,BOARD_WIDTH + WALL_THICKNESS*2,WALL_THICKNESS,{isStatic:true,label:'KILL'});
+    World.add(world,[left,right,floorBody]);
+
+    // Slot sensors
+    slotSensors=[];
+    const slotWidth=BOARD_WIDTH/SLOT_COUNT;
     const slotY=-BOARD_HEIGHT/2 + (TRAY_HEIGHT*0.35);
-    for(let i=0;i<slotCount;i++){
+    for(let i=0;i<SLOT_COUNT;i++){
       const x=-BOARD_WIDTH/2 + slotWidth*(i+0.5);
       const sensor=Bodies.rectangle(x,slotY,slotWidth,2.6,{isStatic:true,isSensor:true});
       sensor.label=`SLOT_${i}`;
       World.add(world,sensor);
       slotSensors.push({body:sensor,index:i});
     }
+
+    // Re-layout overlays
+    layoutOverlays();
   }
+
   function addPegInstancedMesh(pegPositions){
     const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
     const mat=new THREE.MeshPhysicalMaterial({
@@ -484,13 +576,23 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const inst=new THREE.InstancedMesh(geo,mat,pegPositions.length);
     const m=new THREE.Matrix4();
     const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
-    pegPositions.forEach(({x,y},i)=>{
+    for(let i=0;i<pegPositions.length;i++){
+      const {x,y}=pegPositions[i];
       m.compose(new THREE.Vector3(x,y,0),q,new THREE.Vector3(1,1,1));
       inst.setMatrixAt(i,m);
-    });
+    }
     inst.instanceMatrix.needsUpdate=true;
+    pegInstancedMesh=inst;
     scene.add(inst);
   }
+
+  /* Rebuild triggers from external actions */
+  window.setLayout = (id)=>{
+    console.log('[Layout] Forcing layout to', id);
+    ensureLayout(id);
+  };
+
+  /* Collision events */
   function bindCollisions(){
     Events.on(engine,'collisionStart', ev=>{
       for(const {bodyA,bodyB} of ev.pairs){
@@ -499,6 +601,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
     });
   }
+
   function handlePair(a,b){
     if(!a||!b) return;
     const slot=slotSensors.find(s=>s.body.id===b.id);
@@ -508,7 +611,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const points=SLOT_POINTS[idx]||100;
         a.plugin.scored=true;
         awardPoints(a.plugin.username,a.plugin.avatarUrl||'',points).catch(console.warn);
-        sfxScore(points>=1600);
+        sfxScore(points >= 1600);
         setTimeout(()=>tryRemoveBall(a),900);
       }
       return;
@@ -518,7 +621,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const mesh=meshById.get(a.id);
         if(mesh){
           const p=worldToScreen(mesh.position,camera,renderer);
-            fxMgr.addSparks(p.x,p.y,'#00f2ea',10);
+          fxMgr.addSparks(p.x,p.y,'#00f2ea',10);
         }
       }
       sfxBounce();
@@ -610,9 +713,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   /* Spawn */
   function spawnBallSet(o){ spawnSingle(o); }
   function spawnSingle({username,avatarUrl}){
-    const jitter=PEG_SPACING*0.35;
-    const dropX=Math.max(-BOARD_WIDTH/2+4,Math.min(BOARD_WIDTH/2-4,(Math.random()-0.5)*jitter));
-    const dropY=TOP_ROW_Y + PEG_SPACING*0.8;
+    // Horizontal jitter limited by board width minus margins
+    const margin=4;
+    const dropX = (Math.random()-0.5)*(BOARD_WIDTH - margin*2);
+    const dropY = TOP_ROW_Y + PEG_RADIUS*4;
     const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{restitution:BALL_RESTITUTION,friction:BALL_FRICTION,frictionAir:BALL_FRICTION_AIR,density:0.0018});
     body.label=`BALL_${username}`;
     body.plugin={username,avatarUrl,scored:false};
@@ -795,9 +899,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
           if(entry?.username){
             leaderboard[entry.username]={
               username:entry.username,
-              avatarUrl:entry.avatarUrl||'',
-              score:entry.score||0,
-              lastUpdate:entry.lastUpdate||0
+              avatarUrl: entry.avatarUrl||'',
+              score: entry.score||0,
+              lastUpdate: entry.lastUpdate||0
             };
           }
         }
@@ -809,6 +913,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const enabled=!!(data && data.spawnEnabled);
       spawnStatusEl.textContent=enabled?'true':'false';
       spawnStatusEl.style.color=enabled?'var(--good)':'var(--danger)';
+      // Layout ID retrieval
+      const layoutId = data?.layoutId || data?.layout || null;
+      if(layoutId){
+        ensureLayout(layoutId);
+      }
     });
   }
   function sanitize(u){
@@ -1132,6 +1241,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     loadSettings();
     initThree();
     initMatter();
+    bindCollisions();
     listenToEvents();
     initTeasers();
     initDevPanel();
