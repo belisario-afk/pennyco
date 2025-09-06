@@ -1,10 +1,14 @@
-// Game with improved dev redeem (bypass cost when "free" toggle), clickable teaser boxes, metallic UI.
+// game.js updated to use PBR teaser crates & redemption crate instead of CSS box.
 import * as THREE from 'three';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
   FXManager2D, initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore
 } from './utils.js';
 import { ensureRewardModelLoaded, createRewardModelInstance, animateRewardModel } from './rewardModel.js';
+import {
+  initPBRTeasers, updateTeaserLayout, raycastTeasers,
+  createRedemptionCrate, animateCrateEntrance, openCrate, disposeRedemptionCrate
+} from './pbrRewards.js';
 
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -18,7 +22,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const REWARD_NAMES = { t1: 'Tier 1', t2: 'Tier 2', t3: 'Tier 3' };
   const REDEEM_PREFIX = 'redeem:';
 
-  const DEV_BYPASS_DEFAULT = true; // default dev free mode on
+  const DEV_BYPASS_DEFAULT = true;
   const SHOW_PERF_PANEL = true;
   const ADAPTIVE_QUALITY = true;
 
@@ -53,7 +57,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const MAX_H_SPEED = 22;
 
   let engine, world;
-  let scene, camera, renderer, ambient, dirLight, pegsInstanced;
+  let scene, camera, renderer;
+  let ambient, dirLight;
   let composer, bloomPass, smaaPass;
   let fxMgr;
 
@@ -65,7 +70,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const leaderboard = {};
   const processedEvents = new Set();
   const processedRedemptions = new Set();
-  const ballCountForUser = new Map();
 
   let SLOT_POINTS = [];
   let SLOT_MULTIPLIERS = [];
@@ -73,7 +77,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  // DOM references
+  // DOM
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -86,11 +90,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const leaderboardList = document.getElementById('leaderboard-list');
   const spawnStatusEl   = document.getElementById('spawn-status');
   const redeemLayer     = document.getElementById('redeem-layer');
-  const rewardTeasersRoot = document.getElementById('reward-teasers');
   const devPanel        = document.getElementById('dev-panel');
   const devFreeToggle   = document.getElementById('dev-free-toggle');
 
-  // Settings / admin
+  // Settings inputs
   const btnGear         = document.getElementById('btn-gear');
   const settingsPanel   = document.getElementById('settings-panel');
   const btnCloseSettings= document.getElementById('btn-close-settings');
@@ -107,33 +110,32 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
   const btnSimulate     = document.getElementById('btn-simulate');
 
+  // Dev toggle
+  devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
+  devFreeToggle.addEventListener('change',()=> {
+    localStorage.setItem('plk_dev_free', devFreeToggle.checked?'true':'false');
+  });
+
   // Perf
-  let perfPanel, perfData = { avgMs:0, worstMs:0, frames:0, qualityTier:2 };
+  let perfPanel, perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
   const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
   let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
   let frameSamples=0, frameAccum=0;
 
-  // Geometry / textures
-  const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS, 20, 14);
+  // Shared geo/material
+  const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
   let sharedBallBaseMaterial = null;
   const avatarTextureCache = new Map();
 
-  // Redeem queue
+  // Redemption
   const redeemQueue = [];
   let redeemActive = false;
-
-  // Active reward model
   let activeReward3D = null;
   let activeRewardDisposeFn = null;
+  let activeRedemptionCrate = null;
 
-  // Dev flags
-  devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT ? 'true':'false')) === 'true';
-  devFreeToggle.addEventListener('change', () => {
-    localStorage.setItem('plk_dev_free', devFreeToggle.checked ? 'true':'false');
-  });
-
-  function enqueueRedemption(evId, tier, username, avatarUrl) {
-    redeemQueue.push({ evId, tier, username, avatarUrl });
+  function enqueueRedemption(evId,tier,username,avatarUrl){
+    redeemQueue.push({evId,tier,username,avatarUrl});
     runNextRedemption();
   }
   function runNextRedemption(){
@@ -148,7 +150,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   async function prepare3DModel(){
-    try{ await ensureRewardModelLoaded(); return true; } catch { return false; }
+    try { await ensureRewardModelLoaded(); return true; }
+    catch { return false; }
   }
 
   function attachReward3D(tier){
@@ -159,14 +162,16 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     try{
       const model=createRewardModelInstance(tier==='t3'?22:tier==='t2'?19:16);
-      model.position.set(0,WORLD_HEIGHT*0.15,30);
+      model.position.set(0, WORLD_HEIGHT*0.25, 15);
       model.renderOrder=999;
       scene.add(model);
       activeReward3D=model;
       activeRewardDisposeFn=animateRewardModel(model, gsap);
       model.scale.multiplyScalar(0.01);
-      gsap.to(model.scale,{x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,duration:.55,ease:'back.out(1.7)'});
-      gsap.fromTo(model.rotation,{y:model.rotation.y+Math.PI*2},{y:model.rotation.y,duration:.65,ease:'expo.out'});
+      gsap.to(model.scale,{
+        x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,
+        duration:.55,ease:'back.out(1.7)'
+      });
     }catch{}
   }
   function detachReward3D(){
@@ -187,53 +192,47 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function playRedemptionAnimation({evId,tier,username,avatarUrl}){
     return new Promise(async resolve=>{
-      const cost=REWARD_COSTS[tier]||0;
-      const wrapper=document.createElement('div');
-      wrapper.className=`redeem-anim tier-${tier}`;
-      wrapper.dataset.event=evId;
-      wrapper.innerHTML=`
-        <div class="redeem-box">
-          <div class="box-core"></div>
-          <div class="box-lid"></div>
-          <div class="prize"><span class="prize-emoji">🖕</span></div>
-        </div>
-        <div class="redeem-user">
-          <img class="redeem-ava" src="${avatarUrl||''}" alt="">
-          <div class="redeem-name">@${username}</div>
-          <div class="redeem-tier-label">${REWARD_NAMES[tier]||tier} • -${cost}</div>
-        </div>`;
-      redeemLayer.appendChild(wrapper);
-      const lid=wrapper.querySelector('.box-lid');
-      const prize=wrapper.querySelector('.prize');
-      const emoji=wrapper.querySelector('.prize-emoji');
+      // Create user info HUD card
+      const hud=document.createElement('div');
+      hud.className=`redeem-user-card tier-${tier}`;
+      hud.innerHTML=`
+        <img class="redeem-ava" src="${avatarUrl||''}" alt="">
+        <div class="redeem-name">@${username}</div>
+        <div class="redeem-tier-label">${REWARD_NAMES[tier]} • -${REWARD_COSTS[tier]||0}</div>
+      `;
+      redeemLayer.appendChild(hud);
+      gsap.to(hud,{opacity:1, y:0, scale:1, duration:.55, ease:'back.out(1.6)'});
 
-      const modelLoaded=await prepare3DModel().catch(()=>false);
+      // 3D crate
+      activeRedemptionCrate = createRedemptionCrate(tier);
+      activeRedemptionCrate.position.set(0, WORLD_HEIGHT*0.1, 10);
+      scene.add(activeRedemptionCrate);
+      animateCrateEntrance(activeRedemptionCrate, gsap);
 
-      const tl=gsap.timeline({
-        defaults:{ease:'expo.out'},
-        onComplete:()=> {
-          gsap.to(wrapper,{
-            opacity:0,scale:0.8,duration:.45,ease:'power1.in',delay:1.6,
-            onComplete:()=>{ redeemLayer.removeChild(wrapper); detachReward3D(); resolve(); }
-          });
+      const modelLoaded = await prepare3DModel().catch(()=>false);
+
+      // Open after short delay
+      setTimeout(async ()=>{
+        await openCrate(activeRedemptionCrate, gsap);
+        if(modelLoaded){
+          attachReward3D(tier);
         }
-      });
+      }, 850);
 
-      tl.to(wrapper,{opacity:1,scale:1,duration:.45,ease:'elastic.out(1,0.55)'})
-        .to(lid,{rotationX:-Math.PI*0.95,duration:.55,ease:'back.in(1.3)'},'-=0.15')
-        .add(()=>{
-          if(modelLoaded){
-            if(emoji) emoji.style.display='none';
-            attachReward3D(tier);
-            gsap.to(prize,{opacity:1,duration:.25});
-          } else {
-            gsap.to(prize,{opacity:1,y:'-=60',scale:1,duration:.55,ease:'back.out(1.4)'});
-          }
-        },'-=0.1');
+      // Cleanup after delay
+      setTimeout(()=>{
+        gsap.to(hud,{opacity:0, y:20, scale:0.9, duration:.45, ease:'power1.in', onComplete:()=>{
+          redeemLayer.removeChild(hud);
+        }});
+        detachReward3D();
+        disposeRedemptionCrate(activeRedemptionCrate, gsap);
+        activeRedemptionCrate=null;
+        resolve();
+      }, 4200);
     });
   }
 
-  /* Slot / multipliers */
+  // Slots
   function buildSlots(slotCount){
     const center=Math.floor((slotCount-1)/2);
     const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
@@ -258,7 +257,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
   }
 
-  /* Backend settings */
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -267,10 +265,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function adminFetch(path,opt={}){
     const base=getBackendBaseUrl();
     if(!base) throw new Error('Backend URL not set.');
-    return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
+    return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`, opt);
   }
 
-  /* Settings apply */
   function loadSettings(){
     const g=Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value=String(g);
     const ds=Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value=String(ds);
@@ -306,7 +303,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function showSettings(){ gsap.to(settingsPanel,{x:0,duration:.35,ease:'expo.out'}); settingsPanel.setAttribute('aria-hidden','false'); }
   function hideSettings(){ gsap.to(settingsPanel,{x:'110%',duration:.35,ease:'expo.in'}); settingsPanel.setAttribute('aria-hidden','true'); }
 
-  /* Three init */
+  // Three
+  let pegsInstanced;
   function initThree(){
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -319,12 +317,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
     scene=new THREE.Scene();
     computeWorldSize();
-    camera=new THREE.OrthographicCamera(-WORLD_WIDTH/2,WORLD_WIDTH/2,WORLD_HEIGHT/2,-WORLD_HEIGHT/2,0.1,200);
+    camera=new THREE.OrthographicCamera(-WORLD_WIDTH/2,WORLD_WIDTH/2,WORLD_HEIGHT/2,-WORLD_HEIGHT/2,0.1,300);
     camera.position.set(0,0,100);
 
-    ambient=new THREE.AmbientLight(0xffffff,0.95);
-    dirLight=new THREE.DirectionalLight(0xffffff,0.9);
-    dirLight.position.set(-8,16,40);
+    ambient=new THREE.AmbientLight(0xffffff,0.85);
+    dirLight=new THREE.DirectionalLight(0xffffff,1.1);
+    dirLight.position.set(-18,30,60);
+    dirLight.castShadow=false;
     scene.add(ambient,dirLight);
 
     composer=new EffectComposer(renderer);
@@ -343,6 +342,17 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       perfPanel.textContent='Perf';
       document.body.appendChild(perfPanel);
     }
+
+    // Pointer picking for teaser crates
+    const raycaster = new THREE.Raycaster();
+    const pt = new THREE.Vector2();
+    renderer.domElement.addEventListener('pointerdown', e=>{
+      const rect=renderer.domElement.getBoundingClientRect();
+      pt.x = ((e.clientX-rect.left)/rect.width)*2 - 1;
+      pt.y = -((e.clientY-rect.top)/rect.height)*2 + 1;
+      raycaster.setFromCamera(pt, camera);
+      raycastTeasers(raycaster);
+    });
   }
 
   function computeWorldSize(){
@@ -370,6 +380,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     fxCanvas.width=container.clientWidth;
     fxCanvas.height=container.clientHeight;
     layoutOverlays();
+    updateTeaserLayout();
   }
 
   function layoutOverlays(){
@@ -404,7 +415,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderSlotLabels(slotCount, frame);
   }
 
-  /* Matter init */
+  // Matter
   function initMatter(){
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
@@ -465,8 +476,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
     const mat=new THREE.MeshPhysicalMaterial({
-      color:0x86f7ff, metalness:0.35, roughness:0.35,
-      clearcoat:0.6, clearcoatRoughness:0.2,
+      color:0x86f7ff,metalness:0.35,roughness:0.35,
+      clearcoat:0.6,clearcoatRoughness:0.2,
       emissive:new THREE.Color(0x00ffff),
       emissiveIntensity:0.30
     });
@@ -485,9 +496,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function bindCollisions(){
     Events.on(engine,'collisionStart', ev=>{
-      for(const {bodyA, bodyB} of ev.pairs){
-        handlePair(bodyA, bodyB);
-        handlePair(bodyB, bodyA);
+      for(const {bodyA,bodyB} of ev.pairs){
+        handlePair(bodyA,bodyB);
+        handlePair(bodyB,bodyA);
       }
     });
   }
@@ -520,7 +531,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
-  /* Performance adaptation */
+  // Performance adaptation
   function adaptQuality(frameMs){
     frameAccum += frameMs;
     frameSamples++;
@@ -609,7 +620,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Spawning */
+  // Spawning
   function spawnBallSet({username, avatarUrl}){
     const multi=Math.max(1, Math.min(5, Number(optMultiDrop.value||1)));
     for(let i=0;i<multi;i++) spawnSingle({username, avatarUrl});
@@ -629,12 +640,16 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     body.plugin={ username, avatarUrl, scored:false };
     World.add(world, body);
     dynamicBodies.add(body);
-    Body.setVelocity(body,{x:0,y:0}); Body.setAngularVelocity(body,0);
+    Body.setVelocity(body,{x:0,y:0});
+    Body.setAngularVelocity(body,0);
 
     if(!sharedBallBaseMaterial){
       sharedBallBaseMaterial=new THREE.MeshPhysicalMaterial({
-        color:0xffffff, metalness:0.2, roughness:0.6,
-        clearcoat:0.7, clearcoatRoughness:0.25,
+        color:0xffffff,
+        metalness:0.2,
+        roughness:0.6,
+        clearcoat:0.7,
+        clearcoatRoughness:0.25,
         emissive: NEON? new THREE.Color(0x00c6ff): new THREE.Color(0x000000),
         emissiveIntensity: NEON?0.04:0
       });
@@ -664,6 +679,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }catch{}
     };
     if('requestIdleCallback' in window) requestIdleCallback(applyTex,{timeout:600}); else setTimeout(applyTex,0);
+
     sfxDrop();
   }
 
@@ -685,12 +701,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       labelById.delete(body.id);
       dynamicBodies.delete(body);
       World.remove(world, body);
-      const u=body.plugin?.username;
-      if(u) ballCountForUser.set(u, Math.max(0,(ballCountForUser.get(u)||1)-1));
     }catch{}
   }
 
-  /* Points / leaderboard */
+  // Points
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=(current.score||0)+points;
@@ -702,29 +716,27 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       });
     }catch{}
   }
-
   function setPointsLocal(username, avatarUrl, score){
     leaderboard[username]={ username, avatarUrl, score, lastUpdate:Date.now() };
     refreshLeaderboard();
   }
-
   function deductPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     if((current.score||0) < points) return false;
     const next=current.score - points;
-    leaderboard[username]={ username, avatarUrl, score: next, lastUpdate: Date.now() };
+    leaderboard[username]={ username, avatarUrl, score: next, lastUpdate:Date.now() };
     refreshLeaderboard();
     FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
       username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
     }).catch(()=>{});
     return true;
   }
-
   function refreshLeaderboard(){
     const entries=Object.values(leaderboard).sort((a,b)=>b.score-a.score).slice(0,50);
     leaderboardList.innerHTML='';
     for(const e of entries){
-      const li=document.createElement('li'); li.className='lb-item';
+      const li=document.createElement('li');
+      li.className='lb-item';
       const ava=document.createElement('div'); ava.className='lb-ava';
       if(e.avatarUrl) ava.style.backgroundImage=`url(${e.avatarUrl})`;
       const name=document.createElement('div'); name.className='lb-name'; name.textContent='@'+(e.username||'viewer');
@@ -733,40 +745,24 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       leaderboardList.appendChild(li);
     }
   }
-
   function clearLeaderboardLocal(){
     for(const k of Object.keys(leaderboard)) delete leaderboard[k];
     leaderboardList.innerHTML='';
   }
 
-  /* Redemption handling */
   function handleRedeemEvent(eventId, username, avatarUrl, tier){
     if(processedRedemptions.has(eventId)) return;
     processedRedemptions.add(eventId);
     const cost=REWARD_COSTS[tier];
     if(!cost) return;
-    // Dev bypass
-    if(devFreeToggle.checked){
-      // Ensure local leaderboard has enough score or bypass
-      if(!(leaderboard[username]?.score >= cost)){
-        setPointsLocal(username, avatarUrl, cost); // seed exactly cost to allow deduct
-      }
+    if(devFreeToggle.checked && (leaderboard[username]?.score||0) < cost){
+      setPointsLocal(username, avatarUrl, cost);
     }
-    if(!deductPoints(username, avatarUrl, cost)){
-      flashTeaserLack(tier);
-      return;
-    }
+    if(!deductPoints(username, avatarUrl, cost)) return;
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
-  function flashTeaserLack(tier){
-    if(!rewardTeasersRoot) return;
-    const box=rewardTeasersRoot.querySelector(`.teaser-box[data-tier="${tier}"] .tb-core`);
-    if(!box) return;
-    gsap.fromTo(box,{filter:'brightness(1)'},{filter:'brightness(2.2)',duration:.15,yoyo:true,repeat:4,ease:'power2.inOut'});
-  }
-
-  /* Firebase / Poll listeners */
+  // Firebase
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
@@ -815,44 +811,23 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return s ? s.slice(0,24) : 'viewer';
   }
 
-  /* Teaser box interactions */
-  function initTeaserBoxes(){
-    if(!rewardTeasersRoot) return;
-    rewardTeasersRoot.querySelectorAll('.teaser-box').forEach(box=>{
-      const tier=box.dataset.tier;
-      const lid = box.querySelector('.tb-lid');
-      const core= box.querySelector('.tb-core');
-      // Idle lid float & subtle rotation
-      const idle=gsap.timeline({repeat:-1});
-      idle.to(lid,{rotationX:-14*Math.PI/180,duration:1.8,ease:'sine.inOut'})
-          .to(lid,{rotationX:0,duration:1.6,ease:'sine.inOut'});
-      const wobble=gsap.timeline({repeat:-1, delay:Math.random()*2});
-      wobble.to(core,{rotationZ:0.06,duration:.25})
-            .to(core,{rotationZ:-0.05,duration:.3})
-            .to(core,{rotationZ:0,duration:.25})
-            .to(core,{duration:2});
-
-      box.addEventListener('click', ()=>{
-        // Attempt redeem using dev user
-        devRedeem(tier,'ClickUser');
-      });
-      box.addEventListener('keypress',e=>{
-        if(e.key==='Enter' || e.key===' '){
-          e.preventDefault(); box.click();
-        }
-      });
-      box.title=`${REWARD_NAMES[tier]} - ${REWARD_COSTS[tier].toLocaleString()} pts • Command !${tier}`;
+  // Teasers
+  function initTeasers(){
+    initPBRTeasers({
+      scene,
+      camera,
+      renderer,
+      gsap,
+      onCrateClick:(tier)=> devRedeem(tier,'ClickUser')
     });
   }
 
-  /* Dev helpers */
+  // Dev helpers
   function devRedeem(tier='t1', user='DevUser'){
     const id='dev_'+Date.now()+'_'+Math.random().toString(36).slice(2);
-    handleRedeemEvent(id, user, '', tier);
+    handleRedeemEvent(id,user,'',tier);
   }
-  function devDrop(user='DevUser'){
-    spawnBallSet({ username:user, avatarUrl:'' });
-  }
+  function devDrop(user='DevUser'){ spawnBallSet({ username:user, avatarUrl:'' }); }
   window.devRedeem=devRedeem;
   window.devDrop=devDrop;
 
@@ -869,7 +844,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* UI & Audio binding */
+  // UI / audio
   btnGear.addEventListener('click', showSettings);
   btnCloseSettings.addEventListener('click', hideSettings);
   let audioBound=false;
@@ -938,13 +913,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{ alert('Simulation failed.'); }
   });
 
-  /* Init */
   function start(){
     loadSettings();
     initThree();
     initMatter();
     listenToEvents();
-    initTeaserBoxes();
+    initTeasers();
     initDevPanel();
     startLoop();
   }

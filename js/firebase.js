@@ -1,4 +1,4 @@
-// Firebase REST polling helper with optional auth + local fallback events
+// (unchanged from previous version)
 const dbBase = (window.PLINKO_DB_URL || 'https://plinkoo-82abc-default-rtdb.firebaseio.com').replace(/\/+$/,'');
 const listeners = [];
 const valueListeners = [];
