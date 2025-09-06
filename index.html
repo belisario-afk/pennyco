@@ -49,6 +49,7 @@
             <button id="btn-gear" aria-label="Settings" title="Settings">
               <span class="gear">⚙️</span>
             </button>
+            <button id="btn-show-commands" title="Show Commands Panel" aria-label="Show commands panel">📜</button>
           </div>
         </div>
 
@@ -66,7 +67,9 @@
           </div>
 
           <section id="commands-panel" aria-label="Commands List" data-drag data-scale class="drag-enabled">
-            <div class="cmd-title drag-handle" title="Drag to move">COMMANDS</div>
+            <div class="cmd-title drag-handle" title="Drag to move">COMMANDS
+              <button class="mini-close" id="btn-hide-commands" title="Hide Commands">✖</button>
+            </div>
 
             <div class="cmd-section">
               <h4 class="cmd-section-title">REWARDS (Spend Points)</h4>
@@ -123,7 +126,7 @@
               <div class="gift-hint">Replace these placeholders with real TikTok gift images.</div>
             </div>
 
-            <div class="cmd-move-hint">Drag corner to resize • Drag panel to move</div>
+            <div class="cmd-move-hint">Drag corner to resize • Drag panel to move • Press C to toggle</div>
           </section>
         </div>
 
@@ -198,7 +201,7 @@
         <div class="dev-row">
           <button data-act="drop">Drop</button>
           <button data-act="redeem-t1">T1</button>
-            <button data-act="redeem-t2">T2</button>
+          <button data-act="redeem-t2">T2</button>
           <button data-act="redeem-t3">T3</button>
           <label class="dev-free"><input id="dev-free-toggle" type="checkbox"> free</label>
         </div>

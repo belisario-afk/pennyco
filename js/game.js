@@ -1,8 +1,10 @@
-/* game.js (Command panel safeguard & UI reset)
-   Additions:
-     - ensureVisiblePanels(): clamps / restores off‑screen panels (esp. commands-panel)
-     - Reset UI button (btn-reset-ui) clears stored panel positions/scales and recenters
-     - Safety timer to clear stuck redeem-focus mode after 6s
+/* game.js (Commands Visibility Fix)
+   Additions / Changes:
+     - Added forceCommandsVisible(), toggleCommandsPanel(), ensureVisiblePanels() improvements
+     - Added controls buttons (show / hide) & keyboard shortcut 'c' / 'C'
+     - When panel is off-screen or scaled too small it is reset & highlighted (panel-recover)
+     - Redemption focus no longer hides commands panel
+     - UI reset also restores commands panel
 */
 
 import * as THREE from 'three';
@@ -25,6 +27,7 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 const { Engine, World, Bodies, Events, Body } = Matter;
 
 (() => {
+  /* --- Config --- */
   const REWARD_COSTS = { t1:1000, t2:5000, t3:10000 };
   const REWARD_NAMES = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
   const REDEEM_PREFIX = 'redeem:';
@@ -62,12 +65,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const MAX_SPEED = 28;
   const MAX_H_SPEED = 22;
 
+  /* --- State --- */
   let engine, world;
   let scene, camera, renderer;
   let ambient, dirLight;
   let composer, bloomPass, smaaPass;
   let fxMgr;
-
   let slotSensors = [];
   const dynamicBodies = new Set();
   const meshById = new Map();
@@ -80,7 +83,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  // DOM
+  /* --- DOM --- */
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -100,8 +103,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnGear         = document.getElementById('btn-gear');
   const btnCloseSettings= document.getElementById('btn-close-settings');
   const btnResetUI      = document.getElementById('btn-reset-ui');
+  const btnShowCommands = document.getElementById('btn-show-commands');
+  const btnHideCommands = document.getElementById('btn-hide-commands');
 
-  // Settings inputs
+  // Settings controls
   const optDropSpeed    = document.getElementById('opt-drop-speed');
   const optGravity      = document.getElementById('opt-gravity');
   const optMultiDrop    = document.getElementById('opt-multidrop');
@@ -117,6 +122,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
   const btnSimulate     = document.getElementById('btn-simulate');
 
+  /* --- Settings Panel Show/Hide --- */
   function showSettings(){
     settingsPanel?.classList.add('open');
     settingsPanel?.setAttribute('aria-hidden','false');
@@ -126,17 +132,19 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     settingsPanel?.setAttribute('aria-hidden','true');
   }
 
-  // Perf
+  /* --- Performance --- */
   let perfPanel;
   const perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
   const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
   let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
   let frameSamples=0, frameAccum=0;
 
+  /* --- Shared geometry / textures --- */
   const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
   let sharedBallBaseMaterial = null;
   const avatarTextureCache = new Map();
 
+  /* --- Redemption --- */
   const redeemQueue = [];
   let redeemActive = false;
   let activeReward3D = null;
@@ -145,8 +153,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function enterRedemptionFocus(){
     document.body.classList.add('redeem-focus');
-    // safety auto-clear
-    setTimeout(()=>document.body.classList.remove('redeem-focus'), 6000);
+    setTimeout(()=>document.body.classList.remove('redeem-focus'),6000);
   }
   function exitRedemptionFocus(){
     document.body.classList.remove('redeem-focus');
@@ -161,7 +168,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const item=redeemQueue.shift();
     if(!item) return;
     redeemActive=true;
-    playRedemptionAnimation(item).then(()=>{ redeemActive=false; runNextRedemption(); });
+    playRedemptionAnimation(item).then(()=>{redeemActive=false;runNextRedemption();});
   }
   async function prepare3DModel(){
     try{ await ensureRewardModelLoaded(); return true; }catch{ return false; }
@@ -200,6 +207,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function playRedemptionAnimation({evId,tier,username,avatarUrl}){
     return new Promise(async resolve=>{
       enterRedemptionFocus();
+      forceCommandsVisible(); // always ensure commands shown during redemption
       const hud=document.createElement('div');
       hud.className=`redeem-user-card tier-${tier}`;
       hud.innerHTML=`<img class="redeem-ava" src="${avatarUrl||''}" alt=""><div class="redeem-name">@${username}</div><div class="redeem-tier-label">${REWARD_NAMES[tier]} • -${REWARD_COSTS[tier]||0}</div>`;
@@ -228,6 +236,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
+  /* --- Slots --- */
   function buildSlots(slotCount){
     const center=Math.floor((slotCount-1)/2);
     const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
@@ -248,6 +257,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
   }
 
+  /* --- Backend helpers --- */
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -259,6 +269,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
   }
 
+  /* --- Settings load/save --- */
   devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
   devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
@@ -297,9 +308,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
+  /* --- Three.js --- */
   let pegsInstanced;
   let baseCamPos=new THREE.Vector3(0,0,100);
   let targetCamOffset=new THREE.Vector3();
+
   function initThree(){
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -384,7 +397,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     fxCanvas.height=container.clientHeight;
     layoutOverlays();
     updateTeaserLayout();
-    ensureVisiblePanels(); // re-clamp after resize
+    ensureVisiblePanels();
   }
 
   function layoutOverlays(){
@@ -409,6 +422,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderSlotLabels(slotCount, frame);
   }
 
+  /* --- Matter --- */
   function initMatter(){
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
@@ -511,6 +525,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
+  /* --- Performance Loop --- */
   function adaptQuality(frameMs){
     frameAccum+=frameMs;
     frameSamples++;
@@ -556,17 +571,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       clampVelocities();
       fxMgr.update(fxCtx,dt);
       updateThreeFromMatter();
-
       camera.position.x += (0 + targetCamOffset.x - camera.position.x)*0.06;
       camera.position.y += (0 + targetCamOffset.y - camera.position.y)*0.06;
-
       if(NEON){
         vibranceTime += dt*0.001;
         const pulse = 1 + Math.sin(vibranceTime*2.1)*0.14*VIBRANCE_PULSE;
         bloomPass.strength = (perfData.qualityTier===0?0.32:0.5)*pulse + (NEON?0.08:0);
         renderer.toneMappingExposure = 1.15 * (1 + 0.07*VIBRANCE_PULSE*Math.sin(vibranceTime*1.4+1));
       }
-
       const t0=performance.now();
       (bloomPass.enabled || smaaPass.enabled)?composer.render():renderer.render(scene,camera);
       adaptQuality(dt + (performance.now()-t0));
@@ -598,6 +610,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
+  /* --- Spawning --- */
   function spawnBallSet({username,avatarUrl}){
     const multi=Math.max(1,Math.min(5,Number(optMultiDrop.value||1)));
     for(let i=0;i<multi;i++) spawnSingle({username,avatarUrl});
@@ -664,6 +677,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{}
   }
 
+  /* --- Points / Leaderboard --- */
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=(current.score||0)+points;
@@ -720,6 +734,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
+  /* --- Event listeners (Firebase mock) --- */
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
@@ -765,6 +780,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return s ? s.slice(0,24) : 'viewer';
   }
 
+  /* --- Teasers & Dev --- */
   function initTeasers(){
     initPBRTeasers({
       scene,
@@ -800,7 +816,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  // ---------- PANEL DRAG/SCALE (existing logic trimmed to essentials) ----------
+  /* --- Panel Drag/Scale --- */
   function initDraggables(){
     const overlay=document.getElementById('overlay');
     const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
@@ -822,39 +838,21 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       saveState(el);
     }, { passive:false });
     ensureVisiblePanels();
+    forceCommandsVisible();
   }
 
-  function ensureVisiblePanels(){
-    const overlay=document.getElementById('overlay');
+  function computeDefaultPosition(panel, overlay){
     const oRect=overlay.getBoundingClientRect();
-    document.querySelectorAll('[data-drag][data-scale]').forEach(panel=>{
-      const pRect=panel.getBoundingClientRect();
-      // translate extracted from dataset
-      let x=parseFloat(panel.dataset.x||'0');
-      let y=parseFloat(panel.dataset.y||'0');
-      let changed=false;
-      if(pRect.width > oRect.width) { x=8; changed=true; }
-      if(pRect.height> oRect.height){ y=8; changed=true; }
-      if(pRect.right < oRect.left + 40){ x=8; changed=true; }
-      if(pRect.bottom< oRect.top  + 40){ y=8; changed=true; }
-      if(pRect.left  > oRect.right - 40){ x = oRect.width - pRect.width - 16; changed=true; }
-      if(pRect.top   > oRect.bottom- 40){ y = oRect.height - pRect.height - 16; changed=true; }
-      if(changed){
-        panel.dataset.x = x;
-        panel.dataset.y = y;
-        // also clamp scale if too small
-        let s=parseFloat(panel.dataset.scale||'1');
-        if(s<0.3){ s=0.8; panel.dataset.scale=s; }
-        renderTransform(panel);
-        saveState(panel);
-      }
-    });
-    // guarantee commands panel visible
-    if(commandsPanel && commandsPanel.style.display==='none'){
-      commandsPanel.style.display='block';
-    }
+    const defaults={
+      'commands-panel':{x:oRect.width-380,y:120},
+      'leaderboard':{x:14,y:120},
+      'reward-teasers':{x:oRect.width-380,y:14},
+      'settings-panel':{x:oRect.width-400,y:80},
+      'controls-panel':{x:oRect.width-280,y:14}
+    };
+    const d=defaults[panel.id];
+    return d ? {left:d.x,top:d.y} : {left:Math.min(40,oRect.width-200),top:Math.min(80,oRect.height-200)};
   }
-
   function preparePanel(panel, overlay){
     panel.style.position='absolute';
     if(!panel.querySelector('.resize-handle')){
@@ -873,18 +871,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     panel.dataset.y = top;
     panel.dataset.scale = scale;
     renderTransform(panel);
-  }
-  function computeDefaultPosition(panel, overlay){
-    const oRect=overlay.getBoundingClientRect();
-    const defaultOffsets = {
-      'commands-panel': { x:oRect.width - 380, y:120 },
-      'leaderboard': { x:14, y:120 },
-      'reward-teasers': { x:oRect.width - 380, y:14 },
-      'settings-panel': { x:oRect.width - 400, y:80 }
-    };
-    const d = defaultOffsets[panel.id];
-    if(d) return { left:d.x, top:d.y };
-    return { left:Math.min(40,oRect.width-200), top:Math.min(80,oRect.height-200) };
   }
   function attachDrag(panel, overlay){
     const dragHandles = panel.querySelectorAll('.drag-bar, .cmd-title, .drag-handle');
@@ -905,7 +891,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
     window.addEventListener('pointermove',e=>{
       if(!dragging) return;
-      const oRect=overlay.getBoundingClientRect();
+      const oRect=document.getElementById('overlay').getBoundingClientRect();
       const dx=e.clientX-startX;
       const dy=e.clientY-startY;
       let nx=startLeft+dx;
@@ -977,18 +963,83 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
   function clamp(v,a,b){ return v<a?a:v>b?b:v; }
 
-  // UI / Audio
+  /* --- Commands Panel Visibility Helpers --- */
+  function forceCommandsVisible(){
+    if(!commandsPanel) return;
+    commandsPanel.classList.remove('hidden-soft');
+    commandsPanel.style.display='block';
+    if(!commandsPanel.dataset.scale || parseFloat(commandsPanel.dataset.scale) < 0.35){
+      commandsPanel.dataset.scale='1';
+    }
+    if(!commandsPanel.dataset.x || !commandsPanel.dataset.y){
+      const overlay=document.getElementById('overlay');
+      const oRect=overlay.getBoundingClientRect();
+      commandsPanel.dataset.x = oRect.width - 380;
+      commandsPanel.dataset.y = 120;
+    }
+    renderTransform(commandsPanel);
+    commandsPanel.classList.add('panel-recover');
+    setTimeout(()=>commandsPanel.classList.remove('panel-recover'),1600);
+  }
+  function hideCommandsPanel(){
+    if(!commandsPanel) return;
+    commandsPanel.classList.add('hidden-soft');
+  }
+  function toggleCommandsPanel(){
+    if(!commandsPanel) return;
+    if(commandsPanel.classList.contains('hidden-soft')) forceCommandsVisible();
+    else hideCommandsPanel();
+  }
+  function ensureVisiblePanels(){
+    const overlay=document.getElementById('overlay');
+    const oRect=overlay.getBoundingClientRect();
+    document.querySelectorAll('[data-drag][data-scale]').forEach(panel=>{
+      const pRect=panel.getBoundingClientRect();
+      let x=parseFloat(panel.dataset.x||'0');
+      let y=parseFloat(panel.dataset.y||'0');
+      let changed=false;
+      if(pRect.width > oRect.width) { x=8; changed=true; }
+      if(pRect.height> oRect.height){ y=8; changed=true; }
+      if(pRect.right < oRect.left + 40){ x=8; changed=true; }
+      if(pRect.bottom< oRect.top  + 40){ y=8; changed=true; }
+      if(pRect.left  > oRect.right - 40){ x = oRect.width - pRect.width - 16; changed=true; }
+      if(pRect.top   > oRect.bottom- 40){ y = oRect.height - pRect.height - 16; changed=true; }
+      if(changed){
+        panel.dataset.x = x;
+        panel.dataset.y = y;
+        let s=parseFloat(panel.dataset.scale||'1');
+        if(s<0.3){ s=0.8; panel.dataset.scale=s; }
+        renderTransform(panel);
+        saveState(panel);
+        if(panel===commandsPanel) forceCommandsVisible();
+      }
+    });
+    if(commandsPanel && (commandsPanel.style.display==='none' || getComputedStyle(commandsPanel).visibility==='hidden')){
+      forceCommandsVisible();
+    }
+  }
+
+  /* --- UI & Audio binding --- */
   btnGear?.addEventListener('click', showSettings);
   btnCloseSettings?.addEventListener('click', hideSettings);
+  btnShowCommands?.addEventListener('click', ()=>forceCommandsVisible());
+  btnHideCommands?.addEventListener('click', ()=>hideCommandsPanel());
+
+  window.addEventListener('keydown',e=>{
+    if(e.key==='c' || e.key==='C'){
+      toggleCommandsPanel();
+    }
+  });
+
   btnResetUI?.addEventListener('click', ()=>{
-    // clear all stored panel pos / scale keys
     Object.keys(localStorage).filter(k=>k.startsWith('plk_') && (k.endsWith('_pos')||k.endsWith('_scale'))).forEach(k=>localStorage.removeItem(k));
     document.querySelectorAll('[data-drag][data-scale]').forEach(p=>{
       p.dataset.x=''; p.dataset.y=''; p.dataset.scale='1';
       p.style.transform='';
     });
+    forceCommandsVisible();
     ensureVisiblePanels();
-    alert('UI panel positions reset.');
+    alert('UI panel positions reset & commands restored.');
   });
 
   let audioBound=false;
@@ -1005,7 +1056,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
   bindAudioUnlockOnce();
 
-  // Settings events
   optDropSpeed.addEventListener('input', applySettings);
   optGravity.addEventListener('input', applySettings);
   optMultiDrop.addEventListener('input', applySettings);
@@ -1057,6 +1107,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{ alert('Simulation failed.'); }
   });
 
+  /* --- Start --- */
   function start(){
     loadSettings();
     initThree();
@@ -1067,6 +1118,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     initGiftCards();
     initDraggables();
     setTeaserScale(CRATE_SCALE);
+    forceCommandsVisible();
     startLoop();
   }
   start();

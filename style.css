@@ -1,5 +1,9 @@
-/* (UNCHANGED FROM PREVIOUS ANSWER EXCEPT ADDED REDEMPTION FOCUS DIMMING & MINOR TWEAKS) */
-/* Search for '=== NEW REDEMPTION FOCUS ===' for new additions */
+/* (Updated) Key changes:
+   - Added #btn-show-commands and .mini-close styles
+   - Elevated z-index for #commands-panel
+   - Redemption focus no longer hides commands panel (kept readable)
+   - Added fallback visibility highlight class .panel-recover
+*/
 
 :root {
   --bg:#08101c;
@@ -98,16 +102,16 @@ html,body,#app,#game-container{
   transition:var(--transition);
 }
 .branding .live{font-size:14px;font-weight:700;color:var(--cyan);letter-spacing:1px;}
-#controls-panel{pointer-events:auto;display:flex;align-items:center;}
-#btn-gear{
+#controls-panel{pointer-events:auto;display:flex;align-items:center;gap:8px;}
+#btn-gear,#btn-show-commands{
   background:linear-gradient(145deg,#132536,#0f1d2c);
   color:var(--txt);border:1px solid #264063;
-  border-radius:14px;padding:10px 16px;cursor:pointer;
-  font-size:16px;font-weight:600;
+  border-radius:14px;padding:10px 14px;cursor:pointer;
+  font-size:14px;font-weight:600;
   box-shadow:0 0 12px rgba(0,242,234,0.4);
   transition:var(--transition);
 }
-#btn-gear:hover{filter:brightness(1.18);transform:translateY(-2px);}
+#btn-gear:hover,#btn-show-commands:hover{filter:brightness(1.18);transform:translateY(-2px);}
 
 .panel{
   background:var(--panel-bg);
@@ -120,7 +124,6 @@ html,body,#app,#game-container{
   transition:var(--transition);
 }
 
-/* Leaderboard */
 #leaderboard{padding:6px 8px 14px;min-width:240px;max-width:420px;}
 #leaderboard .drag-bar{
   height:var(--drag-bar-height);
@@ -152,7 +155,6 @@ html,body,#app,#game-container{
 .lb-name{font-weight:700;}
 .lb-score{color:var(--cyan);font-weight:900;text-shadow:0 0 10px rgba(0,242,234,0.6);}
 
-/* Slot labels */
 #slot-labels{position:absolute;left:0;right:0;bottom:0;display:flex;gap:6px;padding:10px 12px;transition:var(--transition);}
 .slot-label{
   flex:1;display:flex;align-items:center;justify-content:center;height:46px;
@@ -183,7 +185,6 @@ html,body,#app,#game-container{
 }
 .teaser-hint{text-align:center;font-size:13px;font-weight:600;color:var(--muted);}
 
-/* Commands Panel */
 #commands-panel{
   pointer-events:auto;
   background:var(--panel-bg);
@@ -195,6 +196,11 @@ html,body,#app,#game-container{
   box-shadow:var(--shadow-strong);
   width:340px;
   transition:var(--transition);
+  z-index:50;
+}
+#commands-panel.hidden-soft{
+  opacity:0 !important;
+  pointer-events:none !important;
 }
 .cmd-title{
   font-weight:900;font-size:24px;letter-spacing:2px;text-align:center;margin:0 0 14px;
@@ -203,7 +209,24 @@ html,body,#app,#game-container{
   text-shadow:0 0 12px rgba(0,242,234,0.5),0 0 26px rgba(255,0,128,0.4);
   cursor:grab;
   transition:var(--transition);
+  position:relative;
+  display:flex;align-items:center;justify-content:center;gap:8px;
 }
+.mini-close{
+  position:absolute;
+  right:6px;
+  top:6px;
+  background:rgba(255,255,255,0.1);
+  border:1px solid rgba(255,255,255,0.25);
+  color:var(--txt);
+  font-size:11px;
+  padding:4px 6px;
+  border-radius:8px;
+  cursor:pointer;
+  transition:var(--transition);
+}
+.mini-close:hover{filter:brightness(1.25);}
+
 .cmd-section{margin-bottom:16px;}
 .cmd-section-title{
   margin:0 0 8px;font-size:11px;font-weight:800;letter-spacing:2px;color:#c2d4e5;display:flex;align-items:center;gap:8px;
@@ -247,7 +270,6 @@ html,body,#app,#game-container{
 .gift-hint{text-align:center;font-size:10px;color:var(--muted);opacity:.55;margin-top:6px;}
 .cmd-move-hint{text-align:center;font-size:11px;color:#b7c5d7;opacity:.7;margin-top:10px;font-weight:600;}
 
-/* Settings Panel */
 #settings-panel{
   padding:10px 14px 18px;
   width:360px;
@@ -256,6 +278,7 @@ html,body,#app,#game-container{
   opacity:0;
   pointer-events:none;
   transition:var(--transition);
+  z-index:60;
 }
 #settings-panel.open{opacity:1;pointer-events:auto;}
 #settings-panel .drag-bar{
@@ -313,7 +336,7 @@ html,body,#app,#game-container{
 
 .visually-hidden{position:absolute!important;height:1px;width:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}
 
-#redeem-layer{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:center;pointer-events:none;padding-bottom:60px;z-index:15;}
+#redeem-layer{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:center;pointer-events:none;padding-bottom:60px;z-index:120;}
 .redeem-user-card{
   background:rgba(12,20,32,0.82);
   border:2px solid var(--cyan);
@@ -353,7 +376,7 @@ html,body,#app,#game-container{
   box-shadow:0 0 18px rgba(0,242,234,0.28);
   pointer-events:auto;
   min-width:260px;
-  z-index:30;
+  z-index:45;
   transition:var(--transition);
 }
 #dev-panel .drag-bar.small{
@@ -386,11 +409,10 @@ html,body,#app,#game-container{
   border-radius:10px;
   backdrop-filter:blur(6px);
   box-shadow:0 0 14px rgba(0,255,255,0.4);
-  z-index:40;
+  z-index:200;
   pointer-events:none;
 }
 
-/* Resize handle */
 .resize-handle{
   position:absolute;
   width:var(--scale-handle-size);
@@ -414,14 +436,23 @@ html,body,#app,#game-container{
 .drag-enabled{position:relative;}
 .drag-enabled.dragging{outline:2px dashed var(--cyan);}
 
-/* === NEW REDEMPTION FOCUS === */
+.panel-recover{
+  animation:panelFlash 1.6s ease-in-out 0s 1;
+}
+@keyframes panelFlash{
+  0%{box-shadow:0 0 0 0 rgba(255,255,255,0.0),0 0 0 0 rgba(0,242,234,0);}
+  20%{box-shadow:0 0 0 3px rgba(255,255,255,0.4),0 0 30px 10px rgba(0,242,234,0.5);}
+  60%{box-shadow:0 0 0 2px rgba(255,255,255,0.25),0 0 20px 4px rgba(0,242,234,0.3);}
+  100%{box-shadow:var(--shadow-strong);}
+}
+
+/* Redemption focus - DO NOT hide commands panel now */
 body.redeem-focus #board-frame,
 body.redeem-focus #slot-tray,
 body.redeem-focus #tray-dividers,
 body.redeem-focus #board-divider,
 body.redeem-focus #board-title,
 body.redeem-focus #leaderboard,
-body.redeem-focus #commands-panel,
 body.redeem-focus #reward-teasers,
 body.redeem-focus #dev-panel,
 body.redeem-focus #branding-panel,
@@ -431,8 +462,10 @@ body.redeem-focus #controls-panel {
   pointer-events:none;
   transition:var(--transition);
 }
-body.redeem-focus #redeem-layer .redeem-user-card{
-  filter:none;
+body.redeem-focus #commands-panel{
+  opacity:0.75 !important;
+  filter:none !important;
+  pointer-events:auto !important;
 }
 
 /* Responsive */
