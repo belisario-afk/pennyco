@@ -1,6 +1,11 @@
-// Fixed: re-added showSettings() & hideSettings() that were missing (causing ReferenceError).
-// Added fallback gift click test (optional: triggers devDrop).
-// Other logic unchanged from previous version except noted fixes.
+/* game.js
+   Added:
+     - Universal drag & scale manager for panels with [data-drag][data-scale]
+     - Persistent per-panel position & scale (localStorage)
+     - Settings panel open/close fixed (class .open)
+     - Resize handles & Alt+Scroll scaling support
+     - Gift card click test triggers dev drop
+*/
 
 import * as THREE from 'three';
 import {
@@ -22,10 +27,10 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 const { Engine, World, Bodies, Events, Body } = Matter;
 
 (() => {
+  /********** Config **********/
   const REWARD_COSTS = { t1:1000, t2:5000, t3:10000 };
   const REWARD_NAMES = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
   const REDEEM_PREFIX = 'redeem:';
-
   const DEV_BYPASS_DEFAULT = true;
   const SHOW_PERF_PANEL = true;
   const ADAPTIVE_QUALITY = true;
@@ -73,13 +78,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const leaderboard = {};
   const processedEvents = new Set();
   const processedRedemptions = new Set();
-
   let SLOT_POINTS = [];
   let SLOT_MULTIPLIERS = [];
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  // DOM refs
+  /********** DOM refs **********/
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -95,11 +99,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const devPanel        = document.getElementById('dev-panel');
   const devFreeToggle   = document.getElementById('dev-free-toggle');
   const commandsPanel   = document.getElementById('commands-panel');
-
-  // Settings elements
-  const btnGear         = document.getElementById('btn-gear');
   const settingsPanel   = document.getElementById('settings-panel');
+  const btnGear         = document.getElementById('btn-gear');
   const btnCloseSettings= document.getElementById('btn-close-settings');
+
+  // settings inputs
   const optDropSpeed    = document.getElementById('opt-drop-speed');
   const optGravity      = document.getElementById('opt-gravity');
   const optMultiDrop    = document.getElementById('opt-multidrop');
@@ -115,38 +119,37 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
   const btnSimulate     = document.getElementById('btn-simulate');
 
-  devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
-  devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
-
-  // Performance stats
-  let perfPanel, perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
-  const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
-  let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
-  let frameSamples=0, frameAccum=0;
-
-  // Re-added show/hide settings (FIX for ReferenceError)
+  /********** Settings panel show/hide (fixed) **********/
   function showSettings(){
     if(!settingsPanel) return;
-    gsap.to(settingsPanel,{x:0,duration:.35,ease:'expo.out'});
+    settingsPanel.classList.add('open');
     settingsPanel.setAttribute('aria-hidden','false');
   }
   function hideSettings(){
     if(!settingsPanel) return;
-    gsap.to(settingsPanel,{x:'110%',duration:.35,ease:'expo.in'});
+    settingsPanel.classList.remove('open');
     settingsPanel.setAttribute('aria-hidden','true');
   }
 
+  /********** Performance **********/
+  let perfPanel;
+  const perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
+  const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
+  let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
+  let frameSamples=0, frameAccum=0;
+
+  /********** Shared materials **********/
   const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
   let sharedBallBaseMaterial = null;
   const avatarTextureCache = new Map();
 
+  /********** Redemption queue **********/
   const redeemQueue = [];
   let redeemActive = false;
   let activeReward3D = null;
   let activeRewardDisposeFn = null;
   let activeRedemptionCrate = null;
 
-  /* Redemption Queue */
   function enqueueRedemption(evId,tier,username,avatarUrl){
     redeemQueue.push({evId,tier,username,avatarUrl});
     runNextRedemption();
@@ -184,7 +187,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         x:activeReward3D.scale.x*0.01,
         y:activeReward3D.scale.y*0.01,
         z:activeReward3D.scale.z*0.01,
-        duration:.35,ease:'power2.in',
+        duration:.35,
+        ease:'power2.in',
         onComplete:()=>{
           if(activeReward3D) scene.remove(activeReward3D);
           if(activeRewardDisposeFn) activeRewardDisposeFn();
@@ -219,7 +223,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Slots */
+  /********** Slots **********/
   function buildSlots(slotCount){
     const center=Math.floor((slotCount-1)/2);
     const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
@@ -227,11 +231,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     SLOT_POINTS=SLOT_MULTIPLIERS.map(m=>m*100);
   }
   function classForMultiplier(m){
-    if(m>=16)return'mult-top';
-    if(m>=9)return'mult-high';
-    if(m>=5)return'mult-mid';
-    if(m>=3)return'mult-low';
-    return'mult-base';
+    if(m>=16)return'mult-top'; if(m>=9)return'mult-high'; if(m>=5)return'mult-mid'; if(m>=3)return'mult-low'; return'mult-base';
   }
   function renderSlotLabels(slotCount, framePx){
     slotLabelsEl.innerHTML='';
@@ -244,7 +244,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
   }
 
-  /* Backend */
+  /********** Backend helpers **********/
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -256,19 +256,24 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
   }
 
+  /********** Settings load/save **********/
+  devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
+  devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
+
   function loadSettings(){
-    const g=Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value=String(g);
-    const ds=Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value=String(ds);
-    const md=Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value=String(md);
-    const cs=Number(localStorage.getItem('plk_crate_scale') ?? '4.4'); if(!Number.isNaN(cs)) { optCrateScale.value=String(cs); CRATE_SCALE=cs; }
-    const vb=Number(localStorage.getItem('plk_vibrance') ?? '0.4'); if(!Number.isNaN(vb)) { optVibrance.value=String(vb); VIBRANCE_PULSE=vb; }
+    const g=Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value=g;
+    const ds=Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value=ds;
+    const md=Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value=md;
+    const cs=Number(localStorage.getItem('plk_crate_scale') ?? '4.4'); if(!Number.isNaN(cs)) { optCrateScale.value=cs; CRATE_SCALE=cs; }
+    const vb=Number(localStorage.getItem('plk_vibrance') ?? '0.4'); if(!Number.isNaN(vb)) { optVibrance.value=vb; VIBRANCE_PULSE=vb; }
     optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
     optParticles.checked=(localStorage.getItem('plk_particles') ?? 'true')==='true';
-    const vol=Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value=String(vol); setAudioVolume(vol);
+    const vol=Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value=vol; setAudioVolume(vol);
     const savedBase=getBackendBaseUrl(); if(savedBase) backendUrlInput.value=savedBase;
     const tok=localStorage.getItem('adminToken')||''; if(tok) adminTokenInput.value=tok;
     applySettings();
   }
+
   function applySettings(){
     DROP_SPEED=Number(optDropSpeed.value);
     GRAVITY_MAG=Number(optGravity.value);
@@ -291,10 +296,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
-  /* Three.js */
+  /********** Three.js setup **********/
   let pegsInstanced;
   let baseCamPos=new THREE.Vector3(0,0,100);
   let targetCamOffset=new THREE.Vector3();
+
   function initThree(){
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -332,7 +338,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       document.body.appendChild(perfPanel);
     }
 
-    // Parallax
     const rectTarget={w:0,h:0};
     function updateRect(){ const r=renderer.domElement.getBoundingClientRect(); rectTarget.w=r.width; rectTarget.h=r.height; }
     updateRect();
@@ -343,7 +348,19 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       targetCamOffset.x = xNorm * 3;
       targetCamOffset.y = yNorm * 2;
     });
+
+    // Raycast for teaser crates
+    const raycaster=new THREE.Raycaster();
+    const pt=new THREE.Vector2();
+    renderer.domElement.addEventListener('pointerdown',e=>{
+      const rect=renderer.domElement.getBoundingClientRect();
+      pt.x=((e.clientX-rect.left)/rect.width)*2 -1;
+      pt.y=-((e.clientY-rect.top)/rect.height)*2 +1;
+      raycaster.setFromCamera(pt,camera);
+      raycastTeasers(raycaster);
+    });
   }
+
   function computeWorldSize(){
     const w=container.clientWidth||1;
     const h=container.clientHeight||1;
@@ -354,6 +371,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     PEG_SPACING=BOARD_WIDTH/(ROWS+1);
     TRAY_HEIGHT=BOARD_HEIGHT*TRAY_RATIO;
   }
+
   function onResize(){
     renderer.setSize(container.clientWidth,container.clientHeight);
     composer.setSize(container.clientWidth,container.clientHeight);
@@ -370,6 +388,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     layoutOverlays();
     updateTeaserLayout();
   }
+
   function layoutOverlays(){
     const left=-BOARD_WIDTH/2,right=BOARD_WIDTH/2;
     const top=BOARD_HEIGHT/2,bottom=-BOARD_HEIGHT/2;
@@ -377,12 +396,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const pTopLeft=worldToScreen(new THREE.Vector3(left,top,0),camera,renderer);
     const pBottomRight=worldToScreen(new THREE.Vector3(right,bottom,0),camera,renderer);
     const pTrayTopLeft=worldToScreen(new THREE.Vector3(left,trayTop,0),camera,renderer);
-    const frame={x:Math.round(pTopLeft.x),y:Math.round(pTopLeft.y),
-      width:Math.round(pBottomRight.x-pTopLeft.x),
-      height:Math.round(pBottomRight.y-pTopLeft.y)};
-    const tray={x:frame.x,width:frame.width,
-      height:Math.round(pBottomRight.y-pTrayTopLeft.y),
-      top:Math.round(pTrayTopLeft.y)};
+    const frame={x:Math.round(pTopLeft.x),y:Math.round(pTopLeft.y),width:Math.round(pBottomRight.x-pTopLeft.x),height:Math.round(pBottomRight.y-pTopLeft.y)};
+    const tray={x:frame.x,width:frame.width,height:Math.round(pBottomRight.y-pTrayTopLeft.y),top:Math.round(pTrayTopLeft.y)};
     Object.assign(boardFrame.style,{left:frame.x+'px',top:frame.y+'px',width:frame.width+'px',height:frame.height+'px'});
     Object.assign(slotTray.style,{left:tray.x+'px',top:tray.top+'px',width:tray.width+'px',height:tray.height+'px'});
     boardDivider.style.left=frame.x+'px';
@@ -396,7 +411,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderSlotLabels(slotCount, frame);
   }
 
-  /* Matter / Physics */
+  /********** Matter / physics **********/
   function initMatter(){
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
@@ -405,6 +420,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     bindCollisions();
     fxMgr=new FXManager2D(fxCanvas);
   }
+
   function buildBoard(){
     const left=Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
     const right=Bodies.rectangle( BOARD_WIDTH/2 + WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
@@ -438,6 +454,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       slotSensors.push({body:sensor,index:i});
     }
   }
+
   function addPegInstancedMesh(pegPositions){
     if(pegsInstanced){
       scene.remove(pegsInstanced);
@@ -463,6 +480,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     pegsInstanced=inst;
     scene.add(inst);
   }
+
   function bindCollisions(){
     Events.on(engine,'collisionStart', ev=>{
       for(const {bodyA,bodyB} of ev.pairs){
@@ -471,6 +489,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
     });
   }
+
   function handlePair(a,b){
     if(!a||!b) return;
     const slot=slotSensors.find(s=>s.body.id===b.id);
@@ -499,7 +518,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
-  /* Performance + Render Loop */
+  /********** Loop / performance **********/
   function adaptQuality(frameMs){
     frameAccum+=frameMs;
     frameSamples++;
@@ -576,6 +595,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       Body.setVelocity(b,{x,y});
     }
   }
+
   function updateThreeFromMatter(){
     dynamicBodies.forEach(body=>{
       const mesh=meshById.get(body.id);
@@ -588,7 +608,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Spawning */
+  /********** Spawning **********/
   function spawnBallSet({username,avatarUrl}){
     const multi=Math.max(1,Math.min(5,Number(optMultiDrop.value||1)));
     for(let i=0;i<multi;i++) spawnSingle({username,avatarUrl});
@@ -635,6 +655,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if('requestIdleCallback' in window) requestIdleCallback(applyTex,{timeout:600}); else setTimeout(applyTex,0);
     sfxDrop();
   }
+
   function tryRemoveBall(body){
     try{
       const mesh=meshById.get(body.id);
@@ -656,7 +677,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{}
   }
 
-  /* Leaderboard / Points */
+  /********** Leaderboard & points **********/
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=(current.score||0)+points;
@@ -712,7 +733,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
-  /* Firebase events */
+  /********** Firebase events **********/
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
@@ -735,14 +756,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if(data && typeof data==='object'){
         for(const k of Object.keys(data)){
           const entry=data[k];
-          if(entry?.username){
-            leaderboard[entry.username]={
-              username:entry.username,
-              avatarUrl: entry.avatarUrl||'',
-              score: entry.score||0,
-              lastUpdate: entry.lastUpdate||0
-            };
-          }
+            if(entry?.username){
+              leaderboard[entry.username]={
+                username:entry.username,
+                avatarUrl:entry.avatarUrl||'',
+                score:entry.score||0,
+                lastUpdate:entry.lastUpdate||0
+              };
+            }
         }
         refreshLeaderboard();
       } else clearLeaderboardLocal();
@@ -753,12 +774,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       spawnStatusEl.style.color=enabled?'var(--good)':'var(--danger)';
     });
   }
+
   function sanitizeUsername(u){
     const s=String(u||'').trim();
     return s ? s.slice(0,24) : 'viewer';
   }
 
-  /* Teasers & Dev */
+  /********** Teasers & Dev **********/
   function initTeasers(){
     initPBRTeasers({
       scene,
@@ -786,8 +808,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       });
     });
   }
-
-  // Click gift placeholders to simulate drop (local visual test)
   function initGiftCards(){
     document.querySelectorAll('.gift-card').forEach(card=>{
       card.addEventListener('click',()=>{
@@ -796,69 +816,181 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Drag Commands Panel */
-  function initCommandsPanelDrag(){
-    if(!commandsPanel) return;
-    const handle=commandsPanel.querySelector('.drag-handle')||commandsPanel;
-    let dragging=false,startX=0,startY=0,originLeft=0,originTop=0;
+  /********** Drag + Scale Manager **********/
+  function initDraggables(){
     const overlay=document.getElementById('overlay');
-    const savedX=localStorage.getItem('plk_cmd_left');
-    const savedY=localStorage.getItem('plk_cmd_top');
-    if(savedX && savedY){
-      commandsPanel.classList.add('floating');
-      commandsPanel.style.left=savedX+'px';
-      commandsPanel.style.top =savedY+'px';
-    }
-    function down(e){
-      if(e.button!==0) return;
-      dragging=true;
-      const rect=commandsPanel.getBoundingClientRect();
-      const oRect=overlay.getBoundingClientRect();
-      startX=e.clientX; startY=e.clientY;
-      originLeft=rect.left - oRect.left;
-      originTop =rect.top  - oRect.top;
-      if(!commandsPanel.classList.contains('floating')){
-        commandsPanel.classList.add('floating');
-        commandsPanel.style.left=originLeft+'px';
-        commandsPanel.style.top =originTop +'px';
-      }
-      commandsPanel.classList.add('dragging');
+    const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
+
+    panels.forEach(panel=>{
+      // Make absolute & restore saved state
+      preparePanel(panel, overlay);
+      attachDrag(panel, overlay);
+      attachScale(panel);
+    });
+
+    // Global helpers (Alt+Wheel to scale hovered panel)
+    window.addEventListener('wheel', e=>{
+      if(!e.altKey) return;
+      const el=e.target.closest('[data-drag][data-scale]');
+      if(!el) return;
       e.preventDefault();
-    }
-    function move(e){
-      if(!dragging) return;
-      const dx=e.clientX-startX;
-      const dy=e.clientY-startY;
-      const oRect=overlay.getBoundingClientRect();
-      const panelRect=commandsPanel.getBoundingClientRect();
-      let newLeft=originLeft+dx;
-      let newTop =originTop +dy;
-      newLeft=Math.max(0,Math.min(oRect.width - panelRect.width,newLeft));
-      newTop =Math.max(0,Math.min(oRect.height - panelRect.height,newTop));
-      commandsPanel.style.left=newLeft+'px';
-      commandsPanel.style.top =newTop +'px';
-    }
-    function up(){
-      if(!dragging) return;
-      dragging=false;
-      commandsPanel.classList.remove('dragging');
-      localStorage.setItem('plk_cmd_left',String(parseFloat(commandsPanel.style.left)||0));
-      localStorage.setItem('plk_cmd_top', String(parseFloat(commandsPanel.style.top)||0));
-    }
-    handle.addEventListener('pointerdown',down);
-    window.addEventListener('pointermove',move);
-    window.addEventListener('pointerup',up);
+      const key=storageKey(el,'scale');
+      let s=parseFloat(localStorage.getItem(key) || '1');
+      s += -Math.sign(e.deltaY)*0.08;
+      s=clamp(s,0.4,3.5);
+      applyScale(el,s);
+      saveState(el);
+    }, { passive:false });
   }
 
-  /* UI + Audio */
-  btnGear.addEventListener('click', showSettings);
-  btnCloseSettings.addEventListener('click', hideSettings);
+  function preparePanel(panel, overlay){
+    panel.style.position='absolute';
+    panel.style.willChange='transform';
+    panel.classList.add('drag-enabled');
+
+    // Add resize handle if not present
+    if(!panel.querySelector('.resize-handle')){
+      const h=document.createElement('div');
+      h.className='resize-handle';
+      h.textContent='↘';
+      panel.appendChild(h);
+    }
+
+    const posKey=storageKey(panel,'pos');
+    const scaleKey=storageKey(panel,'scale');
+    const posJSON=localStorage.getItem(posKey);
+    const scaleStr=localStorage.getItem(scaleKey);
+
+    let { left, top } = posJSON? JSON.parse(posJSON): computeDefaultPosition(panel, overlay);
+    let scale = scaleStr? parseFloat(scaleStr): 1;
+
+    panel.dataset.x = left;
+    panel.dataset.y = top;
+    panel.dataset.scale = scale;
+    renderTransform(panel);
+  }
+
+  function computeDefaultPosition(panel, overlay){
+    const oRect=overlay.getBoundingClientRect();
+    const pRect=panel.getBoundingClientRect();
+    const left=Math.max(8, Math.min(oRect.width - pRect.width - 8, pRect.left - oRect.left));
+    const top =Math.max(8, Math.min(oRect.height - pRect.height - 8, pRect.top  - oRect.top ));
+    return { left, top };
+  }
+
+  function attachDrag(panel, overlay){
+    const dragHandles = panel.querySelectorAll('.drag-bar, .cmd-title, .drag-handle, .gear, .logo');
+    const handleList = dragHandles.length? dragHandles : [panel];
+    let dragging=false,startX=0,startY=0,startLeft=0,startTop=0;
+
+    handleList.forEach(h=>{
+      h.style.cursor='grab';
+      h.addEventListener('pointerdown',e=>{
+        if(e.button!==0) return;
+        if(e.target.closest('.resize-handle')) return;
+        dragging=true;
+        panel.classList.add('dragging');
+        startX=e.clientX; startY=e.clientY;
+        startLeft=parseFloat(panel.dataset.x||'0');
+        startTop =parseFloat(panel.dataset.y||'0');
+        e.preventDefault();
+      });
+    });
+
+    window.addEventListener('pointermove',e=>{
+      if(!dragging) return;
+      const oRect=overlay.getBoundingClientRect();
+      const dx=e.clientX-startX;
+      const dy=e.clientY-startY;
+      let nx=startLeft+dx;
+      let ny=startTop +dy;
+      const pRect=panel.getBoundingClientRect();
+      nx=clamp(nx,0,oRect.width - pRect.width);
+      ny=clamp(ny,0,oRect.height - pRect.height);
+      panel.dataset.x = nx;
+      panel.dataset.y = ny;
+      renderTransform(panel);
+    });
+
+    window.addEventListener('pointerup',()=>{
+      if(dragging){
+        dragging=false;
+        panel.classList.remove('dragging');
+        saveState(panel);
+      }
+    });
+  }
+
+  function attachScale(panel){
+    const handle=panel.querySelector('.resize-handle');
+    if(!handle) return;
+    let resizing=false,startX=0,startScale=1;
+
+    handle.addEventListener('pointerdown',e=>{
+      e.stopPropagation();
+      e.preventDefault();
+      resizing=true;
+      startX=e.clientX;
+      startScale=parseFloat(panel.dataset.scale||'1');
+      panel.classList.add('dragging');
+    });
+
+    window.addEventListener('pointermove',e=>{
+      if(!resizing) return;
+      const dx=e.clientX-startX;
+      let newScale=startScale + dx/240;
+      newScale=clamp(newScale,0.4,3.5);
+      applyScale(panel,newScale);
+    });
+
+    window.addEventListener('pointerup',()=>{
+      if(resizing){
+        resizing=false;
+        panel.classList.remove('dragging');
+        saveState(panel);
+      }
+    });
+  }
+
+  function applyScale(panel,s){
+    panel.dataset.scale = s;
+    renderTransform(panel);
+  }
+
+  function renderTransform(panel){
+    const x=parseFloat(panel.dataset.x||'0');
+    const y=parseFloat(panel.dataset.y||'0');
+    const s=parseFloat(panel.dataset.scale||'1');
+    panel.style.transform=`translate(${x}px,${y}px) scale(${s})`;
+  }
+
+  function saveState(panel){
+    const posKey=storageKey(panel,'pos');
+    const scaleKey=storageKey(panel,'scale');
+    const x=parseFloat(panel.dataset.x||'0');
+    const y=parseFloat(panel.dataset.y||'0');
+    const s=parseFloat(panel.dataset.scale||'1');
+    localStorage.setItem(posKey,JSON.stringify({left:x,top:y}));
+    localStorage.setItem(scaleKey,String(s));
+  }
+
+  function storageKey(panel,suffix){
+    const id=panel.id || panel.dataset.panel || 'panel';
+    return `plk_${id}_${suffix}`;
+  }
+
+  function clamp(v,a,b){ return v<a?a:v>b?b:v; }
+
+  /********** UI & audio **********/
+  btnGear?.addEventListener('click', showSettings);
+  btnCloseSettings?.addEventListener('click', hideSettings);
+
   let audioBound=false;
   function bindAudioUnlockOnce(){
     if(audioBound) return;
     audioBound=true;
     const unlock=async()=>{
-      await initAudioOnce();
+      await initAudioOnce().catch(()=>{});
       window.removeEventListener('pointerdown',unlock,true);
       window.removeEventListener('keydown',unlock,true);
     };
@@ -870,10 +1002,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   optDropSpeed.addEventListener('input', applySettings);
   optGravity.addEventListener('input', applySettings);
   optMultiDrop.addEventListener('input', applySettings);
-  optCrateScale.addEventListener('input', ()=>applySettings());
+  optCrateScale.addEventListener('input', applySettings);
   optNeon.addEventListener('change', applySettings);
   optParticles.addEventListener('change', applySettings);
-  optVibrance.addEventListener('input', ()=>applySettings());
+  optVibrance.addEventListener('input', applySettings);
   optVolume.addEventListener('input', e=>setAudioVolume(Number(e.target.value)));
 
   btnSaveAdmin.addEventListener('click',()=>{
@@ -885,6 +1017,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert('Saved admin settings.');
     }catch{ alert('Save failed.'); }
   });
+
   btnReset.addEventListener('click', async ()=>{
     const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if(!token) return alert('Provide token.');
@@ -895,6 +1028,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert('Leaderboard reset.');
     }catch{ alert('Reset failed.'); }
   });
+
   btnToggleSpawn.addEventListener('click', async ()=>{
     const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if(!token) return alert('Provide token.');
@@ -905,6 +1039,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert(`Spawn set to ${!curr}`);
     }catch{ alert('Toggle failed.'); }
   });
+
   btnSimulate.addEventListener('click', async ()=>{
     try{
       const name='LocalTester'+Math.floor(Math.random()*1000);
@@ -918,7 +1053,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{ alert('Simulation failed.'); }
   });
 
-  /* Start */
+  /********** Start **********/
   function start(){
     loadSettings();
     initThree();
@@ -927,7 +1062,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     initTeasers();
     initDevPanel();
     initGiftCards();
-    initCommandsPanelDrag();
+    initDraggables();
     setTeaserScale(CRATE_SCALE);
     startLoop();
   }

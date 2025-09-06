@@ -41,31 +41,31 @@
 
       <div id="overlay">
         <div id="top-bar">
-          <div class="branding">
+          <div class="branding" data-drag data-scale id="branding-panel">
             <span class="logo">Plinkoo</span>
             <span class="live">@lmohss</span>
           </div>
-          <div class="controls">
+          <div class="controls" data-drag data-scale id="controls-panel">
             <button id="btn-gear" aria-label="Settings" title="Settings">
               <span class="gear">⚙️</span>
             </button>
           </div>
         </div>
 
-        <aside id="leaderboard" class="panel glass">
-          <div class="lb-head">LEADERBOARD</div>
+        <aside id="leaderboard" class="panel glass drag-enabled" data-drag data-scale>
+          <div class="drag-bar">LEADERBOARD <span class="mini-hint">drag / resize</span></div>
           <ol id="leaderboard-list" class="lb-list"></ol>
         </aside>
 
         <div id="right-stack">
-          <div id="reward-teasers" aria-label="Mystery Reward Tiers">
+          <div id="reward-teasers" aria-label="Mystery Reward Tiers" data-drag data-scale class="drag-enabled">
             <div class="teaser-hint">
               Redeem: !t1 !t2 !t3<br>
               Send a TikTok Gift to drop a ball
             </div>
           </div>
 
-          <section id="commands-panel" aria-label="Commands List">
+          <section id="commands-panel" aria-label="Commands List" data-drag data-scale class="drag-enabled">
             <div class="cmd-title drag-handle" title="Drag to move">COMMANDS</div>
 
             <div class="cmd-section">
@@ -99,58 +99,40 @@
             <div class="cmd-section">
               <h4 class="cmd-section-title">DROP A BALL (TikTok Gifts)</h4>
               <div class="gift-grid">
-                <!-- Embedded SVG placeholders (no 404). Replace with real gift icons when available -->
                 <div class="gift-card" data-gift="rose">
-                  <img src="data:image/svg+xml;utf8,
-                  %3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E
-                  %3Crect rx='18' width='80' height='80' fill='%23ff2768'/%3E
-                  %3Ctext x='50%' y='52%' font-size='40' text-anchor='middle' fill='white' font-family='Arial'%3E🌹%3C/text%3E
-                  %3C/svg%3E" alt="Rose Gift">
+                  <img src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect rx='18' width='80' height='80' fill='%23ff2768'/%3E%3Ctext x='50%25' y='52%25' font-size='40' text-anchor='middle' fill='white'%3E🌹%3C/text%3E%3C/svg%3E" alt="Rose Gift">
                   <div class="gift-name">Rose</div>
                   <div class="gift-note">Drops 1 ball</div>
                 </div>
                 <div class="gift-card" data-gift="finger-heart">
-                  <img src="data:image/svg+xml;utf8,
-                  %3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E
-                  %3Crect rx='18' width='80' height='80' fill='%23ff5ca8'/%3E
-                  %3Ctext x='50%' y='52%' font-size='40' text-anchor='middle' fill='white' font-family='Arial'%3E❤️%3C/text%3E
-                  %3C/svg%3E" alt="Finger Heart Gift">
+                  <img src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect rx='18' width='80' height='80' fill='%23ff5ca8'/%3E%3Ctext x='50%25' y='52%25' font-size='40' text-anchor='middle' fill='white'%3E❤️%3C/text%3E%3C/svg%3E" alt="Finger Heart Gift">
                   <div class="gift-name">Finger Heart</div>
                   <div class="gift-note">Drops 1 ball</div>
                 </div>
                 <div class="gift-card" data-gift="gg">
-                  <img src="data:image/svg+xml;utf8,
-                  %3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E
-                  %3Crect rx='18' width='80' height='80' fill='%2300c5ff'/%3E
-                  %3Ctext x='50%' y='52%' font-size='34' text-anchor='middle' fill='white' font-family='Arial' font-weight='700'%3EGG%3C/text%3E
-                  %3C/svg%3E" alt="GG Gift">
+                  <img src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect rx='18' width='80' height='80' fill='%2300c5ff'/%3E%3Ctext x='50%25' y='52%25' font-size='34' text-anchor='middle' fill='white'%3EGG%3C/text%3E%3C/svg%3E" alt="GG Gift">
                   <div class="gift-name">GG</div>
                   <div class="gift-note">Drops 2 balls</div>
                 </div>
                 <div class="gift-card" data-gift="unicorn">
-                  <img src="data:image/svg+xml;utf8,
-                  %3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E
-                  %3Crect rx='18' width='80' height='80' fill='%23b37bff'/%3E
-                  %3Ctext x='50%' y='52%' font-size='40' text-anchor='middle' fill='white' font-family='Arial'%3E🦄%3C/text%3E
-                  %3C/svg%3E" alt="Unicorn Gift">
+                  <img src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect rx='18' width='80' height='80' fill='%23b37bff'/%3E%3Ctext x='50%25' y='52%25' font-size='40' text-anchor='middle' fill='white'%3E🦄%3C/text%3E%3C/svg%3E" alt="Unicorn Gift">
                   <div class="gift-name">Unicorn</div>
                   <div class="gift-note accent">Mega Drop</div>
                 </div>
               </div>
-              <div class="gift-hint">Replace these placeholders with real TikTok gift images when deployed.</div>
+              <div class="gift-hint">Replace these placeholders with real TikTok gift images.</div>
             </div>
 
-            <div class="cmd-move-hint">Drag the title bar to move • Position is saved</div>
+            <div class="cmd-move-hint">Drag corner to resize • Drag panel to move</div>
           </section>
         </div>
 
-        <div id="settings-panel" class="panel glass" aria-hidden="true">
-          <div class="panel-header">
-            <h3 id="settings-title">Game Settings</h3>
-            <button id="btn-close-settings" title="Close" aria-label="Close settings">✖</button>
+        <div id="settings-panel" class="panel glass drag-enabled" data-drag data-scale aria-hidden="true">
+          <div class="drag-bar">SETTINGS <span class="mini-hint">drag / resize</span>
+            <button id="btn-close-settings" class="close-small" title="Close" aria-label="Close settings">✖</button>
           </div>
 
-          <div class="settings-group" aria-labelledby="settings-title">
+          <div class="settings-group" aria-label="Game Settings Controls">
             <label>Ball Drop Speed
               <input id="opt-drop-speed" type="range" min="0" max="1" step="0.01" value="0.5">
             </label>
@@ -179,9 +161,8 @@
 
           <hr class="divider" aria-hidden="true">
 
-          <h4 id="admin-section-label">Admin</h4>
-          <form id="admin-form" autocomplete="on" novalidate aria-labelledby="admin-section-label">
             <div class="settings-group">
+              <h4>Admin</h4>
               <label>Backend URL (Render)
                 <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url">
               </label>
@@ -203,17 +184,18 @@
                 <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
               </div>
             </div>
-          </form>
         </div>
       </div>
 
-      <div id="dev-panel" aria-hidden="true">
-        <div class="dev-title">DEV</div>
-        <button data-act="drop">Drop</button>
-        <button data-act="redeem-t1">T1</button>
-        <button data-act="redeem-t2">T2</button>
-        <button data-act="redeem-t3">T3</button>
-        <label class="dev-free"><input id="dev-free-toggle" type="checkbox"> free</label>
+      <div id="dev-panel" class="drag-enabled" data-drag data-scale aria-hidden="true">
+        <div class="drag-bar small">DEV <span class="mini-hint">drag / resize</span></div>
+        <div class="dev-row">
+          <button data-act="drop">Drop</button>
+          <button data-act="redeem-t1">T1</button>
+          <button data-act="redeem-t2">T2</button>
+          <button data-act="redeem-t3">T3</button>
+          <label class="dev-free"><input id="dev-free-toggle" type="checkbox"> free</label>
+        </div>
       </div>
 
     </div>
