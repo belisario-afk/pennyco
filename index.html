@@ -46,9 +46,9 @@
             <span class="live">@lmohss</span>
           </div>
           <div class="controls" data-drag data-scale id="controls-panel">
-            <button id="btn-gear" aria-label="Settings" title="Settings">⚙️</button>
-            <button id="btn-show-commands" title="Show Commands Panel" aria-label="Show commands panel">📜</button>
-            <button id="btn-panic-commands" title="Force Commands Front (Ctrl+Shift+C)" aria-label="Force commands front">🆘</button>
+            <button id="btn-gear" aria-label="Settings" title="Settings">
+              <span class="gear">⚙️</span>
+            </button>
           </div>
         </div>
 
@@ -65,25 +65,25 @@
             </div>
           </div>
 
-          <section id="commands-panel" aria-label="Commands List" data-drag data-scale class="drag-enabled force-front">
-            <div class="cmd-title drag-handle" title="Drag to move">
-              COMMANDS
-              <button class="mini-close" id="btn-hide-commands" title="Hide Commands" aria-label="Hide commands">✖</button>
-            </div>
+          <!-- COMMANDS PANEL (multi-drop removed) -->
+          <section id="commands-panel" aria-label="Commands List" data-drag data-scale class="drag-enabled">
+            <div class="cmd-title drag-handle" title="Drag to move">COMMANDS</div>
 
             <div class="cmd-section">
               <h4 class="cmd-section-title">REWARDS (Spend Points)</h4>
               <ul class="cmd-list">
-                <li class="cmd-line tier-t1"><span class="cmd-badge">!t1</span><span class="cmd-text">Redeem 1,000 points (Starter Crate)</span></li>
-                <li class="cmd-line tier-t2"><span class="cmd-badge">!t2</span><span class="cmd-text">Redeem 5,000 points (Elite Crate)</span></li>
-                <li class="cmd-line tier-t3"><span class="cmd-badge">!t3</span><span class="cmd-text">Redeem 10,000 points (Ultimate Crate)</span></li>
-              </ul>
-            </div>
-
-            <div class="cmd-section">
-              <h4 class="cmd-section-title">MULTI DROP</h4>
-              <ul class="cmd-list">
-                <li class="cmd-line neutral"><span class="cmd-badge small">!multi N</span><span class="cmd-text">Set next drop to 1–5 balls</span></li>
+                <li class="cmd-line tier-t1">
+                  <span class="cmd-badge">!t1</span>
+                  <span class="cmd-text">Redeem 1,000 points (Starter Crate)</span>
+                </li>
+                <li class="cmd-line tier-t2">
+                  <span class="cmd-badge">!t2</span>
+                  <span class="cmd-text">Redeem 5,000 points (Elite Crate)</span>
+                </li>
+                <li class="cmd-line tier-t3">
+                  <span class="cmd-badge">!t3</span>
+                  <span class="cmd-text">Redeem 10,000 points (Ultimate Crate)</span>
+                </li>
               </ul>
             </div>
 
@@ -114,10 +114,8 @@
               <div class="gift-hint">Replace these placeholders with real TikTok gift images.</div>
             </div>
 
-            <div class="cmd-move-hint">
-              Drag corner to resize • Drag panel to move<br>
-              Press C or Ctrl+Shift+C if lost
-            </div>
+            <div class="cmd-move-hint">Drag corner to resize • Drag panel to move • Alt+Scroll to scale</div>
+            <button id="btn-reset-ui" class="btn tiny-reset" type="button" title="Reset command panel position">Reset Panel Position</button>
           </section>
         </div>
 
@@ -126,65 +124,55 @@
             <button id="btn-close-settings" class="close-small" title="Close" aria-label="Close settings">✖</button>
           </div>
 
-          <form id="admin-form" autocomplete="on" novalidate>
-            <div class="settings-group" aria-label="Game Settings Controls">
-              <label>Ball Drop Speed
-                <input id="opt-drop-speed" type="range" min="0" max="1" step="0.01" value="0.5">
-              </label>
-              <label>Gravity Strength
-                <input id="opt-gravity" type="range" min="0.3" max="2.0" step="0.05" value="1.0">
-              </label>
-              <label>Multi-Drop Count
-                <input id="opt-multidrop" type="range" min="1" max="5" step="1" value="1">
-              </label>
-              <label>Crate Scale
-                <input id="opt-crate-scale" type="range" min="2" max="7" step="0.1" value="4.4">
-              </label>
-              <label class="row"><input id="opt-neon" type="checkbox" checked> Neon Effects</label>
-              <label class="row"><input id="opt-particles" type="checkbox" checked> Particles</label>
-              <label>Vibrance Pulse
-                <input id="opt-vibrance" type="range" min="0" max="1" step="0.01" value="0.4">
-              </label>
-              <label>Sound Volume
-                <input id="opt-volume" type="range" min="0" max="1" step="0.01" value="0.5">
-              </label>
-            </div>
+          <div class="settings-group" aria-label="Game Settings Controls">
+            <label>Ball Drop Speed
+              <input id="opt-drop-speed" type="range" min="0" max="1" step="0.01" value="0.5">
+            </label>
+            <label>Gravity Strength
+              <input id="opt-gravity" type="range" min="0.3" max="2.0" step="0.05" value="1.0">
+            </label>
+            <label>Crate Scale
+              <input id="opt-crate-scale" type="range" min="2" max="7" step="0.1" value="4.4">
+            </label>
+            <label class="row">
+              <input id="opt-neon" type="checkbox" checked> Neon Effects
+            </label>
+            <label class="row">
+              <input id="opt-particles" type="checkbox" checked> Particles
+            </label>
+            <label>Vibrance Pulse
+              <input id="opt-vibrance" type="range" min="0" max="1" step="0.01" value="0.4">
+            </label>
+            <label>Sound Volume
+              <input id="opt-volume" type="range" min="0" max="1" step="0.01" value="0.5">
+            </label>
+          </div>
 
-            <div class="settings-group">
-              <h4>UI Layout</h4>
-              <button id="btn-reset-ui" class="btn alt" type="button">Reset UI Panels</button>
-              <button id="btn-force-commands" class="btn" type="button">Force Commands Front</button>
-              <small style="opacity:.7;line-height:1.3;">
-                If the COMMANDS panel vanishes or is stuck, click Force Commands Front or press Ctrl+Shift+C.
-              </small>
-            </div>
+          <hr class="divider" aria-hidden="true">
 
-            <hr class="divider" aria-hidden="true">
-
-            <div class="settings-group">
-              <h4>Admin</h4>
-              <label>Backend URL (Render)
-                <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url">
-              </label>
-              <label class="visually-hidden">Admin Username
-                <input id="admin-username" name="username" type="text" value="admin" autocomplete="username" tabindex="-1">
-              </label>
-              <label>Admin Token / DB Auth
-                <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
-              </label>
-              <div class="admin-actions">
-                <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
-                <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
-              </div>
-              <div class="admin-actions">
-                <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
-                <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
-              </div>
-              <div class="admin-status">
-                <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
-              </div>
+          <div class="settings-group">
+            <h4>Admin</h4>
+            <label>Backend URL (Render)
+              <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url">
+            </label>
+            <label class="visually-hidden">Admin Username
+              <input id="admin-username" name="username" type="text" value="admin" autocomplete="username" tabindex="-1">
+            </label>
+            <label>Admin Token / DB Auth
+              <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
+            </label>
+            <div class="admin-actions">
+              <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
+              <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
             </div>
-          </form>
+            <div class="admin-actions">
+              <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
+              <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
+            </div>
+            <div class="admin-status">
+              <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
+            </div>
+          </div>
         </div>
       </div>
 

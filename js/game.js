@@ -1,9 +1,9 @@
-/* game.js
-   Updates:
-   - Redemption focus mode (dims everything via body.redeem-focus)
-   - Crate & reward model moved visually "front" (depthTest off, high renderOrder) handled in pbrRewards & rewardModel
-   - Enter/exit focus around redemption animation
-   - (Drag/scale system retained)
+/* game.js (commands panel visibility fix & multi-drop removal)
+   Changes:
+   - Removed references to multi-drop setting UI (slider & logic) and spawnBallSet loop for multi
+   - Added panel visibility recovery: if commands panel stored off-screen or scaled tiny, auto reset
+   - Added "Reset Panel Position" button (#btn-reset-ui)
+   - Ensured commands panel z-index high; auto center if missing
 */
 
 import * as THREE from 'three';
@@ -100,11 +100,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const settingsPanel   = document.getElementById('settings-panel');
   const btnGear         = document.getElementById('btn-gear');
   const btnCloseSettings= document.getElementById('btn-close-settings');
+  const btnResetUI      = document.getElementById('btn-reset-ui');
 
-  // Settings inputs
+  // Settings inputs (multi-drop removed)
   const optDropSpeed    = document.getElementById('opt-drop-speed');
   const optGravity      = document.getElementById('opt-gravity');
-  const optMultiDrop    = document.getElementById('opt-multidrop');
   const optCrateScale   = document.getElementById('opt-crate-scale');
   const optNeon         = document.getElementById('opt-neon');
   const optParticles    = document.getElementById('opt-particles');
@@ -143,12 +143,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let activeRewardDisposeFn = null;
   let activeRedemptionCrate = null;
 
-  function enterRedemptionFocus(){
-    document.body.classList.add('redeem-focus');
-  }
-  function exitRedemptionFocus(){
-    document.body.classList.remove('redeem-focus');
-  }
+  function enterRedemptionFocus(){ document.body.classList.add('redeem-focus'); }
+  function exitRedemptionFocus(){ document.body.classList.remove('redeem-focus'); }
 
   function enqueueRedemption(evId,tier,username,avatarUrl){
     redeemQueue.push({evId,tier,username,avatarUrl});
@@ -198,7 +194,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function playRedemptionAnimation({evId,tier,username,avatarUrl}){
     return new Promise(async resolve=>{
       enterRedemptionFocus();
-
       const hud=document.createElement('div');
       hud.className=`redeem-user-card tier-${tier}`;
       hud.innerHTML=`<img class="redeem-ava" src="${avatarUrl||''}" alt=""><div class="redeem-name">@${username}</div><div class="redeem-tier-label">${REWARD_NAMES[tier]} • -${REWARD_COSTS[tier]||0}</div>`;
@@ -264,7 +259,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function loadSettings(){
     const g=Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value=g;
     const ds=Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value=ds;
-    const md=Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value=md;
     const cs=Number(localStorage.getItem('plk_crate_scale') ?? '4.4'); if(!Number.isNaN(cs)) { optCrateScale.value=cs; CRATE_SCALE=cs; }
     const vb=Number(localStorage.getItem('plk_vibrance') ?? '0.4'); if(!Number.isNaN(vb)) { optVibrance.value=vb; VIBRANCE_PULSE=vb; }
     optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
@@ -283,7 +277,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     VIBRANCE_PULSE=Number(optVibrance.value);
     localStorage.setItem('plk_dropSpeed',String(DROP_SPEED));
     localStorage.setItem('plk_gravity',String(GRAVITY_MAG));
-    localStorage.setItem('plk_multiDrop',String(optMultiDrop.value));
     localStorage.setItem('plk_crate_scale',String(CRATE_SCALE));
     localStorage.setItem('plk_neon',String(NEON));
     localStorage.setItem('plk_particles',String(PARTICLES));
@@ -383,6 +376,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     fxCanvas.height=container.clientHeight;
     layoutOverlays();
     updateTeaserLayout();
+    ensureCommandsVisible(); // re-check after resize
   }
 
   function layoutOverlays(){
@@ -597,8 +591,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   function spawnBallSet({username,avatarUrl}){
-    const multi=Math.max(1,Math.min(5,Number(optMultiDrop.value||1)));
-    for(let i=0;i<multi;i++) spawnSingle({username,avatarUrl});
+    // Single spawn now (multi removed)
+    spawnSingle({username,avatarUrl});
   }
   function spawnSingle({username,avatarUrl}){
     const jitter=PEG_SPACING*0.35;
@@ -799,8 +793,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  function initCommandsPanelDrag(){ /* Already implemented in earlier version - no changes retained */ }
-
+  // ---- DRAG / SCALE (reused) ----
   function initDraggables(){
     const overlay=document.getElementById('overlay');
     const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
@@ -820,8 +813,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       s=clamp(s,0.4,3.5);
       applyScale(el,s);
       saveState(el);
+      if(el.id==='commands-panel') ensureCommandsVisible(true);
     }, { passive:false });
+    ensureCommandsVisible();
   }
+
   function preparePanel(panel, overlay){
     panel.style.position='absolute';
     if(!panel.querySelector('.resize-handle')){
@@ -832,22 +828,23 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     const posKey=storageKey(panel,'pos');
     const scaleKey=storageKey(panel,'scale');
-    const posJSON=localStorage.getItem(posKey);
-    const scaleStr=localStorage.getItem(scaleKey);
-    let { left, top } = posJSON? JSON.parse(posJSON): computeDefaultPosition(panel, overlay);
-    let scale = scaleStr? parseFloat(scaleStr): 1;
+    let left=40, top=80, scale=1;
+    try{
+      const posJSON=localStorage.getItem(posKey);
+      if(posJSON){
+        const p=JSON.parse(posJSON);
+        if(typeof p.left==='number') left=p.left;
+        if(typeof p.top==='number') top=p.top;
+      }
+      const sStr=localStorage.getItem(scaleKey);
+      if(sStr) scale=parseFloat(sStr);
+    }catch{}
     panel.dataset.x = left;
     panel.dataset.y = top;
     panel.dataset.scale = scale;
     renderTransform(panel);
   }
-  function computeDefaultPosition(panel, overlay){
-    const oRect=overlay.getBoundingClientRect();
-    const pRect=panel.getBoundingClientRect();
-    const left=Math.max(8, Math.min(oRect.width - pRect.width - 8, pRect.left - oRect.left));
-    const top =Math.max(8, Math.min(oRect.height - pRect.height - 8, pRect.top  - oRect.top ));
-    return { left, top };
-  }
+
   function attachDrag(panel, overlay){
     const dragHandles = panel.querySelectorAll('.drag-bar, .cmd-title, .drag-handle');
     const handleList = dragHandles.length? dragHandles : [panel];
@@ -867,14 +864,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
     window.addEventListener('pointermove',e=>{
       if(!dragging) return;
-      const oRect=overlay.getBoundingClientRect();
+      const overlayRect=document.getElementById('overlay').getBoundingClientRect();
       const dx=e.clientX-startX;
       const dy=e.clientY-startY;
       let nx=startLeft+dx;
       let ny=startTop +dy;
       const pRect=panel.getBoundingClientRect();
-      nx=clamp(nx,0,oRect.width - pRect.width);
-      ny=clamp(ny,0,oRect.height - pRect.height);
+      nx=clamp(nx,0,overlayRect.width - pRect.width);
+      ny=clamp(ny,0,overlayRect.height - pRect.height);
       panel.dataset.x = nx;
       panel.dataset.y = ny;
       renderTransform(panel);
@@ -884,9 +881,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         dragging=false;
         panel.classList.remove('dragging');
         saveState(panel);
+        if(panel.id==='commands-panel') ensureCommandsVisible();
       }
     });
   }
+
   function attachScale(panel){
     const handle=panel.querySelector('.resize-handle');
     if(!handle) return;
@@ -911,9 +910,40 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         resizing=false;
         panel.classList.remove('dragging');
         saveState(panel);
+        if(panel.id==='commands-panel') ensureCommandsVisible();
       }
     });
   }
+
+  function ensureCommandsVisible(forceResetIfOff=false){
+    if(!commandsPanel) return;
+    const overlay=document.getElementById('overlay');
+    const overlayRect=overlay.getBoundingClientRect();
+    // Calculate actual rect after transform
+    const s=parseFloat(commandsPanel.dataset.scale||'1');
+    const width=commandsPanel.offsetWidth * s;
+    const height=commandsPanel.offsetHeight * s;
+    let x=parseFloat(commandsPanel.dataset.x||'0');
+    let y=parseFloat(commandsPanel.dataset.y||'0');
+
+    const outRight = x > overlayRect.width - 40;
+    const outBottom = y > overlayRect.height - 40;
+    const outLeft = x + width < 40;
+    const outTop = y + height < 40;
+    const tooSmall = s < 0.55;
+
+    if(outRight || outBottom || outLeft || outTop || tooSmall || forceResetIfOff){
+      // Reset to safe center column
+      x = Math.min(Math.max(20, (overlayRect.width - width)/2), Math.max(0,overlayRect.width - width));
+      y = Math.min(Math.max(20, 120), Math.max(0,overlayRect.height - height));
+      commandsPanel.dataset.x = x;
+      commandsPanel.dataset.y = y;
+      if(tooSmall) commandsPanel.dataset.scale = 1;
+      renderTransform(commandsPanel);
+      saveState(commandsPanel);
+    }
+  }
+
   function applyScale(panel,s){
     panel.dataset.scale = s;
     renderTransform(panel);
@@ -939,8 +969,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
   function clamp(v,a,b){ return v<a?a:v>b?b:v; }
 
+  // UI events
   btnGear?.addEventListener('click', showSettings);
   btnCloseSettings?.addEventListener('click', hideSettings);
+  btnResetUI?.addEventListener('click', ()=>{
+    if(!commandsPanel) return;
+    commandsPanel.dataset.x = 40;
+    commandsPanel.dataset.y = 100;
+    commandsPanel.dataset.scale = 1;
+    renderTransform(commandsPanel);
+    saveState(commandsPanel);
+  });
+
   let audioBound=false;
   function bindAudioUnlockOnce(){
     if(audioBound) return;
@@ -957,7 +997,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   optDropSpeed.addEventListener('input', applySettings);
   optGravity.addEventListener('input', applySettings);
-  optMultiDrop.addEventListener('input', applySettings);
   optCrateScale.addEventListener('input', applySettings);
   optNeon.addEventListener('change', applySettings);
   optParticles.addEventListener('change', applySettings);
@@ -1016,6 +1055,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     initGiftCards();
     initDraggables();
     setTeaserScale(CRATE_SCALE);
+    ensureCommandsVisible();
     startLoop();
   }
   start();
