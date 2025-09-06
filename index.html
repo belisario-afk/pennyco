@@ -37,7 +37,6 @@
       </div>
       <div id="board-title" aria-hidden="true">PLINKO</div>
 
-      <!-- HUD layer for redemption user card -->
       <div id="redeem-layer" aria-live="polite"></div>
 
       <div id="overlay">
@@ -58,17 +57,16 @@
           <ol id="leaderboard-list" class="lb-list"></ol>
         </aside>
 
-        <!-- Right column overlay: (3D crates render in scene; this only shows hint + commands panel) -->
         <div id="right-stack">
           <div id="reward-teasers" aria-label="Mystery Reward Tiers">
             <div class="teaser-hint">
               Redeem: !t1 !t2 !t3<br>
-              Click a glowing crate (dev)
+              Send TikTok gift to drop
             </div>
           </div>
 
           <section id="commands-panel" aria-label="Commands List">
-            <div class="cmd-title">COMMANDS</div>
+            <div class="cmd-title drag-handle" title="Drag to move">COMMANDS</div>
             <div class="cmd-grid">
               <div class="cmd-card tier-t3">
                 <div class="cmd-glow"></div>
@@ -94,12 +92,12 @@
                   <span class="cmd-cost">1,000 pts</span>
                 </div>
               </div>
-              <div class="cmd-card neutral">
+              <div class="cmd-card gift">
                 <div class="cmd-glow"></div>
                 <div class="cmd-inner">
-                  <span class="cmd-name">!drop</span>
-                  <span class="cmd-desc">Spawn a Ball</span>
-                  <span class="cmd-cost">Free</span>
+                  <span class="cmd-name gift-name">🎁</span>
+                  <span class="cmd-desc">TikTok Gift</span>
+                  <span class="cmd-cost">Drops a Ball</span>
                 </div>
               </div>
               <div class="cmd-card neutral small">
@@ -110,6 +108,7 @@
                 </div>
               </div>
             </div>
+            <div class="cmd-move-hint">Drag the title bar to move • Position is saved</div>
           </section>
         </div>
 
@@ -170,7 +169,6 @@
         </div>
       </div>
 
-      <!-- Dev/Test Panel -->
       <div id="dev-panel" aria-hidden="true">
         <div class="dev-title">DEV</div>
         <button data-act="drop">Drop</button>

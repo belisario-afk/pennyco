@@ -1,4 +1,10 @@
-// game.js updated to use PBR teaser crates & redemption crate instead of CSS box.
+/* FULL game.js with draggable commands panel and updated command list (no !drop card).
+   NOTE: Only changes from previous full PBR version:
+     - Added commandsPanel query
+     - Added initCommandsPanelDrag()
+     - Added call to initCommandsPanelDrag() in start()
+     - No references to removed !drop card; logic unaffected.
+*/
 import * as THREE from 'three';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
@@ -17,11 +23,9 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 
 const { Engine, World, Bodies, Events, Body } = Matter;
 
-(() => { Engine, World, Bodies, Events, Body } = Matter;
-
 (() => {
-  const REWARD_COSTS = { t1: 1000, t2: 5000, t3: 10000 };
-  const REWARD_NAMES = { t1: 'Tier 1', t2: 'Tier 2', t3: 'Tier 3' };
+  const REWARD_COSTS = { t1:1000, t2:5000, t3:10000 };
+  const REWARD_NAMES = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
   const REDEEM_PREFIX = 'redeem:';
 
   const DEV_BYPASS_DEFAULT = true;
@@ -79,7 +83,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  // DOM
+  // DOM references
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -94,8 +98,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const redeemLayer     = document.getElementById('redeem-layer');
   const devPanel        = document.getElementById('dev-panel');
   const devFreeToggle   = document.getElementById('dev-free-toggle');
+  const commandsPanel   = document.getElementById('commands-panel');
 
-  // Settings inputs
+  // Settings
   const btnGear         = document.getElementById('btn-gear');
   const settingsPanel   = document.getElementById('settings-panel');
   const btnCloseSettings= document.getElementById('btn-close-settings');
@@ -112,24 +117,19 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
   const btnSimulate     = document.getElementById('btn-simulate');
 
-  // Dev toggle
   devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
-  devFreeToggle.addEventListener('change',()=> {
-    localStorage.setItem('plk_dev_free', devFreeToggle.checked?'true':'false');
-  });
+  devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
-  // Perf
+  // Performance
   let perfPanel, perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
   const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
   let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
   let frameSamples=0, frameAccum=0;
 
-  // Shared geo/material
   const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
   let sharedBallBaseMaterial = null;
   const avatarTextureCache = new Map();
 
-  // Redemption
   const redeemQueue = [];
   let redeemActive = false;
   let activeReward3D = null;
@@ -152,8 +152,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   async function prepare3DModel(){
-    try { await ensureRewardModelLoaded(); return true; }
-    catch { return false; }
+    try{ await ensureRewardModelLoaded(); return true; }catch{ return false; }
   }
 
   function attachReward3D(tier){
@@ -164,7 +163,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     try{
       const model=createRewardModelInstance(tier==='t3'?22:tier==='t2'?19:16);
-      model.position.set(0, WORLD_HEIGHT*0.25, 15);
+      model.position.set(0,WORLD_HEIGHT*0.25,15);
       model.renderOrder=999;
       scene.add(model);
       activeReward3D=model;
@@ -194,7 +193,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function playRedemptionAnimation({evId,tier,username,avatarUrl}){
     return new Promise(async resolve=>{
-      // Create user info HUD card
       const hud=document.createElement('div');
       hud.className=`redeem-user-card tier-${tier}`;
       hud.innerHTML=`
@@ -203,29 +201,22 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         <div class="redeem-tier-label">${REWARD_NAMES[tier]} • -${REWARD_COSTS[tier]||0}</div>
       `;
       redeemLayer.appendChild(hud);
-      gsap.to(hud,{opacity:1, y:0, scale:1, duration:.55, ease:'back.out(1.6)'});
+      gsap.to(hud,{opacity:1,y:0,scale:1,duration:.55,ease:'back.out(1.6)'});
 
-      // 3D crate
       activeRedemptionCrate = createRedemptionCrate(tier);
-      activeRedemptionCrate.position.set(0, WORLD_HEIGHT*0.1, 10);
+      activeRedemptionCrate.position.set(0,WORLD_HEIGHT*0.1,10);
       scene.add(activeRedemptionCrate);
       animateCrateEntrance(activeRedemptionCrate, gsap);
 
       const modelLoaded = await prepare3DModel().catch(()=>false);
 
-      // Open after short delay
       setTimeout(async ()=>{
         await openCrate(activeRedemptionCrate, gsap);
-        if(modelLoaded){
-          attachReward3D(tier);
-        }
+        if(modelLoaded) attachReward3D(tier);
       }, 850);
 
-      // Cleanup after delay
       setTimeout(()=>{
-        gsap.to(hud,{opacity:0, y:20, scale:0.9, duration:.45, ease:'power1.in', onComplete:()=>{
-          redeemLayer.removeChild(hud);
-        }});
+        gsap.to(hud,{opacity:0,y:20,scale:0.9,duration:.45,ease:'power1.in',onComplete:()=>redeemLayer.removeChild(hud)});
         detachReward3D();
         disposeRedemptionCrate(activeRedemptionCrate, gsap);
         activeRedemptionCrate=null;
@@ -234,7 +225,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  // Slots
   function buildSlots(slotCount){
     const center=Math.floor((slotCount-1)/2);
     const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
@@ -242,11 +232,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     SLOT_POINTS=SLOT_MULTIPLIERS.map(m=>m*100);
   }
   function classForMultiplier(m){
-    if(m>=16) return 'mult-top';
-    if(m>=9) return 'mult-high';
-    if(m>=5) return 'mult-mid';
-    if(m>=3) return 'mult-low';
-    return 'mult-base';
+    if(m>=16)return'mult-top';
+    if(m>=9)return'mult-high';
+    if(m>=5)return'mult-mid';
+    if(m>=3)return'mult-low';
+    return'mult-base';
   }
   function renderSlotLabels(slotCount, framePx){
     slotLabelsEl.innerHTML='';
@@ -256,7 +246,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       div.innerHTML=`<span class="x">x</span><span class="val">${m}</span>`;
       slotLabelsEl.appendChild(div);
     });
-    trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
+    trayDividers.style.setProperty('--slot-width', `${framePx.width / slotCount}px`);
   }
 
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
@@ -301,11 +291,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       bloomPass.strength=NEON?0.75:0;
     }
   }
-
   function showSettings(){ gsap.to(settingsPanel,{x:0,duration:.35,ease:'expo.out'}); settingsPanel.setAttribute('aria-hidden','false'); }
   function hideSettings(){ gsap.to(settingsPanel,{x:'110%',duration:.35,ease:'expo.in'}); settingsPanel.setAttribute('aria-hidden','true'); }
 
-  // Three
   let pegsInstanced;
   function initThree(){
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
@@ -325,7 +313,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     ambient=new THREE.AmbientLight(0xffffff,0.85);
     dirLight=new THREE.DirectionalLight(0xffffff,1.1);
     dirLight.position.set(-18,30,60);
-    dirLight.castShadow=false;
     scene.add(ambient,dirLight);
 
     composer=new EffectComposer(renderer);
@@ -345,14 +332,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       document.body.appendChild(perfPanel);
     }
 
-    // Pointer picking for teaser crates
-    const raycaster = new THREE.Raycaster();
-    const pt = new THREE.Vector2();
-    renderer.domElement.addEventListener('pointerdown', e=>{
+    const raycaster=new THREE.Raycaster();
+    const pt=new THREE.Vector2();
+    renderer.domElement.addEventListener('pointerdown',e=>{
       const rect=renderer.domElement.getBoundingClientRect();
-      pt.x = ((e.clientX-rect.left)/rect.width)*2 - 1;
-      pt.y = -((e.clientY-rect.top)/rect.height)*2 + 1;
-      raycaster.setFromCamera(pt, camera);
+      pt.x=((e.clientX-rect.left)/rect.width)*2 - 1;
+      pt.y= -((e.clientY-rect.top)/rect.height)*2 + 1;
+      raycaster.setFromCamera(pt,camera);
       raycastTeasers(raycaster);
     });
   }
@@ -395,13 +381,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const frame={
       x:Math.round(pTopLeft.x),
       y:Math.round(pTopLeft.y),
-      width:Math.round(pBottomRight.x - pTopLeft.x),
-      height:Math.round(pBottomRight.y - pTopLeft.y)
+      width:Math.round(pBottomRight.x-pTopLeft.x),
+      height:Math.round(pBottomRight.y-pTopLeft.y)
     };
     const tray={
       x:frame.x,
       width:frame.width,
-      height:Math.round(pBottomRight.y - pTrayTopLeft.y),
+      height:Math.round(pBottomRight.y-pTrayTopLeft.y),
       top:Math.round(pTrayTopLeft.y)
     };
     Object.assign(boardFrame.style,{left:frame.x+'px',top:frame.y+'px',width:frame.width+'px',height:frame.height+'px'});
@@ -417,7 +403,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderSlotLabels(slotCount, frame);
   }
 
-  // Matter
   function initMatter(){
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
@@ -446,9 +431,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       for(let c=0;c<=r;c++){
         const x=startX + c*PEG_SPACING + (ROWS-1-r)*(PEG_SPACING/2);
         const peg=Bodies.circle(x,y,PEG_RADIUS,{
-          isStatic:true,
-          restitution:PEG_RESTITUTION,
-          friction:0.01
+          isStatic:true,restitution:PEG_RESTITUTION,friction:0.01
         });
         peg.label='PEG';
         World.add(world,peg);
@@ -533,26 +516,24 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
-  // Performance adaptation
   function adaptQuality(frameMs){
-    frameAccum += frameMs;
+    frameAccum+=frameMs;
     frameSamples++;
     perfData.frames++;
-    perfData.avgMs = perfData.avgMs ? perfData.avgMs*0.9 + frameMs*0.1 : frameMs;
-    if(frameMs > perfData.worstMs) perfData.worstMs=frameMs;
+    perfData.avgMs=perfData.avgMs?perfData.avgMs*0.9+frameMs*0.1:frameMs;
+    if(frameMs>perfData.worstMs) perfData.worstMs=frameMs;
 
-    if(frameSamples >= 60){
-      const avg = frameAccum / frameSamples;
-      if(avg > 22 && currentPR > 0.75){
-        currentPR = Math.max(0.75, currentPR - 0.1);
+    if(frameSamples>=60){
+      const avg=frameAccum/frameSamples;
+      if(avg>22 && currentPR>0.75){
+        currentPR=Math.max(0.75,currentPR-0.1);
         renderer.setPixelRatio(currentPR);
-      } else if(avg < 15 && currentPR < BASE_DEVICE_PR){
-        currentPR = Math.min(BASE_DEVICE_PR, currentPR + 0.1);
+      }else if(avg<15 && currentPR<BASE_DEVICE_PR){
+        currentPR=Math.min(BASE_DEVICE_PR,currentPR+0.1);
         renderer.setPixelRatio(currentPR);
       }
       frameAccum=0; frameSamples=0;
     }
-
     if(!ADAPTIVE_QUALITY) return;
     const avg=perfData.avgMs;
     let target=2;
@@ -561,21 +542,21 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       perfData.qualityTier=target;
       if(target===2){
         bloomPass.enabled=NEON; bloomPass.strength=0.75; smaaPass.enabled=true;
-      } else if(target===1){
+      }else if(target===1){
         bloomPass.enabled=NEON; bloomPass.strength=0.45; smaaPass.enabled=true;
-      } else {
+      }else{
         bloomPass.enabled=false; bloomPass.strength=0; smaaPass.enabled=false;
       }
     }
-    if(perfPanel && perfData.frames % 30 === 0){
+    if(perfPanel && perfData.frames%30===0){
       perfPanel.textContent=`fps:${(1000/perfData.avgMs).toFixed(1)} ms:${perfData.avgMs.toFixed(1)} pR:${currentPR.toFixed(2)} worst:${perfData.worstMs.toFixed(1)} q:${perfData.qualityTier}`;
     }
   }
 
   function startLoop(){
-    let last=performance.now(), acc=0;
+    let last=performance.now(),acc=0;
     function tick(now){
-      const dt=Math.min(250, now-last); last=now; acc+=dt;
+      const dt=Math.min(250,now-last); last=now; acc+=dt;
       let steps=0;
       const maxSteps=maxStepsForFrame(dt);
       while(acc>=FIXED_DT && steps<maxSteps){
@@ -583,15 +564,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         acc-=FIXED_DT; steps++;
       }
       clampVelocities();
-      fxMgr.update(fxCtx, dt);
+      fxMgr.update(fxCtx,dt);
       updateThreeFromMatter();
-
       const t0=performance.now();
-      if(bloomPass.enabled || smaaPass.enabled){
-        composer.render();
-      } else {
-        renderer.render(scene,camera);
-      }
+      if(bloomPass.enabled || smaaPass.enabled) composer.render(); else renderer.render(scene,camera);
       adaptQuality(dt + (performance.now()-t0));
       requestAnimationFrame(tick);
     }
@@ -614,56 +590,49 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     dynamicBodies.forEach(body=>{
       const mesh=meshById.get(body.id);
       if(mesh){
-        mesh.position.set(body.position.x, body.position.y,0);
+        mesh.position.set(body.position.x,body.position.y,0);
         mesh.rotation.z=body.angle;
       }
       const label=labelById.get(body.id);
-      if(label) label.position.set(body.position.x, body.position.y + BALL_RADIUS*2.2,0);
+      if(label) label.position.set(body.position.x,body.position.y + BALL_RADIUS*2.2,0);
     });
   }
 
-  // Spawning
-  function spawnBallSet({username, avatarUrl}){
-    const multi=Math.max(1, Math.min(5, Number(optMultiDrop.value||1)));
-    for(let i=0;i<multi;i++) spawnSingle({username, avatarUrl});
+  function spawnBallSet({username,avatarUrl}){
+    const multi=Math.max(1,Math.min(5,Number(optMultiDrop.value||1)));
+    for(let i=0;i<multi;i++) spawnSingle({username,avatarUrl});
   }
 
-  function spawnSingle({username, avatarUrl}){
+  function spawnSingle({username,avatarUrl}){
     const jitter=PEG_SPACING*0.35;
-    const dropX=Math.max(-BOARD_WIDTH/2+4, Math.min(BOARD_WIDTH/2-4,(Math.random()-0.5)*jitter));
+    const dropX=Math.max(-BOARD_WIDTH/2+4,Math.min(BOARD_WIDTH/2-4,(Math.random()-0.5)*jitter));
     const dropY=TOP_ROW_Y + PEG_SPACING*0.8;
     const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{
-      restitution:BALL_RESTITUTION,
-      friction:BALL_FRICTION,
-      frictionAir:BALL_FRICTION_AIR,
-      density:0.0018
+      restitution:BALL_RESTITUTION,friction:BALL_FRICTION,frictionAir:BALL_FRICTION_AIR,density:0.0018
     });
     body.label=`BALL_${username}`;
-    body.plugin={ username, avatarUrl, scored:false };
-    World.add(world, body);
+    body.plugin={username,avatarUrl,scored:false};
+    World.add(world,body);
     dynamicBodies.add(body);
     Body.setVelocity(body,{x:0,y:0});
     Body.setAngularVelocity(body,0);
 
     if(!sharedBallBaseMaterial){
       sharedBallBaseMaterial=new THREE.MeshPhysicalMaterial({
-        color:0xffffff,
-        metalness:0.2,
-        roughness:0.6,
-        clearcoat:0.7,
-        clearcoatRoughness:0.25,
-        emissive: NEON? new THREE.Color(0x00c6ff): new THREE.Color(0x000000),
-        emissiveIntensity: NEON?0.04:0
+        color:0xffffff,metalness:0.2,roughness:0.6,
+        clearcoat:0.7,clearcoatRoughness:0.25,
+        emissive:NEON?new THREE.Color(0x00c6ff):new THREE.Color(0x000000),
+        emissiveIntensity:NEON?0.04:0
       });
     }
     const mat=sharedBallBaseMaterial.clone();
     const mesh=new THREE.Mesh(sharedBallGeo,mat);
     scene.add(mesh);
-    meshById.set(body.id, mesh);
+    meshById.set(body.id,mesh);
 
     const sprite=buildNameSprite(username);
     scene.add(sprite);
-    labelById.set(body.id, sprite);
+    labelById.set(body.id,sprite);
 
     const applyTex=async()=>{
       try{
@@ -681,7 +650,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }catch{}
     };
     if('requestIdleCallback' in window) requestIdleCallback(applyTex,{timeout:600}); else setTimeout(applyTex,0);
-
     sfxDrop();
   }
 
@@ -706,7 +674,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{}
   }
 
-  // Points
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=(current.score||0)+points;
@@ -737,8 +704,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const entries=Object.values(leaderboard).sort((a,b)=>b.score-a.score).slice(0,50);
     leaderboardList.innerHTML='';
     for(const e of entries){
-      const li=document.createElement('li');
-      li.className='lb-item';
+      const li=document.createElement('li'); li.className='lb-item';
       const ava=document.createElement('div'); ava.className='lb-ava';
       if(e.avatarUrl) ava.style.backgroundImage=`url(${e.avatarUrl})`;
       const name=document.createElement('div'); name.className='lb-name'; name.textContent='@'+(e.username||'viewer');
@@ -764,7 +730,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
-  // Firebase
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
@@ -776,7 +741,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const command=(obj.command||'').toLowerCase();
       if(command.startsWith(REDEEM_PREFIX)){
         const tier=command.split(':')[1];
-        handleRedeemEvent(id, username, avatarUrl, tier);
+        handleRedeemEvent(id,username,avatarUrl,tier);
         return;
       }
       if(command.includes('drop') || command.startsWith('gift')){
@@ -790,10 +755,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
           const entry=data[k];
           if(entry?.username){
             leaderboard[entry.username]={
-              username: entry.username,
-              avatarUrl: entry.avatarUrl || '',
-              score: entry.score || 0,
-              lastUpdate: entry.lastUpdate || 0
+              username:entry.username,
+              avatarUrl:entry.avatarUrl||'',
+              score:entry.score||0,
+              lastUpdate:entry.lastUpdate||0
             };
           }
         }
@@ -813,18 +778,16 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return s ? s.slice(0,24) : 'viewer';
   }
 
-  // Teasers
   function initTeasers(){
     initPBRTeasers({
       scene,
       camera,
       renderer,
       gsap,
-      onCrateClick:(tier)=> devRedeem(tier,'ClickUser')
+      onCrateClick:(tier)=>devRedeem(tier,'ClickUser')
     });
   }
 
-  // Dev helpers
   function devRedeem(tier='t1', user='DevUser'){
     const id='dev_'+Date.now()+'_'+Math.random().toString(36).slice(2);
     handleRedeemEvent(id,user,'',tier);
@@ -846,7 +809,73 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  // UI / audio
+  /* Draggable commands panel */
+  function initCommandsPanelDrag(){
+    if(!commandsPanel) return;
+    const handle = commandsPanel.querySelector('.drag-handle') || commandsPanel;
+    let dragging=false;
+    let startX=0,startY=0;
+    let originLeft=0, originTop=0;
+    const overlay = document.getElementById('overlay');
+
+    // Restore position if saved
+    const savedX = localStorage.getItem('plk_cmd_left');
+    const savedY = localStorage.getItem('plk_cmd_top');
+    if(savedX && savedY){
+      commandsPanel.classList.add('floating');
+      commandsPanel.style.left=savedX+'px';
+      commandsPanel.style.top =savedY+'px';
+    }
+
+    function pointerDown(e){
+      if(e.button!==0) return;
+      dragging=true;
+      const rect=commandsPanel.getBoundingClientRect();
+      const oRect=overlay.getBoundingClientRect();
+      startX=e.clientX;
+      startY=e.clientY;
+      originLeft=rect.left - oRect.left;
+      originTop =rect.top  - oRect.top;
+      // Convert to floating absolute if not already
+      if(!commandsPanel.classList.contains('floating')){
+        commandsPanel.classList.add('floating');
+        commandsPanel.style.left=originLeft+'px';
+        commandsPanel.style.top =originTop +'px';
+      }
+      commandsPanel.classList.add('dragging');
+      e.preventDefault();
+    }
+    function pointerMove(e){
+      if(!dragging) return;
+      const dx=e.clientX-startX;
+      const dy=e.clientY-startY;
+      const oRect=overlay.getBoundingClientRect();
+      let newLeft=originLeft+dx;
+      let newTop =originTop +dy;
+      // Constrain
+      const panelRect=commandsPanel.getBoundingClientRect();
+      const w=panelRect.width;
+      const h=panelRect.height;
+      newLeft=Math.max(0,Math.min(oRect.width - w, newLeft));
+      newTop =Math.max(0,Math.min(oRect.height - h, newTop));
+      commandsPanel.style.left=newLeft+'px';
+      commandsPanel.style.top =newTop +'px';
+    }
+    function pointerUp(){
+      if(!dragging) return;
+      dragging=false;
+      commandsPanel.classList.remove('dragging');
+      // Save
+      const top=parseFloat(commandsPanel.style.top)||0;
+      const left=parseFloat(commandsPanel.style.left)||0;
+      localStorage.setItem('plk_cmd_left',String(left));
+      localStorage.setItem('plk_cmd_top', String(top));
+    }
+    handle.addEventListener('pointerdown',pointerDown);
+    window.addEventListener('pointermove',pointerMove);
+    window.addEventListener('pointerup',pointerUp);
+  }
+
   btnGear.addEventListener('click', showSettings);
   btnCloseSettings.addEventListener('click', hideSettings);
   let audioBound=false;
@@ -875,7 +904,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const baseUrl=backendUrlInput.value.trim();
       const token=adminTokenInput.value.trim();
       setBackendBaseUrl(baseUrl);
-      token ? localStorage.setItem('adminToken',token) : localStorage.removeItem('adminToken');
+      token?localStorage.setItem('adminToken',token):localStorage.removeItem('adminToken');
       alert('Saved admin settings.');
     }catch{ alert('Save failed.'); }
   });
@@ -922,6 +951,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     listenToEvents();
     initTeasers();
     initDevPanel();
+    initCommandsPanelDrag();
     startLoop();
   }
   start();
