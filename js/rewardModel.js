@@ -5,7 +5,7 @@ const MODEL_PATH = './tripo_pbr_model_b12fdae2-6adb-46bb-98bc-ebf0f5cd9e55.glb';
 
 // Yaw adjustment (turn to the right ~40 degrees) so it faces more forward toward camera.
 // Adjust this angle (in degrees) if you need further tweaking.
-const EXTRA_YAW_DEG = -50;
+const EXTRA_YAW_DEG = 70;
 const EXTRA_YAW_RAD = THREE.MathUtils.degToRad(EXTRA_YAW_DEG);
 
 let loadPromise = null;
