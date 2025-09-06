@@ -1,11 +1,11 @@
-/* game.js – Gift Drop Fix + Prior Features
-   Changes (Gift Support):
-   - Added detection of TikTok gift events even without 'command'
-   - GIFT_BALL_MAP for mapping gift names / IDs to ball counts
-   - Derives fallback ball count from coin/diamond values when name unmapped
-   - spawnGiftBalls() handles multi spawns (still independent single spawns)
-   - Console helpers: simGift(name, count?), toggle gift debug via window.DEBUG_GIFTS = true
-   - Maintains: matte crates, redemption focus, draggable panels, command panel visibility, crate sound
+/* game.js – Patch: restore missing hideSettings / showSettings, keep gift drop + all prior features
+   Fixes:
+   - Added back showSettings() and hideSettings() (ReferenceError fix).
+   - Ensures both buttons (gear / close) work.
+   - No other logic changed from previous gift-enabled version.
+
+   NOTE: The warning about the password field not being in a form is harmless and can be ignored,
+   or you can wrap the admin inputs in a <form> if you want to silence the browser hint.
 */
 
 import * as THREE from 'three';
@@ -36,7 +36,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const SHOW_PERF_PANEL = true;
   const ADAPTIVE_QUALITY = true;
 
-  // Gift to ball count mapping (case-insensitive keys)
+  // Gift mapping
   const GIFT_BALL_MAP = {
     'rose': 1,
     'finger heart': 1,
@@ -46,10 +46,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     'lion': 8,
     'castle': 12
   };
-  // Fallback ratio if coins / diamonds present and no mapping
-  const COIN_TO_BALL_RATIO = 10; // 1 ball per 10 coins (min 1)
-
-  // Maximum balls per single gift event to prevent spam
+  const COIN_TO_BALL_RATIO = 10;
   const MAX_BALLS_PER_GIFT = 25;
 
   const FIXED_DT = 1000/60;
@@ -77,7 +74,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let CRATE_SCALE = 4.4;
   let VIBRANCE_PULSE = 0.4;
 
-  /* Physics & Motion */
   const BALL_RESTITUTION = 0.06;
   const PEG_RESTITUTION  = 0.02;
   const BALL_FRICTION    = 0.04;
@@ -102,11 +98,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  /* Camera offset */
   const targetCamOffset = new THREE.Vector3();
   const baseCamPos = new THREE.Vector3(0,0,100);
 
-  /* DOM */
+  /* DOM references */
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -127,7 +122,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnCloseSettings= document.getElementById('btn-close-settings');
   const btnResetUI      = document.getElementById('btn-reset-ui');
 
-  /* Settings inputs */
+  // Settings inputs
   const optDropSpeed    = document.getElementById('opt-drop-speed');
   const optGravity      = document.getElementById('opt-gravity');
   const optCrateScale   = document.getElementById('opt-crate-scale');
@@ -141,6 +136,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnReset        = document.getElementById('btn-reset-leaderboard');
   const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
   const btnSimulate     = document.getElementById('btn-simulate');
+
+  /* ---- FIX: Define showSettings / hideSettings (were missing) ---- */
+  function showSettings(){
+    settingsPanel?.classList.add('open');
+    settingsPanel?.setAttribute('aria-hidden','false');
+  }
+  function hideSettings(){
+    settingsPanel?.classList.remove('open');
+    settingsPanel?.setAttribute('aria-hidden','true');
+  }
+
+  function showSettingsPanel(){ showSettings(); forceCommandsVisible(); }
 
   /* Helpers */
   const clamp = (v,a,b) => v<a?a:v>b?b:v;
@@ -511,7 +518,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const mesh=meshById.get(a.id);
         if(mesh){
           const p=worldToScreen(mesh.position,camera,renderer);
-          fxMgr.addSparks(p.x,p.y,'#00f2ea',10);
+            fxMgr.addSparks(p.x,p.y,'#00f2ea',10);
         }
       }
       sfxBounce();
@@ -519,7 +526,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
-  /* Main Loop */
+  /* Loop */
   function adaptQuality(frameMs){
     frameAccum+=frameMs; frameSamples++;
     perfData.frames++;
@@ -600,7 +607,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Spawning */
+  /* Spawn */
   function spawnBallSet(o){ spawnSingle(o); }
   function spawnSingle({username,avatarUrl}){
     const jitter=PEG_SPACING*0.35;
@@ -624,13 +631,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const mesh=new THREE.Mesh(sharedBallGeo,sharedBallBaseMaterial.clone());
     scene.add(mesh);
     meshById.set(body.id,mesh);
-    const sprite=buildNameSprite(body.plugin.username);
+    const sprite=buildNameSprite(username);
     scene.add(sprite);
     labelById.set(body.id,sprite);
     const applyTex=async()=>{
       try{
-        let prom=avatarTextureCache.get(body.plugin.avatarUrl||'');
-        if(!prom){ prom=loadAvatarTexture(body.plugin.avatarUrl,128); avatarTextureCache.set(body.plugin.avatarUrl||'',prom); }
+        let prom=avatarTextureCache.get(avatarUrl||'');
+        if(!prom){ prom=loadAvatarTexture(avatarUrl,128); avatarTextureCache.set(avatarUrl||'',prom); }
         const tex=await prom;
         const live=meshById.get(body.id);
         if(live){ live.material.map=tex; live.material.needsUpdate=true; }
@@ -660,7 +667,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{}
   }
 
-  /* Points */
+  /* Points / leaderboard */
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=current.score+points;
@@ -678,7 +685,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     if(current.score < points) return false;
     const next=current.score - points;
-    leaderboard[username]={ username, avatarUrl, score: next, lastUpdate:Date.now() };
+    leaderboard[username]={ username, avatarUrl, score: next, lastUpdate: Date.now() };
     refreshLeaderboard();
     FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
       username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
@@ -714,52 +721,41 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
-  /* ============ Gift Handling Logic ============ */
-
+  /* Gift logic */
   function resolveGiftName(obj){
     return (obj.giftName || obj.gift || obj.gift_type || obj.giftType || obj.itemName || obj.name || '').toString();
   }
-
   function deriveBallCountFromGift(eventObj){
     const rawName = resolveGiftName(eventObj).trim();
     const key = rawName.toLowerCase();
     if(key && GIFT_BALL_MAP[key]) return GIFT_BALL_MAP[key];
-
-    // Use coin / diamond based fallback:
     const coins = eventObj.giftCoins ?? eventObj.coins ?? eventObj.coin ?? eventObj.diamondCount ?? eventObj.diamonds ?? eventObj.value;
     if(typeof coins === 'number' && coins > 0){
       return clamp(Math.floor(coins / COIN_TO_BALL_RATIO) || 1, 1, MAX_BALLS_PER_GIFT);
     }
-
-    // Repeat / count multipliers:
     const repeat = eventObj.repeatCount || eventObj.count || eventObj.quantity;
     if(typeof repeat === 'number' && repeat > 0){
       return clamp(repeat, 1, MAX_BALLS_PER_GIFT);
     }
-
-    return 1; // default
+    return 1;
   }
-
   function isGiftEvent(obj){
     if(!obj || typeof obj !== 'object') return false;
     if(obj.type && String(obj.type).toLowerCase().includes('gift')) return true;
     if('giftName' in obj || 'gift' in obj || 'giftId' in obj || 'giftType' in obj) return true;
     if('giftCoins' in obj || 'coins' in obj || 'diamondCount' in obj || 'diamonds' in obj) return true;
-    // Some backends might send "event":"gift"
     if(String(obj.event||'').toLowerCase()==='gift') return true;
     return false;
   }
-
   function spawnGiftBalls(username, avatarUrl, giftObj){
     const count = deriveBallCountFromGift(giftObj);
-    if(window.DEBUG_GIFTS) console.log('[Gift] Spawning balls:', {username, count, giftObj});
+    if(window.DEBUG_GIFTS) console.log('[Gift] Spawning', count, 'balls for', username, giftObj);
     for(let i=0;i<count;i++){
-      // Slight stagger (optional)
       setTimeout(()=>spawnBallSet({ username, avatarUrl }), i*90*DROP_SPEED);
     }
   }
 
-  /* Listen to backend events */
+  /* Events (Firebase) */
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
@@ -771,42 +767,37 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const avatarUrl=obj.avatarUrl||'';
       const command=(obj.command||'').toLowerCase();
 
-      // Redemption command
       if(command.startsWith(REDEEM_PREFIX)){
         const tier=command.split(':')[1];
         handleRedeemEvent(id, username, avatarUrl, tier);
         return;
       }
 
-      // Gift detection (even if no command)
       if(isGiftEvent(obj)){
-        // Check spawn enabled (unless devFreeToggle overrides)
         const spawnEnabledText = spawnStatusEl?.textContent || 'unknown';
         if(spawnEnabledText === 'false' && !devFreeToggle.checked){
-          if(window.DEBUG_GIFTS) console.warn('[Gift] Spawn disabled in config; ignoring gift.');
+          if(window.DEBUG_GIFTS) console.warn('[Gift] Spawn disabled');
           return;
         }
         spawnGiftBalls(username, avatarUrl, obj);
         return;
       }
 
-      // Command-based drop
       if(command.includes('drop') || command.startsWith('gift')){
         spawnBallSet({ username, avatarUrl });
       }
     });
 
-    // Leaderboard sync
     FirebaseREST.onValue('/leaderboard',(data)=>{
       if(data && typeof data==='object'){
         for(const k of Object.keys(data)){
           const entry=data[k];
-            if(entry?.username){
+          if(entry?.username){
             leaderboard[entry.username]={
               username:entry.username,
-              avatarUrl: entry.avatarUrl||'',
-              score: entry.score||0,
-              lastUpdate: entry.lastUpdate||0
+              avatarUrl:entry.avatarUrl||'',
+              score:entry.score||0,
+              lastUpdate:entry.lastUpdate||0
             };
           }
         }
@@ -814,14 +805,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       } else clearLeaderboardLocal();
     });
 
-    // Config (spawn toggle)
     FirebaseREST.onValue('/config',(data)=>{
       const enabled=!!(data && data.spawnEnabled);
       spawnStatusEl.textContent=enabled?'true':'false';
       spawnStatusEl.style.color=enabled?'var(--good)':'var(--danger)';
     });
   }
-
   function sanitize(u){
     const s=String(u||'').trim();
     return s ? s.slice(0,24) : 'viewer';
@@ -864,7 +853,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Unified Drag + Scale (reuse existing markup) */
+  /* Draggables */
   function initDraggables(){
     const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
     panels.forEach(p=>{
@@ -873,6 +862,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       attachScale(p);
       ensurePanelOnScreen(p,true);
     });
+
     window.addEventListener('wheel', e=>{
       if(!e.altKey) return;
       const el=e.target.closest('[data-drag][data-scale]');
@@ -1041,9 +1031,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     commandsPanel.style.pointerEvents='auto';
   }
 
-  /* UI / Audio Events */
-  function showSettingsPanel(){ showSettings(); forceCommandsVisible(); }
-
+  /* UI / Audio */
   btnGear?.addEventListener('click', showSettingsPanel);
   btnCloseSettings?.addEventListener('click', hideSettings);
   btnResetUI?.addEventListener('click',()=>{
@@ -1123,7 +1111,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{ alert('Simulation failed.'); }
   });
 
-  /* Console Helpers */
+  /* Console helpers */
   window.forceShowCommands=()=>{ forceCommandsVisible(); };
   window.simGift=(giftName='Rose', count=1)=>{
     for(let i=0;i<count;i++){
@@ -1139,7 +1127,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   };
 
-  /* Start Sequence */
+  /* Start */
   function start(){
     loadSettings();
     initThree();
