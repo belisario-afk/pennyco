@@ -1,10 +1,10 @@
-/* game.js (Visibility Fix for Commands Panel)
-   Updates in this version:
-   - Added robust numeric parsing (safeNum) for panel position/scale
-   - Added ensureCommandsVisible() earlier & after every potential layout change
-   - Added force command panel opacity + fallback reapply each animation frame for first 2s
-   - Removed any multi-drop references (already removed)
-   - Added console helpers: window.showCommands(), window.resetCommandsPanel()
+/* game.js PATCH (Commands Panel Visibility)
+   Summary of changes vs previous version:
+   - Commands panel now positioned with left/top CSS instead of translate() to avoid stacking / painting glitches.
+   - Added hard z-index & periodic visibility enforcement for first 3 seconds.
+   - Simplified panel transform: only scale().
+   - ensureCommandsVisible() updated to use style.left/style.top not data translate.
+   - Added window.forceShowCommands() helper.
 */
 
 import * as THREE from 'three';
@@ -27,6 +27,7 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 const { Engine, World, Bodies, Events, Body } = Matter;
 
 (() => {
+  /* ====== Config ====== */
   const REWARD_COSTS = { t1:1000, t2:5000, t3:10000 };
   const REWARD_NAMES = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
   const REDEEM_PREFIX = 'redeem:';
@@ -64,6 +65,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const MAX_SPEED = 28;
   const MAX_H_SPEED = 22;
 
+  /* ====== State ====== */
   let engine, world;
   let scene, camera, renderer;
   let ambient, dirLight;
@@ -77,12 +79,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const leaderboard = {};
   const processedEvents = new Set();
   const processedRedemptions = new Set();
+
   let SLOT_POINTS = [];
   let SLOT_MULTIPLIERS = [];
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  // DOM
+  /* ====== DOM refs ====== */
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -103,7 +106,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnCloseSettings= document.getElementById('btn-close-settings');
   const btnResetUI      = document.getElementById('btn-reset-ui');
 
-  // Settings inputs
+  /* Settings inputs */
   const optDropSpeed    = document.getElementById('opt-drop-speed');
   const optGravity      = document.getElementById('opt-gravity');
   const optCrateScale   = document.getElementById('opt-crate-scale');
@@ -127,13 +130,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     settingsPanel?.setAttribute('aria-hidden','true');
   }
 
-  // Helpers for parsing
+  /* ====== Utilities ====== */
   const safeNum=(v,fallback)=> {
     const n=parseFloat(v);
     return Number.isFinite(n)?n:fallback;
   };
+  const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 
-  // Performance
+  /* ====== Performance ====== */
   let perfPanel;
   const perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
   const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
@@ -144,6 +148,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let sharedBallBaseMaterial = null;
   const avatarTextureCache = new Map();
 
+  /* Redemption queue */
   const redeemQueue = [];
   let redeemActive = false;
   let activeReward3D = null;
@@ -155,14 +160,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function enqueueRedemption(evId,tier,username,avatarUrl){
     redeemQueue.push({evId,tier,username,avatarUrl});
-    runNextRedemption();
+    if(!redeemActive) runNextRedemption();
   }
   function runNextRedemption(){
     if(redeemActive) return;
-    const item=redeemQueue.shift();
-    if(!item) return;
+    const next=redeemQueue.shift();
+    if(!next) return;
     redeemActive=true;
-    playRedemptionAnimation(item).then(()=>{ redeemActive=false; runNextRedemption(); });
+    playRedemptionAnimation(next).then(()=>{redeemActive=false;runNextRedemption();});
   }
   async function prepare3DModel(){
     try{ await ensureRewardModelLoaded(); return true; }catch{ return false; }
@@ -184,23 +189,24 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{}
   }
   function detachReward3D(){
-    if(activeReward3D){
-      gsap.to(activeReward3D.scale,{
-        x:activeReward3D.scale.x*0.01,
-        y:activeReward3D.scale.y*0.01,
-        z:activeReward3D.scale.z*0.01,
-        duration:.3,ease:'power2.in',
-        onComplete:()=>{
-          if(activeReward3D) scene.remove(activeReward3D);
-          if(activeRewardDisposeFn) activeRewardDisposeFn();
-          activeReward3D=null; activeRewardDisposeFn=null;
-        }
-      });
-    }
+    if(!activeReward3D) return;
+    gsap.to(activeReward3D.scale,{
+      x:activeReward3D.scale.x*0.01,
+      y:activeReward3D.scale.y*0.01,
+      z:activeReward3D.scale.z*0.01,
+      duration:.3,
+      ease:'power2.in',
+      onComplete:()=>{
+        if(activeReward3D) scene.remove(activeReward3D);
+        if(activeRewardDisposeFn) activeRewardDisposeFn();
+        activeReward3D=null; activeRewardDisposeFn=null;
+      }
+    });
   }
-  function playRedemptionAnimation({evId,tier,username,avatarUrl}){
+  function playRedemptionAnimation({tier,username,avatarUrl}){
     return new Promise(async resolve=>{
       enterRedemptionFocus();
+      forceCommandsVisibility();
       const hud=document.createElement('div');
       hud.className=`redeem-user-card tier-${tier}`;
       hud.innerHTML=`<img class="redeem-ava" src="${avatarUrl||''}" alt=""><div class="redeem-name">@${username}</div><div class="redeem-tier-label">${REWARD_NAMES[tier]} • -${REWARD_COSTS[tier]||0}</div>`;
@@ -212,11 +218,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       scene.add(activeRedemptionCrate);
       animateCrateEntrance(activeRedemptionCrate, gsap);
 
-      const modelLoaded = await prepare3DModel().catch(()=>false);
+      const modelLoaded=await prepare3DModel().catch(()=>false);
       setTimeout(async ()=>{
         await openCrate(activeRedemptionCrate, gsap);
         if(modelLoaded) attachReward3D(tier);
-      }, 700);
+      },700);
 
       setTimeout(()=>{
         gsap.to(hud,{opacity:0,y:24,scale:0.85,duration:.35,ease:'power1.in',onComplete:()=>redeemLayer.removeChild(hud)});
@@ -224,32 +230,30 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         disposeRedemptionCrate(activeRedemptionCrate, gsap);
         activeRedemptionCrate=null;
         exitRedemptionFocus();
-        ensureCommandsVisible(true);
         resolve();
-      }, 3600);
+      },3600);
     });
   }
 
-  function buildSlots(slotCount){
-    const center=Math.floor((slotCount-1)/2);
+  /* ====== Slots ====== */
+  function buildSlots(n){
+    const center=Math.floor((n-1)/2);
     const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
-    SLOT_MULTIPLIERS=Array.from({length:slotCount},(_,i)=>mult(Math.abs(i-center)));
+    SLOT_MULTIPLIERS=Array.from({length:n},(_,i)=>mult(Math.abs(i-center)));
     SLOT_POINTS=SLOT_MULTIPLIERS.map(m=>m*100);
   }
-  function classForMultiplier(m){
-    if(m>=16)return'mult-top'; if(m>=9)return'mult-high'; if(m>=5)return'mult-mid'; if(m>=3)return'mult-low'; return'mult-base';
-  }
-  function renderSlotLabels(slotCount, framePx){
+  function renderSlotLabels(count, framePx){
     slotLabelsEl.innerHTML='';
     SLOT_MULTIPLIERS.forEach(m=>{
       const div=document.createElement('div');
-      div.className='slot-label '+classForMultiplier(m);
+      div.className='slot-label '+(m>=16?'mult-top':m>=9?'mult-high':m>=5?'mult-mid':m>=3?'mult-low':'mult-base');
       div.innerHTML=`<span class="x">x</span><span class="val">${m}</span>`;
       slotLabelsEl.appendChild(div);
     });
-    trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
+    trayDividers.style.setProperty('--slot-width', `${framePx.width/count}px`);
   }
 
+  /* ====== Backend (placeholder) ====== */
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -261,7 +265,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
   }
 
-  devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
+  /* ====== Settings load/apply ====== */
+  devFreeToggle.checked=(localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
   devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
   function loadSettings(){
@@ -283,12 +288,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     PARTICLES=!!optParticles.checked;
     CRATE_SCALE=Number(optCrateScale.value);
     VIBRANCE_PULSE=Number(optVibrance.value);
-    localStorage.setItem('plk_dropSpeed',String(DROP_SPEED));
-    localStorage.setItem('plk_gravity',String(GRAVITY_MAG));
-    localStorage.setItem('plk_crate_scale',String(CRATE_SCALE));
-    localStorage.setItem('plk_neon',String(NEON));
-    localStorage.setItem('plk_particles',String(PARTICLES));
-    localStorage.setItem('plk_vibrance',String(VIBRANCE_PULSE));
+    localStorage.setItem('plk_dropSpeed',DROP_SPEED);
+    localStorage.setItem('plk_gravity',GRAVITY_MAG);
+    localStorage.setItem('plk_crate_scale',CRATE_SCALE);
+    localStorage.setItem('plk_neon',NEON);
+    localStorage.setItem('plk_particles',PARTICLES);
+    localStorage.setItem('plk_vibrance',VIBRANCE_PULSE);
     if(world) world.gravity.y=-Math.abs(GRAVITY_MAG);
     setTeaserScale(CRATE_SCALE);
     if(bloomPass){
@@ -297,9 +302,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
-  let pegsInstanced;
-  let baseCamPos=new THREE.Vector3(0,0,100);
-  let targetCamOffset=new THREE.Vector3();
+  /* ====== Three.js ====== */
   function initThree(){
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -307,13 +310,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderer.toneMappingExposure=1.22;
     renderer.setPixelRatio(currentPR);
     renderer.setSize(container.clientWidth,container.clientHeight);
-    renderer.setClearColor(0x000000,0);
+    renderer.domElement.style.position='absolute';
+    renderer.domElement.style.inset='0';
+    renderer.domElement.style.zIndex='110';
     container.appendChild(renderer.domElement);
 
     scene=new THREE.Scene();
     computeWorldSize();
     camera=new THREE.OrthographicCamera(-WORLD_WIDTH/2,WORLD_WIDTH/2,WORLD_HEIGHT/2,-WORLD_HEIGHT/2,0.1,300);
-    camera.position.copy(baseCamPos);
+    camera.position.set(0,0,100);
 
     ambient=new THREE.AmbientLight(0xffffff,1.0);
     dirLight=new THREE.DirectionalLight(0xffffff,1.05);
@@ -327,33 +332,30 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     bloomPass=new UnrealBloomPass(new THREE.Vector2(renderer.domElement.width,renderer.domElement.height),0.6,0.5,0.25);
     composer.addPass(bloomPass);
 
-    const ro=new ResizeObserver(onResize); ro.observe(container);
+    new ResizeObserver(onResize).observe(container);
     onResize();
 
     if(SHOW_PERF_PANEL){
       perfPanel=document.createElement('div');
       perfPanel.id='perf-panel';
-      perfPanel.textContent='Perf';
       document.body.appendChild(perfPanel);
     }
 
-    const rectTarget={w:0,h:0};
-    function updateRect(){ const r=renderer.domElement.getBoundingClientRect(); rectTarget.w=r.width; rectTarget.h=r.height; }
-    updateRect();
-    window.addEventListener('resize',updateRect);
+    const rectCache={w:0,h:0};
+    const upd=()=>{const r=renderer.domElement.getBoundingClientRect();rectCache.w=r.width;rectCache.h=r.height;};
+    upd(); window.addEventListener('resize',upd);
     renderer.domElement.addEventListener('pointermove',e=>{
-      const xNorm=(e.clientX/rectTarget.w)*2 - 1;
-      const yNorm=(e.clientY/rectTarget.h)*2 - 1;
-      targetCamOffset.x = xNorm * 2.5;
-      targetCamOffset.y = yNorm * 1.8;
+      const xNorm=(e.clientX/rectCache.w)*2 - 1;
+      const yNorm=(e.clientY/rectCache.h)*2 - 1;
+      targetCamOffset.set(xNorm*2.5,yNorm*1.8,0);
     });
 
     const raycaster=new THREE.Raycaster();
     const pt=new THREE.Vector2();
     renderer.domElement.addEventListener('pointerdown',e=>{
-      const rect=renderer.domElement.getBoundingClientRect();
-      pt.x=((e.clientX-rect.left)/rect.width)*2 -1;
-      pt.y=-((e.clientY-rect.top)/rect.height)*2 +1;
+      const r=renderer.domElement.getBoundingClientRect();
+      pt.x=((e.clientX-r.left)/r.width)*2 -1;
+      pt.y=-((e.clientY-r.top)/r.height)*2 +1;
       raycaster.setFromCamera(pt,camera);
       raycastTeasers(raycaster);
     });
@@ -369,6 +371,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     PEG_SPACING=BOARD_WIDTH/(ROWS+1);
     TRAY_HEIGHT=BOARD_HEIGHT*TRAY_RATIO;
   }
+
   function onResize(){
     renderer.setSize(container.clientWidth,container.clientHeight);
     composer.setSize(container.clientWidth,container.clientHeight);
@@ -391,16 +394,16 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const left=-BOARD_WIDTH/2,right=BOARD_WIDTH/2;
     const top=BOARD_HEIGHT/2,bottom=-BOARD_HEIGHT/2;
     const trayTop=bottom+TRAY_HEIGHT;
-    const pTopLeft=worldToScreen(new THREE.Vector3(left,top,0),camera,renderer);
-    const pBottomRight=worldToScreen(new THREE.Vector3(right,bottom,0),camera,renderer);
-    const pTrayTopLeft=worldToScreen(new THREE.Vector3(left,trayTop,0),camera,renderer);
-    const frame={x:Math.round(pTopLeft.x),y:Math.round(pTopLeft.y),width:Math.round(pBottomRight.x-pTopLeft.x),height:Math.round(pBottomRight.y-pTopLeft.y)};
-    const tray={x:frame.x,width:frame.width,height:Math.round(pBottomRight.y-pTrayTopLeft.y),top:Math.round(pTrayTopLeft.y)};
+    const pTL=worldToScreen(new THREE.Vector3(left,top,0),camera,renderer);
+    const pBR=worldToScreen(new THREE.Vector3(right,bottom,0),camera,renderer);
+    const pTrayTL=worldToScreen(new THREE.Vector3(left,trayTop,0),camera,renderer);
+    const frame={x:Math.round(pTL.x),y:Math.round(pTL.y),width:Math.round(pBR.x-pTL.x),height:Math.round(pBR.y-pTL.y)};
+    const tray={x:frame.x,width:frame.width,height:Math.round(pBR.y-pTrayTL.y),top:Math.round(pTrayTL.y)};
     Object.assign(boardFrame.style,{left:frame.x+'px',top:frame.y+'px',width:frame.width+'px',height:frame.height+'px'});
     Object.assign(slotTray.style,{left:tray.x+'px',top:tray.top+'px',width:tray.width+'px',height:tray.height+'px'});
     boardDivider.style.left=frame.x+'px';
     boardDivider.style.width=frame.width+'px';
-    boardDivider.style.top=(pTrayTopLeft.y-1)+'px';
+    boardDivider.style.top=(pTrayTL.y-1)+'px';
     boardDivider.style.display='block';
     boardTitle.style.left=(frame.x+22)+'px';
     boardTitle.style.top =(frame.y+18)+'px';
@@ -409,6 +412,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderSlotLabels(slotCount, frame);
   }
 
+  /* ====== Matter ====== */
   function initMatter(){
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
@@ -451,32 +455,25 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
   function addPegInstancedMesh(pegPositions){
-    if(pegsInstanced){
-      scene.remove(pegsInstanced);
-      pegsInstanced.geometry.dispose();
-      pegsInstanced.material.dispose();
-    }
+    if(scene.getObjectByProperty('isInstancedMesh',true)){}
     const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
     const mat=new THREE.MeshPhysicalMaterial({
       color:0x86f7ff,metalness:0.35,roughness:0.35,
       clearcoat:0.6,clearcoatRoughness:0.2,
-      emissive:new THREE.Color(0x00ffff),
-      emissiveIntensity:0.23
+      emissive:0x00ffff,emissiveIntensity:0.23
     });
     const inst=new THREE.InstancedMesh(geo,mat,pegPositions.length);
     const m=new THREE.Matrix4();
     const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
-    for(let i=0;i<pegPositions.length;i++){
-      const {x,y}=pegPositions[i];
+    pegPositions.forEach(({x,y},i)=>{
       m.compose(new THREE.Vector3(x,y,0),q,new THREE.Vector3(1,1,1));
       inst.setMatrixAt(i,m);
-    }
+    });
     inst.instanceMatrix.needsUpdate=true;
-    pegsInstanced=inst;
     scene.add(inst);
   }
   function bindCollisions(){
-    Events.on(engine,'collisionStart', ev=>{
+    Events.on(engine,'collisionStart',ev=>{
       for(const {bodyA,bodyB} of ev.pairs){
         handlePair(bodyA,bodyB);
         handlePair(bodyB,bodyA);
@@ -487,14 +484,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(!a||!b) return;
     const slot=slotSensors.find(s=>s.body.id===b.id);
     if(slot && String(a.label||'').startsWith('BALL_')){
-      const ball=a;
-      if(!ball.plugin?.scored){
+      if(!a.plugin?.scored){
         const idx=slot.index;
         const points=SLOT_POINTS[idx]||100;
-        ball.plugin.scored=true;
-        awardPoints(ball.plugin.username, ball.plugin.avatarUrl||'', points).catch(console.warn);
-        sfxScore(points >= 1600);
-        setTimeout(()=>tryRemoveBall(ball),900);
+        a.plugin.scored=true;
+        awardPoints(a.plugin.username,a.plugin.avatarUrl||'',points).catch(console.warn);
+        sfxScore(points>=1600);
+        setTimeout(()=>tryRemoveBall(a),900);
       }
       return;
     }
@@ -502,8 +498,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if(PARTICLES){
         const mesh=meshById.get(a.id);
         if(mesh){
-          const p2=worldToScreen(mesh.position,camera,renderer);
-          fxMgr.addSparks(p2.x,p2.y,'#00f2ea',10);
+          const s=worldToScreen(mesh.position,camera,renderer);
+            fxMgr.addSparks(s.x,s.y,'#00f2ea',10);
         }
       }
       sfxBounce();
@@ -511,9 +507,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
+  /* ====== Loop ====== */
   function adaptQuality(frameMs){
-    frameAccum+=frameMs;
-    frameSamples++;
+    frameAccum+=frameMs; frameSamples++;
     perfData.frames++;
     perfData.avgMs=perfData.avgMs?perfData.avgMs*0.9+frameMs*0.1:frameMs;
     if(frameMs>perfData.worstMs) perfData.worstMs=frameMs;
@@ -522,30 +518,31 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if(avg>22 && currentPR>0.75){
         currentPR=Math.max(0.75,currentPR-0.1);
         renderer.setPixelRatio(currentPR);
-      } else if(avg<15 && currentPR<BASE_DEVICE_PR){
+      }else if(avg<15 && currentPR<BASE_DEVICE_PR){
         currentPR=Math.min(BASE_DEVICE_PR,currentPR+0.1);
         renderer.setPixelRatio(currentPR);
       }
-      frameAccum=0; frameSamples=0;
+      frameSamples=0; frameAccum=0;
     }
     if(!ADAPTIVE_QUALITY) return;
     const avg=perfData.avgMs;
     let target=2;
-    if(avg>30) target=0; else if(avg>23) target=1;
+    if(avg>30) target=0;
+    else if(avg>23) target=1;
     if(target!==perfData.qualityTier){
       perfData.qualityTier=target;
       if(target===2){ bloomPass.enabled=NEON; bloomPass.strength=0.6; smaaPass.enabled=true; }
       else if(target===1){ bloomPass.enabled=NEON; bloomPass.strength=0.38; smaaPass.enabled=true; }
-      else { bloomPass.enabled=false; bloomPass.strength=0; smaaPass.enabled=false; }
+      else { bloomPass.enabled=false; smaaPass.enabled=false; }
     }
     if(perfPanel && perfData.frames%30===0){
-      perfPanel.textContent=`fps:${(1000/perfData.avgMs).toFixed(1)} ms:${perfData.avgMs.toFixed(1)} pR:${currentPR.toFixed(2)} worst:${perfData.worstMs.toFixed(1)} q:${perfData.qualityTier}`;
+      perfPanel.textContent=`fps:${(1000/perfData.avgMs).toFixed(1)} ms:${perfData.avgMs.toFixed(1)} pr:${currentPR.toFixed(2)} worst:${perfData.worstMs.toFixed(1)} q:${perfData.qualityTier}`;
     }
   }
 
   let vibranceTime=0;
   function startLoop(){
-    let last=performance.now(), acc=0;
+    let last=performance.now(),acc=0;
     function tick(now){
       const dt=Math.min(250,now-last); last=now; acc+=dt;
       let steps=0;
@@ -557,19 +554,20 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       fxMgr.update(fxCtx,dt);
       updateThreeFromMatter();
 
-      camera.position.x += (0 + targetCamOffset.x - camera.position.x)*0.06;
-      camera.position.y += (0 + targetCamOffset.y - camera.position.y)*0.06;
+      camera.position.x += (targetCamOffset.x - camera.position.x)*0.06;
+      camera.position.y += (targetCamOffset.y - camera.position.y)*0.06;
 
       if(NEON){
-        vibranceTime += dt*0.001;
-        const pulse = 1 + Math.sin(vibranceTime*2.1)*0.14*VIBRANCE_PULSE;
-        bloomPass.strength = (perfData.qualityTier===0?0.32:0.5)*pulse + (NEON?0.08:0);
-        renderer.toneMappingExposure = 1.15 * (1 + 0.07*VIBRANCE_PULSE*Math.sin(vibranceTime*1.4+1));
+        vibranceTime+=dt*0.001;
+        const pulse=1+Math.sin(vibranceTime*2.1)*0.14*VIBRANCE_PULSE;
+        bloomPass.strength=(perfData.qualityTier===0?0.32:0.5)*pulse+(NEON?0.08:0);
+        renderer.toneMappingExposure=1.15*(1+0.07*VIBRANCE_PULSE*Math.sin(vibranceTime*1.4+1));
       }
 
       const t0=performance.now();
-      (bloomPass.enabled || smaaPass.enabled)?composer.render():renderer.render(scene,camera);
-      adaptQuality(dt + (performance.now()-t0));
+      (bloomPass.enabled||smaaPass.enabled)?composer.render():renderer.render(scene,camera);
+      adaptQuality(dt+(performance.now()-t0));
+
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
@@ -579,9 +577,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     for(const b of dynamicBodies){
       let {x,y}=b.velocity;
       if(Math.abs(x)>MAX_H_SPEED) x=Math.sign(x)*MAX_H_SPEED;
-      const speed=Math.hypot(x,y);
-      if(speed>MAX_SPEED){
-        const k=MAX_SPEED/speed; x*=k; y*=k;
+      const sp=Math.hypot(x,y);
+      if(sp>MAX_SPEED){
+        const k=MAX_SPEED/sp; x*=k; y*=k;
       }
       Body.setVelocity(b,{x,y});
     }
@@ -598,9 +596,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  function spawnBallSet({username,avatarUrl}){
-    spawnSingle({username,avatarUrl});
-  }
+  /* ====== Spawning ====== */
+  function spawnBallSet(o){ spawnSingle(o); }
   function spawnSingle({username,avatarUrl}){
     const jitter=PEG_SPACING*0.35;
     const dropX=Math.max(-BOARD_WIDTH/2+4,Math.min(BOARD_WIDTH/2-4,(Math.random()-0.5)*jitter));
@@ -616,31 +613,26 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       sharedBallBaseMaterial=new THREE.MeshPhysicalMaterial({
         color:0xffffff,metalness:0.25,roughness:0.5,
         clearcoat:0.7,clearcoatRoughness:0.25,
-        emissive:NEON?new THREE.Color(0x00b8e8):new THREE.Color(0x000000),
+        emissive:NEON?0x00b8e8:0x000000,
         emissiveIntensity:NEON?0.04:0
       });
     }
-    const mat=sharedBallBaseMaterial.clone();
-    const mesh=new THREE.Mesh(sharedBallGeo,mat);
+    const mesh=new THREE.Mesh(sharedBallGeo,sharedBallBaseMaterial.clone());
     scene.add(mesh);
     meshById.set(body.id,mesh);
     const sprite=buildNameSprite(username);
     scene.add(sprite);
     labelById.set(body.id,sprite);
-
     const applyTex=async()=>{
       try{
         let prom=avatarTextureCache.get(avatarUrl||'');
         if(!prom){ prom=loadAvatarTexture(avatarUrl,128); avatarTextureCache.set(avatarUrl||'',prom); }
         const tex=await prom;
         const live=meshById.get(body.id);
-        if(live && live.material){
-          live.material.map=tex;
-          live.material.needsUpdate=true;
-        }
+        if(live){ live.material.map=tex; live.material.needsUpdate=true; }
       }catch{}
     };
-    if('requestIdleCallback' in window) requestIdleCallback(applyTex,{timeout:600}); else setTimeout(applyTex,0);
+    ('requestIdleCallback' in window)?requestIdleCallback(applyTex,{timeout:600}):setTimeout(applyTex,0);
     sfxDrop();
   }
   function tryRemoveBall(body){
@@ -660,246 +652,194 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       meshById.delete(body.id);
       labelById.delete(body.id);
       dynamicBodies.delete(body);
-      World.remove(world, body);
+      World.remove(world,body);
     }catch{}
   }
 
-  async function awardPoints(username, avatarUrl, points){
-    const current=leaderboard[username] || { username, avatarUrl, score:0 };
-    const next=(current.score||0)+points;
-    leaderboard[username]={ username, avatarUrl, score:next, lastUpdate:Date.now() };
+  /* ====== Points / Leaderboard ====== */
+  async function awardPoints(username,avatarUrl,points){
+    const current=leaderboard[username] || {username,avatarUrl,score:0};
+    const next=current.score+points;
+    leaderboard[username]={username,avatarUrl,score:next,lastUpdate:Date.now()};
     refreshLeaderboard();
-    try{
-      await FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
-        username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
-      });
-    }catch{}
+    FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,{
+      username,avatarUrl:avatarUrl||'',score:next,lastUpdate:Date.now()
+    }).catch(()=>{});
   }
-  function setPointsLocal(username, avatarUrl, score){
-    leaderboard[username]={ username, avatarUrl, score, lastUpdate:Date.now() };
+  function setPointsLocal(username,avatarUrl,score){
+    leaderboard[username]={username,avatarUrl,score,lastUpdate:Date.now()};
     refreshLeaderboard();
   }
-  function deductPoints(username, avatarUrl, points){
-    const current=leaderboard[username] || { username, avatarUrl, score:0 };
-    if((current.score||0) < points) return false;
-    const next=current.score - points;
-    leaderboard[username]={ username, avatarUrl, score: next, lastUpdate:Date.now() };
+  function deductPoints(username,avatarUrl,points){
+    const curr=leaderboard[username]||{username,avatarUrl,score:0};
+    if(curr.score<points) return false;
+    const next=curr.score-points;
+    leaderboard[username]={username,avatarUrl,score:next,lastUpdate:Date.now()};
     refreshLeaderboard();
-    FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
-      username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
+    FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,{
+      username,avatarUrl:avatarUrl||'',score:next,lastUpdate:Date.now()
     }).catch(()=>{});
     return true;
   }
   function refreshLeaderboard(){
-    const entries=Object.values(leaderboard).sort((a,b)=>b.score-a.score).slice(0,50);
+    const list=Object.values(leaderboard).sort((a,b)=>b.score-a.score).slice(0,50);
     leaderboardList.innerHTML='';
-    for(const e of entries){
+    for(const e of list){
       const li=document.createElement('li'); li.className='lb-item';
       const ava=document.createElement('div'); ava.className='lb-ava';
       if(e.avatarUrl) ava.style.backgroundImage=`url(${e.avatarUrl})`;
-      const name=document.createElement('div'); name.className='lb-name'; name.textContent='@'+(e.username||'viewer');
+      const name=document.createElement('div'); name.className='lb-name'; name.textContent='@'+e.username;
       const score=document.createElement('div'); score.className='lb-score'; score.textContent=e.score.toLocaleString();
-      li.appendChild(ava); li.appendChild(name); li.appendChild(score);
+      li.append(ava,name,score);
       leaderboardList.appendChild(li);
     }
   }
   function clearLeaderboardLocal(){
-    for(const k of Object.keys(leaderboard)) delete leaderboard[k];
+    Object.keys(leaderboard).forEach(k=>delete leaderboard[k]);
     leaderboardList.innerHTML='';
   }
 
-  function handleRedeemEvent(eventId, username, avatarUrl, tier){
-    if(processedRedemptions.has(eventId)) return;
-    processedRedemptions.add(eventId);
+  function handleRedeemEvent(id, username, avatarUrl, tier){
+    if(processedRedemptions.has(id)) return;
+    processedRedemptions.add(id);
     const cost=REWARD_COSTS[tier];
     if(!cost) return;
     if(devFreeToggle.checked && (leaderboard[username]?.score||0) < cost){
-      setPointsLocal(username, avatarUrl, cost);
+      setPointsLocal(username,avatarUrl,cost);
     }
-    if(!deductPoints(username, avatarUrl, cost)) return;
-    enqueueRedemption(eventId, tier, username, avatarUrl);
+    if(!deductPoints(username,avatarUrl,cost)) return;
+    enqueueRedemption(id,tier,username,avatarUrl);
   }
 
+  /* ====== Events (Firebase stub) ====== */
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
-      const ts=typeof obj.timestamp==='number'?obj.timestamp:0;
+      const ts=Number(obj.timestamp)||0;
       if(ts && ts < startTime - 60_000) return;
       processedEvents.add(id);
-      const username=sanitizeUsername(obj.username||'viewer');
+      const username=sanitize(obj.username||'viewer');
       const avatarUrl=obj.avatarUrl||'';
-      const command=(obj.command||'').toLowerCase();
-      if(command.startsWith(REDEEM_PREFIX)){
-        const tier=command.split(':')[1];
-        handleRedeemEvent(id, username, avatarUrl, tier);
-        return;
-      }
-      if(command.includes('drop') || command.startsWith('gift')){
-        spawnBallSet({ username, avatarUrl });
-      }
+      const cmd=(obj.command||'').toLowerCase();
+      if(cmd.startsWith(REDEEM_PREFIX)) return handleRedeemEvent(id,username,avatarUrl,cmd.split(':')[1]);
+      if(cmd.includes('drop') || cmd.startsWith('gift')) spawnBallSet({username,avatarUrl});
     });
-    FirebaseREST.onValue('/leaderboard',(data)=>{
+    FirebaseREST.onValue('/leaderboard',data=>{
       if(data && typeof data==='object'){
-        for(const k of Object.keys(data)){
-          const entry=data[k];
-          if(entry?.username){
-            leaderboard[entry.username]={
-              username:entry.username,
-              avatarUrl: entry.avatarUrl||'',
-              score: entry.score||0,
-              lastUpdate: entry.lastUpdate||0
-            };
-          }
-        }
+        Object.keys(data).forEach(k=>{
+          const e=data[k]; if(e?.username) leaderboard[e.username]={ username:e.username, avatarUrl:e.avatarUrl||'', score:e.score||0, lastUpdate:e.lastUpdate||0 };
+        });
         refreshLeaderboard();
       } else clearLeaderboardLocal();
     });
-    FirebaseREST.onValue('/config',(data)=>{
+    FirebaseREST.onValue('/config',data=>{
       const enabled=!!(data && data.spawnEnabled);
       spawnStatusEl.textContent=enabled?'true':'false';
       spawnStatusEl.style.color=enabled?'var(--good)':'var(--danger)';
     });
   }
-  function sanitizeUsername(u){
-    const s=String(u||'').trim();
-    return s ? s.slice(0,24) : 'viewer';
-  }
+  const sanitize=s=>String(s||'').trim().slice(0,24)||'viewer';
 
-  function initTeasers(){
-    initPBRTeasers({
-      scene,
-      camera,
-      renderer,
-      gsap,
-      onCrateClick:(tier)=>devRedeem(tier,'ClickUser'),
-      initialScale: CRATE_SCALE
-    });
-  }
-  function devRedeem(tier='t1', user='DevUser'){
-    const id='dev_'+Date.now()+'_'+Math.random().toString(36).slice(2);
-    handleRedeemEvent(id,user,'',tier);
-  }
-  function devDrop(user='DevUser'){ spawnBallSet({ username:user, avatarUrl:'' }); }
-  window.devRedeem=devRedeem;
-  window.devDrop=devDrop;
+  /* ====== Teasers & Dev ====== */
+  function initTeasers(){ initPBRTeasers({ scene,camera,renderer,gsap,onCrateClick:t=>devRedeem(t,'ClickUser'),initialScale:CRATE_SCALE }); }
+  function devRedeem(tier='t1', user='DevUser'){ handleRedeemEvent('dev_'+Date.now(),user,'',tier); }
+  function devDrop(user='DevUser'){ spawnBallSet({username:user,avatarUrl:''}); }
+  window.devRedeem=devRedeem; window.devDrop=devDrop;
+
   function initDevPanel(){
-    if(!devPanel) return;
-    devPanel.querySelectorAll('button[data-act]').forEach(btn=>{
-      btn.addEventListener('click',()=>{
-        const act=btn.dataset.act;
-        if(act==='drop') devDrop('DevDrop');
+    devPanel?.querySelectorAll('button[data-act]').forEach(b=>{
+      b.addEventListener('click',()=>{
+        const act=b.dataset.act;
+        if(act==='drop') devDrop('DevUser');
         else if(act.startsWith('redeem-')) devRedeem(act.split('-')[1],'DevUser');
       });
     });
   }
   function initGiftCards(){
     document.querySelectorAll('.gift-card').forEach(card=>{
-      card.addEventListener('click',()=>{
-        devDrop(card.dataset.gift || 'GiftUser');
-      });
+      card.addEventListener('click',()=>devDrop(card.dataset.gift||'Gift'));
     });
   }
 
-  // ---- DRAG / SCALE ----
+  /* ====== Drag / Scale for Panels (commands only critical) ====== */
   function initDraggables(){
-    const overlay=document.getElementById('overlay');
-    const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
-    panels.forEach(panel=>{
-      preparePanel(panel, overlay);
-      attachDrag(panel, overlay);
-      attachScale(panel);
-    });
+    if(!commandsPanel){ console.warn('Commands panel missing'); return; }
+    preparePanel(commandsPanel);
+    attachDrag(commandsPanel);
+    attachScale(commandsPanel);
     window.addEventListener('wheel', e=>{
       if(!e.altKey) return;
-      const el=e.target.closest('[data-drag][data-scale]');
-      if(!el) return;
+      if(!commandsPanel.contains(e.target)) return;
       e.preventDefault();
-      const key=storageKey(el,'scale');
-      let s=parseFloat(localStorage.getItem(key) || '1');
-      s += -Math.sign(e.deltaY)*0.08;
-      s=clamp(s,0.4,3.5);
-      applyScale(el,s);
-      saveState(el);
-      if(el.id==='commands-panel') ensureCommandsVisible(true);
+      let scale=safeNum(commandsPanel.dataset.scale,1);
+      scale += -Math.sign(e.deltaY)*0.08;
+      scale=clamp(scale,0.5,3);
+      commandsPanel.dataset.scale=scale;
+      renderPanel(commandsPanel);
+      ensureCommandsVisible();
     }, { passive:false });
     ensureCommandsVisible();
   }
 
-  function preparePanel(panel, overlay){
-    panel.style.position='absolute';
-    if(!panel.querySelector('.resize-handle')){
-      const h=document.createElement('div');
-      h.className='resize-handle';
-      h.textContent='↘';
-      panel.appendChild(h);
-    }
-    const posKey=storageKey(panel,'pos');
-    const scaleKey=storageKey(panel,'scale');
-    let left=40, top=100, scale=1;
-    try{
-      const posJSON=localStorage.getItem(posKey);
-      if(posJSON){
-        const p=JSON.parse(posJSON);
-        left=safeNum(p.left,40);
-        top =safeNum(p.top ,100);
+  function preparePanel(panel){
+    if(!panel.dataset.scale) panel.dataset.scale='1';
+    if(!panel.dataset.x){
+      // try restore
+      try{
+        const pos=localStorage.getItem('plk_commands_pos');
+        if(pos){
+          const {x,y,scale}=JSON.parse(pos);
+          panel.dataset.x=safeNum(x,40);
+          panel.dataset.y=safeNum(y,100);
+          panel.dataset.scale=safeNum(scale,1);
+        }else{
+          panel.dataset.x='40';
+          panel.dataset.y='100';
+        }
+      }catch{
+        panel.dataset.x='40';panel.dataset.y='100';
       }
-      const sStr=localStorage.getItem(scaleKey);
-      if(sStr) scale=safeNum(sStr,1);
-    }catch{}
-    panel.dataset.x = left;
-    panel.dataset.y = top;
-    panel.dataset.scale = scale;
-    renderTransform(panel);
+    }
+    renderPanel(panel,true);
   }
 
-  function attachDrag(panel, overlay){
-    const dragHandles = panel.querySelectorAll('.drag-bar, .cmd-title, .drag-handle');
-    const handleList = dragHandles.length? dragHandles : [panel];
-    let dragging=false,startX=0,startY=0,startLeft=0,startTop=0;
-    handleList.forEach(h=>{
-      h.style.cursor='grab';
-      h.addEventListener('pointerdown',e=>{
-        if(e.button!==0) return;
-        if(e.target.closest('.resize-handle')) return;
-        dragging=true;
-        panel.classList.add('dragging');
-        startX=e.clientX; startY=e.clientY;
-        startLeft=safeNum(panel.dataset.x,40);
-        startTop =safeNum(panel.dataset.y,100);
-        e.preventDefault();
-      });
+  function attachDrag(panel){
+    const handle=panel.querySelector('.cmd-title')||panel;
+    let dragging=false,startX=0,startY=0,origX=0,origY=0;
+    handle.addEventListener('pointerdown',e=>{
+      if(e.button!==0) return;
+      dragging=true;
+      startX=e.clientX; startY=e.clientY;
+      origX=safeNum(panel.dataset.x,40);
+      origY=safeNum(panel.dataset.y,100);
+      panel.classList.add('dragging');
+      e.preventDefault();
     });
     window.addEventListener('pointermove',e=>{
       if(!dragging) return;
-      const overlayRect=document.getElementById('overlay').getBoundingClientRect();
       const dx=e.clientX-startX;
       const dy=e.clientY-startY;
-      let nx=startLeft+dx;
-      let ny=startTop +dy;
-      const pRect=panel.getBoundingClientRect();
-      nx=clamp(nx,0,overlayRect.width - pRect.width);
-      ny=clamp(ny,0,overlayRect.height - pRect.height);
-      panel.dataset.x = nx;
-      panel.dataset.y = ny;
-      renderTransform(panel);
+      panel.dataset.x=origX+dx;
+      panel.dataset.y=origY+dy;
+      renderPanel(panel);
     });
     window.addEventListener('pointerup',()=>{
-      if(dragging){
-        dragging=false;
-        panel.classList.remove('dragging');
-        saveState(panel);
-        if(panel.id==='commands-panel') ensureCommandsVisible();
-      }
+      if(!dragging) return;
+      dragging=false;
+      panel.classList.remove('dragging');
+      savePanel(panel);
+      ensureCommandsVisible();
     });
   }
 
   function attachScale(panel){
-    const handle=panel.querySelector('.resize-handle');
-    if(!handle) return;
     let resizing=false,startX=0,startScale=1;
-    handle.addEventListener('pointerdown',e=>{
-      e.stopPropagation();
-      e.preventDefault();
+    const rh=document.createElement('div');
+    rh.className='resize-handle';
+    rh.textContent='↘';
+    panel.appendChild(rh);
+    rh.addEventListener('pointerdown',e=>{
+      e.preventDefault(); e.stopPropagation();
       resizing=true;
       startX=e.clientX;
       startScale=safeNum(panel.dataset.scale,1);
@@ -907,96 +847,87 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
     window.addEventListener('pointermove',e=>{
       if(!resizing) return;
-      const dx=e.clientX-startX;
-      let newScale=startScale + dx/240;
-      newScale=clamp(newScale,0.4,3.5);
-      applyScale(panel,newScale);
+      let s=startScale + (e.clientX-startX)/240;
+      s=clamp(s,0.5,3);
+      panel.dataset.scale=s;
+      renderPanel(panel);
     });
     window.addEventListener('pointerup',()=>{
-      if(resizing){
-        resizing=false;
-        panel.classList.remove('dragging');
-        saveState(panel);
-        if(panel.id==='commands-panel') ensureCommandsVisible();
-      }
+      if(!resizing) return;
+      resizing=false;
+      panel.classList.remove('dragging');
+      savePanel(panel);
+      ensureCommandsVisible();
     });
   }
 
-  function ensureCommandsVisible(force=false){
+  function renderPanel(panel,initial=false){
+    const x=safeNum(panel.dataset.x,40);
+    const y=safeNum(panel.dataset.y,100);
+    const s=safeNum(panel.dataset.scale,1);
+    panel.style.left=x+'px';
+    panel.style.top =y+'px';
+    panel.style.transform=`scale(${s})`;
+    if(!initial) forceCommandsVisibility();
+  }
+
+  function savePanel(panel){
+    try{
+      localStorage.setItem('plk_commands_pos',JSON.stringify({
+        x:safeNum(panel.dataset.x,40),
+        y:safeNum(panel.dataset.y,100),
+        scale:safeNum(panel.dataset.scale,1)
+      }));
+    }catch{}
+  }
+
+  function ensureCommandsVisible(){
     if(!commandsPanel) return;
     const overlay=document.getElementById('overlay');
     const overlayRect=overlay.getBoundingClientRect();
-    let s=safeNum(commandsPanel.dataset.scale,1);
+    const s=safeNum(commandsPanel.dataset.scale,1);
+    const rect=commandsPanel.getBoundingClientRect();
     let x=safeNum(commandsPanel.dataset.x,40);
     let y=safeNum(commandsPanel.dataset.y,100);
-    const baseW=commandsPanel.offsetWidth;
-    const baseH=commandsPanel.offsetHeight;
-    const width=baseW * s;
-    const height=baseH * s;
-
+    const width=rect.width;
+    const height=rect.height;
     const out = x > overlayRect.width - 40 ||
                 y > overlayRect.height - 40 ||
-                (x + width) < 40 ||
-                (y + height) < 40 ||
-                s < 0.45;
-
-    if(out || force){
-      x = Math.min(Math.max(20,(overlayRect.width - baseW)/2), Math.max(0, overlayRect.width - baseW));
-      y = Math.min(Math.max(20,120), Math.max(0, overlayRect.height - baseH));
-      s = 1;
-      commandsPanel.dataset.x = x;
-      commandsPanel.dataset.y = y;
-      commandsPanel.dataset.scale = s;
-      renderTransform(commandsPanel);
-      saveState(commandsPanel);
+                (x + width*s) < 40 ||
+                (y + height*s) < 40;
+    if(out){
+      x=Math.min(Math.max(20,(overlayRect.width - width)/2), Math.max(0, overlayRect.width - width));
+      y=Math.min(Math.max(20,120), Math.max(0, overlayRect.height - height));
+      commandsPanel.dataset.x=x;
+      commandsPanel.dataset.y=y;
+      commandsPanel.dataset.scale='1';
+      renderPanel(commandsPanel);
+      savePanel(commandsPanel);
     }
-
-    // Enforce visibility styles
-    commandsPanel.style.opacity='1';
-    commandsPanel.style.pointerEvents='auto';
+    forceCommandsVisibility();
   }
 
-  function applyScale(panel,s){
-    panel.dataset.scale = s;
-    renderTransform(panel);
-  }
-  function renderTransform(panel){
-    const x=safeNum(panel.dataset.x,40);
-    const y=safeNum(panel.dataset.y,100);
-    const s=safeNum(panel.dataset.scale,1);
-    panel.style.transform=`translate(${x}px,${y}px) scale(${s})`;
-  }
-  function saveState(panel){
-    const posKey=storageKey(panel,'pos');
-    const scaleKey=storageKey(panel,'scale');
-    const x=safeNum(panel.dataset.x,40);
-    const y=safeNum(panel.dataset.y,100);
-    const s=safeNum(panel.dataset.scale,1);
-    localStorage.setItem(posKey,JSON.stringify({left:x,top:y}));
-    localStorage.setItem(scaleKey,String(s));
-  }
-  function storageKey(panel,suffix){
-    const id=panel.id || panel.dataset.panel || 'panel';
-    return `plk_${id}_${suffix}`;
-  }
-  function clamp(v,a,b){ return v<a?a:v>b?b:v; }
-
-  // UI events
-  btnGear?.addEventListener('click', ()=>{ showSettings(); ensureCommandsVisible(); });
-  btnCloseSettings?.addEventListener('click', hideSettings);
-  btnResetUI?.addEventListener('click', ()=>{
+  function forceCommandsVisibility(){
     if(!commandsPanel) return;
-    commandsPanel.dataset.x = 40;
-    commandsPanel.dataset.y = 100;
-    commandsPanel.dataset.scale = 1;
-    renderTransform(commandsPanel);
-    saveState(commandsPanel);
-    ensureCommandsVisible(true);
-  });
+    commandsPanel.style.opacity='1';
+    commandsPanel.style.visibility='visible';
+    commandsPanel.style.pointerEvents='auto';
+    commandsPanel.classList.add('force-show');
+    setTimeout(()=>commandsPanel?.classList.remove('force-show'),1200);
+  }
 
-  // Console helpers
-  window.showCommands = ()=>{ ensureCommandsVisible(true); commandsPanel?.classList.add('cmd-visible-debug'); };
-  window.resetCommandsPanel = ()=>{ localStorage.removeItem('plk_commands-panel_pos'); localStorage.removeItem('plk_commands-panel_scale'); btnResetUI.click(); };
+  /* ====== UI / Audio ====== */
+  btnGear?.addEventListener('click', ()=>{ showSettings(); forceCommandsVisibility(); });
+  btnCloseSettings?.addEventListener('click', hideSettings);
+  btnResetUI?.addEventListener('click',()=>{
+    if(!commandsPanel) return;
+    commandsPanel.dataset.x='40';
+    commandsPanel.dataset.y='100';
+    commandsPanel.dataset.scale='1';
+    renderPanel(commandsPanel);
+    savePanel(commandsPanel);
+    ensureCommandsVisible();
+  });
 
   let audioBound=false;
   function bindAudioUnlockOnce(){
@@ -1062,18 +993,22 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{ alert('Simulation failed.'); }
   });
 
-  // Safety loop for first 2 seconds to force visibility (guards race conditions)
+  /* Early guard: enforce visibility for first 3s */
   function earlyVisibilityGuard(){
-    let start=performance.now();
-    function step(t){
-      if(t-start < 2000){
+    const start=performance.now();
+    function loop(t){
+      if(t-start<3000){
         ensureCommandsVisible();
-        requestAnimationFrame(step);
+        requestAnimationFrame(loop);
       }
     }
-    requestAnimationFrame(step);
+    requestAnimationFrame(loop);
   }
 
+  /* Console helpers */
+  window.forceShowCommands=()=>{ ensureCommandsVisible(true); };
+
+  /* ====== Start ====== */
   function start(){
     loadSettings();
     initThree();
