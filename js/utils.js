@@ -34,6 +34,7 @@ function beep(freq, dur, type, gain){
   o.connect(g).connect(masterGain);
   o.start(t0); o.stop(t0+dur);
 }
+
 export function sfxBounce(){ beep(520+Math.random()*80,0.03,'square',0.12); }
 export function sfxDrop(){ beep(420,0.05,'triangle',0.18); }
 export function sfxScore(big=false){
@@ -44,6 +45,21 @@ export function sfxScore(big=false){
   } else {
     beep(760,0.08,'triangle',0.22);
   }
+}
+
+/* NEW: Crate lid opening sound (a rising reveal triad) */
+export function sfxCrateOpen(){
+  if(!audioCtx || audioCtx.state!=='running') return;
+  const tBase = now();
+  const sequence = [
+    { dt:0.00, f:560, d:0.10, g:0.22 },
+    { dt:0.05, f:720, d:0.12, g:0.20 },
+    { dt:0.11, f:960, d:0.18, g:0.18 },
+    { dt:0.21, f:1140, d:0.20, g:0.16 }
+  ];
+  sequence.forEach(s=>{
+    setTimeout(()=>beep(s.f,s.d,'sawtooth',s.g), s.dt*1000);
+  });
 }
 
 export async function loadAvatarTexture(url, diameter=96){
@@ -141,5 +157,5 @@ window.PlinkoUtils = {
   loadAvatarTexture, buildNameSprite, worldToScreen,
   FXManager2D, sparks2D,
   initAudioOnce, setAudioVolume,
-  sfxBounce, sfxDrop, sfxScore
+  sfxBounce, sfxDrop, sfxScore, sfxCrateOpen
 };

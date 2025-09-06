@@ -1,10 +1,6 @@
-// pbrRewards.js
-// Adjusted: Dramatically reduced brightness (emissive), toned idle pulses,
-// added bringCrateToFront() for redemption (depthTest off + high renderOrder).
-// All teaser crates now less bright. Easy scale via setTeaserScale exported in prior version.
-
 import * as THREE from 'three';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
+import { sfxCrateOpen } from './utils.js'; // NEW import for crate lid sound
 
 const HDRI_URL = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/studio_small_08_1k.hdr';
 
@@ -102,14 +98,11 @@ function createLabelMesh(tier){
 function createCrateMesh(tier, scale=teaserScale){
   const p=tierParams[tier] || tierParams.t1;
   const { body, lid }=makeCrateGeometry();
-
-  // Lowered emissive intensities for brightness reduction
   const bodyMat=new THREE.MeshStandardMaterial({
     color:p.color, metalness:p.metalness, roughness:p.roughness,
     emissive:p.emissive, emissiveIntensity:0.07
   });
   const lidMat=bodyMat.clone(); lidMat.emissiveIntensity=0.09;
-
   const bodyMesh=new THREE.Mesh(body, bodyMat);
   bodyMesh.name=`crateBody_${tier}`;
   const lidMesh=new THREE.Mesh(lid, lidMat);
@@ -160,12 +153,9 @@ function animateTeaserIdle(crate){
   gsapRef.to(crate.position,{
     y:startY+floatAmp,duration:dur/2,ease:'sine.inOut',repeat:-1,yoyo:true
   });
-  // very slow subtle rotation
   gsapRef.to(crate.rotation,{
     y:crate.rotation.y + (tier==='t3'?Math.PI:Math.PI*0.75),
-    duration:tier==='t3'?30:36,
-    ease:'linear',
-    repeat:-1
+    duration:tier==='t3'?30:36,ease:'linear',repeat:-1
   });
 }
 
@@ -220,16 +210,14 @@ export function raycastTeasers(raycaster){
   }
 }
 
-// ==== FRONT FOCUS HELPERS ====
 function bringCrateToFront(crate){
-  crate.position.z = 40; // still inside ortho frustum
+  crate.position.z = 40;
   crate.traverse(obj=>{
     if(obj.isMesh){
       obj.renderOrder = 2000;
       obj.material.depthTest = false;
       obj.material.depthWrite = false;
       obj.material.transparent = true;
-      // reduce brightness baseline
       if(obj.material.emissiveIntensity){
         obj.material.emissiveIntensity = Math.min(0.12, obj.material.emissiveIntensity);
       }
@@ -269,6 +257,8 @@ export function openCrate(crate,gsap){
     crate.userData.opened=true;
     const lid=crate.userData.lid || crate.children.find(c=>c.name.includes('crateLid'));
     if(!lid){ res(); return; }
+    // PLAY SOUND when lid starts
+    sfxCrateOpen();
     gsap.to(lid.rotation,{
       x:-Math.PI*0.85,duration:0.55,ease:'back.in(1.1)',onComplete:res
     });
@@ -289,7 +279,7 @@ export function disposeRedemptionCrate(crate,gsap){
       crate.traverse(o=>{
         if(o.isMesh){
           o.geometry?.dispose();
-          if(o.material?.map) o.material.map.dispose();
+            if(o.material?.map) o.material.map.dispose();
           o.material?.dispose();
         }
       });
