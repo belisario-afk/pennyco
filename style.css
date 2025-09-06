@@ -1,3 +1,4 @@
+/* NOTE: Same as previous version with tiny tweak in .prize to allow transparent background for 3D model overlay */
 :root {
   --bg: #0b0f1a;
   --bg-2: #0e1322;
@@ -5,14 +6,15 @@
   --muted: #a7b1c2;
   --cyan: #00f2ea;
   --pink: #ff0050;
+  --bronze: #c97a32;
+  --silver: #bfc4ce;
+  --gold: #f7d25c;
   --glass: rgba(255,255,255,0.06);
   --glass-strong: rgba(255,255,255,0.12);
   --good: #5df28f;
   --danger: #ff6b6b;
 }
-
 * { box-sizing: border-box; }
-
 html, body, #app, #game-container {
   margin: 0;
   padding: 0;
@@ -23,7 +25,6 @@ html, body, #app, #game-container {
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
   overflow: hidden;
 }
-
 #game-container { position: relative; }
 
 #fx-canvas,
@@ -35,17 +36,14 @@ html, body, #app, #game-container {
   inset: 0;
   pointer-events: none;
 }
-
 #fx-canvas { z-index: 2; }
-
 #board-frame {
   border-radius: 22px;
   border: 2px solid var(--cyan);
-  box-shadow:
-    0 0 18px rgba(0,242,234,0.65),
-    0 0 36px rgba(0,242,234,0.35),
-    inset 0 0 120px rgba(0,0,0,0.6),
-    inset 0 0 24px rgba(0,242,234,0.08);
+  box-shadow: 0 0 18px rgba(0,242,234,0.65),
+              0 0 36px rgba(0,242,234,0.35),
+              inset 0 0 120px rgba(0,0,0,0.6),
+              inset 0 0 24px rgba(0,242,234,0.08);
   background: linear-gradient(180deg, rgba(6,12,22,0.65), rgba(6,12,22,0.84));
   z-index: 1;
 }
@@ -236,30 +234,161 @@ html, body, #app, #game-container {
 .btn.danger { background:#2b1420; border-color:#3d2230; }
 .divider { border:0; height:1px; background:linear-gradient(90deg, rgba(255,0,80,0.2), rgba(0,242,234,0.2)); margin:12px 0; }
 
-/* Accessible visually-hidden utility */
 .visually-hidden {
-  position: absolute !important;
-  height: 1px; width: 1px;
-  padding: 0; margin: -1px;
+  position:absolute !important;
+  height:1px;width:1px;
+  padding:0;margin:-1px;
+  overflow:hidden;
+  clip:rect(0 0 0 0);
+  white-space:nowrap;
+  border:0;
+}
+
+/* Redemption Layer & Box */
+#redeem-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+}
+
+.redeem-anim {
+  position: relative;
+  width: 320px;
+  max-width: 60vw;
+  padding: 26px 24px 34px;
+  background: rgba(10,18,32,0.75);
+  border: 2px solid var(--cyan);
+  border-radius: 20px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 0 30px rgba(0,242,234,0.35), 0 0 60px rgba(255,0,80,0.25);
+  transform-origin: center center;
+  opacity: 0;
+  scale: 0.6;
+}
+.redeem-anim.tier-t1 { border-color: var(--bronze); box-shadow: 0 0 24px rgba(201,122,50,0.5); }
+.redeem-anim.tier-t2 { border-color: var(--silver); box-shadow: 0 0 24px rgba(191,196,206,0.5); }
+.redeem-anim.tier-t3 { border-color: var(--gold);   box-shadow: 0 0 28px rgba(247,210,92,0.6); }
+
+.redeem-user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  font-weight: 700;
+  font-size: 15px;
+  color: #e8f6ff;
+  text-shadow: 0 0 8px rgba(255,255,255,0.3);
+}
+.redeem-ava {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #102235;
+  border: 3px solid var(--cyan);
+  box-shadow: 0 0 16px rgba(0,242,234,0.5);
+}
+
+.redeem-tier-label {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  margin-left: auto;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(0,242,234,0.15), rgba(255,0,80,0.15));
+  color: var(--cyan);
+}
+
+.redeem-box {
+  position: relative;
+  width: 160px;
+  height: 160px;
+  margin: 0 auto;
+  perspective: 800px;
+}
+
+.box-core {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(145deg,#102030,#0d1624);
+  border: 2px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  box-shadow: inset 0 0 24px rgba(0,242,234,0.08), 0 0 20px rgba(0,242,234,0.25);
   overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-  border: 0;
+}
+.redeem-anim.tier-t1 .box-core {
+  background: linear-gradient(145deg,#382312,#2a190c);
+  box-shadow: inset 0 0 24px rgba(201,122,50,0.25), 0 0 24px rgba(201,122,50,0.4);
+}
+.redeem-anim.tier-t2 .box-core {
+  background: linear-gradient(145deg,#3d4653,#272d36);
+  box-shadow: inset 0 0 24px rgba(191,196,206,0.3), 0 0 24px rgba(191,196,206,0.45);
+}
+.redeem-anim.tier-t3 .box-core {
+  background: linear-gradient(145deg,#58430e,#3b2d08);
+  box-shadow: inset 0 0 30px rgba(247,210,92,0.3), 0 0 28px rgba(247,210,92,0.6);
 }
 
-@media (max-width: 1000px) {
-  #overlay {
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto 1fr auto;
-  }
-  #leaderboard { grid-column: 1 / span 2; order: 3; }
+.box-lid {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 160px;
+  height: 70px;
+  background: linear-gradient(125deg,#041422,#0a2135);
+  border: 2px solid rgba(255,255,255,0.15);
+  border-radius: 16px 16px 10px 10px;
+  transform-origin: center bottom;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.5), 0 0 20px rgba(0,242,234,0.3);
+}
+.redeem-anim.tier-t1 .box-lid {
+  background: linear-gradient(125deg,#513017,#3c2310);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.5), 0 0 20px rgba(201,122,50,0.5);
+}
+.redeem-anim.tier-t2 .box-lid {
+  background: linear-gradient(125deg,#5c6673,#40474f);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.5), 0 0 20px rgba(191,196,206,0.6);
+}
+.redeem-anim.tier-t3 .box-lid {
+  background: linear-gradient(125deg,#7a5a14,#58410d);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.5), 0 0 24px rgba(247,210,92,0.75);
 }
 
-/* Optional small performance panel */
+.prize {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(35px) scale(0.4);
+  opacity: 0;
+  filter: drop-shadow(0 0 18px rgba(0,242,234,0.75)) drop-shadow(0 0 26px rgba(255,0,80,0.45));
+  pointer-events: none;
+  user-select: none;
+  background: transparent;
+}
+
+.prize-emoji {
+  font-size: 72px;
+  line-height: 1;
+  transform-origin: center center;
+  animation: prizePulse 1.1s ease-in-out infinite alternate;
+}
+
+@keyframes prizePulse {
+  from { transform: scale(1) rotate(-4deg); }
+  to   { transform: scale(1.08) rotate(6deg); }
+}
+
 #perf-panel {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 8px; right: 8px;
   font: 11px/1.2 system-ui, monospace;
   background: rgba(0,0,0,0.5);
   color: #aee;
@@ -269,4 +398,12 @@ html, body, #app, #game-container {
   pointer-events: none;
   backdrop-filter: blur(4px);
   box-shadow: 0 0 8px rgba(0,255,255,0.3);
+}
+
+@media (max-width: 1000px) {
+  #overlay {
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto 1fr auto;
+  }
+  #leaderboard { grid-column: 1 / span 2; order: 3; }
 }
