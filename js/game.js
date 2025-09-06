@@ -17,6 +17,8 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 
 const { Engine, World, Bodies, Events, Body } = Matter;
 
+(() => { Engine, World, Bodies, Events, Body } = Matter;
+
 (() => {
   const REWARD_COSTS = { t1: 1000, t2: 5000, t3: 10000 };
   const REWARD_NAMES = { t1: 'Tier 1', t2: 'Tier 2', t3: 'Tier 3' };
