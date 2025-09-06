@@ -7,7 +7,6 @@
   <title>Plinkoo — Neon Plinko</title>
   <link rel="stylesheet" href="./style.css"/>
 
-  <!-- Prefetch 3D reward model -->
   <link rel="prefetch" href="./tripo_pbr_model_b12fdae2-6adb-46bb-98bc-ebf0f5cd9e55.glb" crossorigin="anonymous">
 
   <script type="importmap">
@@ -38,7 +37,7 @@
       </div>
       <div id="board-title" aria-hidden="true">PLINKO</div>
 
-      <!-- Redemption animation layer (still used for user info HUD) -->
+      <!-- HUD layer for redemption user card -->
       <div id="redeem-layer" aria-live="polite"></div>
 
       <div id="overlay">
@@ -59,12 +58,59 @@
           <ol id="leaderboard-list" class="lb-list"></ol>
         </aside>
 
-        <!-- Container for teaser hint (the PBR crates are in the Three.js scene) -->
-        <div id="reward-teasers" aria-label="Mystery Reward Tiers">
-          <div class="teaser-hint">
-            Redeem with !t1 !t2 !t3<br>
-            Click a 3D crate (dev)
+        <!-- Right column overlay: (3D crates render in scene; this only shows hint + commands panel) -->
+        <div id="right-stack">
+          <div id="reward-teasers" aria-label="Mystery Reward Tiers">
+            <div class="teaser-hint">
+              Redeem: !t1 !t2 !t3<br>
+              Click a glowing crate (dev)
+            </div>
           </div>
+
+          <section id="commands-panel" aria-label="Commands List">
+            <div class="cmd-title">COMMANDS</div>
+            <div class="cmd-grid">
+              <div class="cmd-card tier-t3">
+                <div class="cmd-glow"></div>
+                <div class="cmd-inner">
+                  <span class="cmd-name">!t3</span>
+                  <span class="cmd-desc">Ultimate Crate</span>
+                  <span class="cmd-cost">10,000 pts</span>
+                </div>
+              </div>
+              <div class="cmd-card tier-t2">
+                <div class="cmd-glow"></div>
+                <div class="cmd-inner">
+                  <span class="cmd-name">!t2</span>
+                  <span class="cmd-desc">Elite Crate</span>
+                  <span class="cmd-cost">5,000 pts</span>
+                </div>
+              </div>
+              <div class="cmd-card tier-t1">
+                <div class="cmd-glow"></div>
+                <div class="cmd-inner">
+                  <span class="cmd-name">!t1</span>
+                  <span class="cmd-desc">Starter Crate</span>
+                  <span class="cmd-cost">1,000 pts</span>
+                </div>
+              </div>
+              <div class="cmd-card neutral">
+                <div class="cmd-glow"></div>
+                <div class="cmd-inner">
+                  <span class="cmd-name">!drop</span>
+                  <span class="cmd-desc">Spawn a Ball</span>
+                  <span class="cmd-cost">Free</span>
+                </div>
+              </div>
+              <div class="cmd-card neutral small">
+                <div class="cmd-inner">
+                  <span class="cmd-name">!multi N</span>
+                  <span class="cmd-desc">Multi-drop</span>
+                  <span class="cmd-note">1–5</span>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
 
         <div id="settings-panel" class="panel glass" aria-hidden="true">

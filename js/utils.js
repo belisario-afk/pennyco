@@ -1,4 +1,4 @@
-// (unchanged from previous version)
+// (unchanged)
 import * as THREE from 'three';
 
 let audioCtx = null;

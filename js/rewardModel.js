@@ -45,7 +45,7 @@ export function createRewardModelInstance(targetHeight=16){
   clone.traverse(o=>{
     if(o.isMesh && o.material){
       o.material = o.material.clone();
-      if(o.material.emissive) o.material.emissiveIntensity = 0.6;
+      if(o.material.emissive) o.material.emissiveIntensity = 0.7;
     }
   });
   if(boundingBox){
@@ -64,8 +64,8 @@ export function createRewardModelInstance(targetHeight=16){
 
 export function animateRewardModel(group, gsapRef){
   const spin=gsapRef.timeline({repeat:-1,defaults:{ease:'linear'}});
-  spin.to(group.rotation,{y:group.rotation.y + Math.PI*2, duration:6});
+  spin.to(group.rotation,{y:group.rotation.y + Math.PI*2, duration:7.5});
   const bob=gsapRef.timeline({repeat:-1,yoyo:true,defaults:{ease:'sine.inOut'}});
-  bob.to(group.position,{y:group.position.y+2,duration:1.3});
+  bob.to(group.position,{y:group.position.y+2.4,duration:1.45});
   return ()=>{ spin.kill(); bob.kill(); };
 }
