@@ -1,10 +1,4 @@
-/* FULL game.js with draggable commands panel and updated command list (no !drop card).
-   NOTE: Only changes from previous full PBR version:
-     - Added commandsPanel query
-     - Added initCommandsPanelDrag()
-     - Added call to initCommandsPanelDrag() in start()
-     - No references to removed !drop card; logic unaffected.
-*/
+// game.js (updated: toneMappingExposure brighter, crate brightness toned via pbrRewards, dynamic crate scale slider)
 import * as THREE from 'three';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
@@ -13,7 +7,8 @@ import {
 import { ensureRewardModelLoaded, createRewardModelInstance, animateRewardModel } from './rewardModel.js';
 import {
   initPBRTeasers, updateTeaserLayout, raycastTeasers,
-  createRedemptionCrate, animateCrateEntrance, openCrate, disposeRedemptionCrate
+  createRedemptionCrate, animateCrateEntrance, openCrate,
+  disposeRedemptionCrate, setTeaserScale
 } from './pbrRewards.js';
 
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
@@ -38,7 +33,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   const WORLD_HEIGHT = 100;
   let WORLD_WIDTH = 56.25;
-
   let BOARD_HEIGHT = WORLD_HEIGHT * 0.82;
   let BOARD_WIDTH  = 0;
   let PEG_SPACING  = 4.2;
@@ -53,6 +47,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let DROP_SPEED   = 0.5;
   let NEON = true;
   let PARTICLES = true;
+  let CRATE_SCALE = 4.4; // dynamic from slider
 
   const BALL_RESTITUTION = 0.06;
   const PEG_RESTITUTION  = 0.02;
@@ -79,11 +74,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   let SLOT_POINTS = [];
   let SLOT_MULTIPLIERS = [];
-
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  // DOM references
+  // DOM refs
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -100,13 +94,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const devFreeToggle   = document.getElementById('dev-free-toggle');
   const commandsPanel   = document.getElementById('commands-panel');
 
-  // Settings
   const btnGear         = document.getElementById('btn-gear');
   const settingsPanel   = document.getElementById('settings-panel');
   const btnCloseSettings= document.getElementById('btn-close-settings');
   const optDropSpeed    = document.getElementById('opt-drop-speed');
   const optGravity      = document.getElementById('opt-gravity');
   const optMultiDrop    = document.getElementById('opt-multidrop');
+  const optCrateScale   = document.getElementById('opt-crate-scale');
   const optNeon         = document.getElementById('opt-neon');
   const optParticles    = document.getElementById('opt-particles');
   const optVolume       = document.getElementById('opt-volume');
@@ -120,7 +114,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
   devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
-  // Performance
   let perfPanel, perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
   const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
   let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
@@ -145,16 +138,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const item=redeemQueue.shift();
     if(!item) return;
     redeemActive=true;
-    playRedemptionAnimation(item).then(()=>{
-      redeemActive=false;
-      runNextRedemption();
-    });
+    playRedemptionAnimation(item).then(()=>{ redeemActive=false; runNextRedemption(); });
   }
 
   async function prepare3DModel(){
     try{ await ensureRewardModelLoaded(); return true; }catch{ return false; }
   }
-
   function attachReward3D(tier){
     if(activeReward3D){
       scene.remove(activeReward3D);
@@ -169,10 +158,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       activeReward3D=model;
       activeRewardDisposeFn=animateRewardModel(model, gsap);
       model.scale.multiplyScalar(0.01);
-      gsap.to(model.scale,{
-        x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,
-        duration:.55,ease:'back.out(1.7)'
-      });
+      gsap.to(model.scale,{x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,duration:.55,ease:'back.out(1.7)'});
     }catch{}
   }
   function detachReward3D(){
@@ -209,14 +195,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       animateCrateEntrance(activeRedemptionCrate, gsap);
 
       const modelLoaded = await prepare3DModel().catch(()=>false);
-
       setTimeout(async ()=>{
         await openCrate(activeRedemptionCrate, gsap);
         if(modelLoaded) attachReward3D(tier);
       }, 850);
 
       setTimeout(()=>{
-        gsap.to(hud,{opacity:0,y:20,scale:0.9,duration:.45,ease:'power1.in',onComplete:()=>redeemLayer.removeChild(hud)});
+        gsap.to(hud,{opacity:0,y:20,scale:0.9,duration:.45,ease:'power1.in',
+          onComplete:()=>redeemLayer.removeChild(hud)});
         detachReward3D();
         disposeRedemptionCrate(activeRedemptionCrate, gsap);
         activeRedemptionCrate=null;
@@ -246,7 +232,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       div.innerHTML=`<span class="x">x</span><span class="val">${m}</span>`;
       slotLabelsEl.appendChild(div);
     });
-    trayDividers.style.setProperty('--slot-width', `${framePx.width / slotCount}px`);
+    trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
   }
 
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
@@ -264,9 +250,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const g=Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value=String(g);
     const ds=Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value=String(ds);
     const md=Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value=String(md);
+    const cs=Number(localStorage.getItem('plk_crate_scale') ?? '4.4'); if(!Number.isNaN(cs)) { optCrateScale.value=String(cs); CRATE_SCALE=cs; }
     optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
     optParticles.checked=(localStorage.getItem('plk_particles') ?? 'true')==='true';
-    const vol=Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value=String(vol); setAudioVolume(vol);
+    const vol=Number(localStorage.getItem('plk_volume') ?? '0.5');
+    optVolume.value=String(vol); setAudioVolume(vol);
     const savedBase=getBackendBaseUrl(); if(savedBase) backendUrlInput.value=savedBase;
     const tok=localStorage.getItem('adminToken')||''; if(tok) adminTokenInput.value=tok;
     applySettings();
@@ -276,19 +264,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     GRAVITY_MAG=Number(optGravity.value);
     NEON=!!optNeon.checked;
     PARTICLES=!!optParticles.checked;
+    CRATE_SCALE=Number(optCrateScale.value);
     localStorage.setItem('plk_dropSpeed',String(DROP_SPEED));
     localStorage.setItem('plk_gravity',String(GRAVITY_MAG));
     localStorage.setItem('plk_multiDrop',String(optMultiDrop.value));
+    localStorage.setItem('plk_crate_scale',String(CRATE_SCALE));
     localStorage.setItem('plk_neon',String(NEON));
     localStorage.setItem('plk_particles',String(PARTICLES));
     if(world) world.gravity.y=-Math.abs(GRAVITY_MAG);
-    if(pegsInstanced){
-      pegsInstanced.material.emissive.set(NEON?0x00ffff:0x000000);
-      pegsInstanced.material.emissiveIntensity=NEON?0.30:0.0;
-    }
+    setTeaserScale(CRATE_SCALE);
     if(bloomPass){
       bloomPass.enabled=NEON;
-      bloomPass.strength=NEON?0.75:0;
+      bloomPass.strength=NEON?0.65:0;
     }
   }
   function showSettings(){ gsap.to(settingsPanel,{x:0,duration:.35,ease:'expo.out'}); settingsPanel.setAttribute('aria-hidden','false'); }
@@ -299,7 +286,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
     renderer.toneMapping=THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure=1.0;
+    renderer.toneMappingExposure=1.15; // slightly brighter to counter perceived dimness
     renderer.setPixelRatio(currentPR);
     renderer.setSize(container.clientWidth,container.clientHeight);
     renderer.setClearColor(0x000000,0);
@@ -310,8 +297,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     camera=new THREE.OrthographicCamera(-WORLD_WIDTH/2,WORLD_WIDTH/2,WORLD_HEIGHT/2,-WORLD_HEIGHT/2,0.1,300);
     camera.position.set(0,0,100);
 
-    ambient=new THREE.AmbientLight(0xffffff,0.85);
-    dirLight=new THREE.DirectionalLight(0xffffff,1.1);
+    ambient=new THREE.AmbientLight(0xffffff,0.95);
+    dirLight=new THREE.DirectionalLight(0xffffff,0.9);
     dirLight.position.set(-18,30,60);
     scene.add(ambient,dirLight);
 
@@ -319,7 +306,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     composer.addPass(new RenderPass(scene,camera));
     smaaPass=new SMAAPass(renderer.domElement.width,renderer.domElement.height);
     composer.addPass(smaaPass);
-    bloomPass=new UnrealBloomPass(new THREE.Vector2(renderer.domElement.width,renderer.domElement.height),0.75,0.6,0.2);
+    bloomPass=new UnrealBloomPass(new THREE.Vector2(renderer.domElement.width,renderer.domElement.height),0.65,0.55,0.25);
     composer.addPass(bloomPass);
 
     const ro=new ResizeObserver(onResize); ro.observe(container);
@@ -336,8 +323,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const pt=new THREE.Vector2();
     renderer.domElement.addEventListener('pointerdown',e=>{
       const rect=renderer.domElement.getBoundingClientRect();
-      pt.x=((e.clientX-rect.left)/rect.width)*2 - 1;
-      pt.y= -((e.clientY-rect.top)/rect.height)*2 + 1;
+      pt.x=((e.clientX-rect.left)/rect.width)*2 -1;
+      pt.y= -((e.clientY-rect.top)/rect.height)*2 +1;
       raycaster.setFromCamera(pt,camera);
       raycastTeasers(raycaster);
     });
@@ -353,7 +340,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     PEG_SPACING=BOARD_WIDTH/(ROWS+1);
     TRAY_HEIGHT=BOARD_HEIGHT*TRAY_RATIO;
   }
-
   function onResize(){
     renderer.setSize(container.clientWidth,container.clientHeight);
     composer.setSize(container.clientWidth,container.clientHeight);
@@ -370,7 +356,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     layoutOverlays();
     updateTeaserLayout();
   }
-
   function layoutOverlays(){
     const left=-BOARD_WIDTH/2,right=BOARD_WIDTH/2;
     const top=BOARD_HEIGHT/2,bottom=-BOARD_HEIGHT/2;
@@ -407,20 +392,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
     world.gravity.y=-Math.abs(GRAVITY_MAG);
-    engine.positionIterations=8;
-    engine.velocityIterations=6;
-    engine.constraintIterations=2;
     buildBoard();
     bindCollisions();
     fxMgr=new FXManager2D(fxCanvas);
   }
-
   function buildBoard(){
     const left=Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
     const right=Bodies.rectangle( BOARD_WIDTH/2 + WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
     const floor=Bodies.rectangle(0,-BOARD_HEIGHT/2 - 6,BOARD_WIDTH + WALL_THICKNESS*2,WALL_THICKNESS,{isStatic:true,label:'KILL'});
     World.add(world,[left,right,floor]);
-
     const startY=BOARD_HEIGHT/2 - 10;
     TOP_ROW_Y=startY;
     const rowH=PEG_SPACING*0.9;
@@ -430,16 +410,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const y=startY - r*rowH;
       for(let c=0;c<=r;c++){
         const x=startX + c*PEG_SPACING + (ROWS-1-r)*(PEG_SPACING/2);
-        const peg=Bodies.circle(x,y,PEG_RADIUS,{
-          isStatic:true,restitution:PEG_RESTITUTION,friction:0.01
-        });
+        const peg=Bodies.circle(x,y,PEG_RADIUS,{isStatic:true,restitution:PEG_RESTITUTION,friction:0.01});
         peg.label='PEG';
         World.add(world,peg);
         pegPositions.push({x,y});
       }
     }
     addPegInstancedMesh(pegPositions);
-
     slotSensors=[];
     const slotCount=ROWS+1;
     const slotWidth=BOARD_WIDTH/slotCount;
@@ -452,7 +429,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       slotSensors.push({body:sensor,index:i});
     }
   }
-
   function addPegInstancedMesh(pegPositions){
     if(pegsInstanced){
       scene.remove(pegsInstanced);
@@ -464,7 +440,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       color:0x86f7ff,metalness:0.35,roughness:0.35,
       clearcoat:0.6,clearcoatRoughness:0.2,
       emissive:new THREE.Color(0x00ffff),
-      emissiveIntensity:0.30
+      emissiveIntensity:0.25
     });
     const inst=new THREE.InstancedMesh(geo,mat,pegPositions.length);
     const m=new THREE.Matrix4();
@@ -487,7 +463,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
     });
   }
-
   function handlePair(a,b){
     if(!a||!b) return;
     const slot=slotSensors.find(s=>s.body.id===b.id);
@@ -522,7 +497,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     perfData.frames++;
     perfData.avgMs=perfData.avgMs?perfData.avgMs*0.9+frameMs*0.1:frameMs;
     if(frameMs>perfData.worstMs) perfData.worstMs=frameMs;
-
     if(frameSamples>=60){
       const avg=frameAccum/frameSamples;
       if(avg>22 && currentPR>0.75){
@@ -540,13 +514,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(avg>30) target=0; else if(avg>23) target=1;
     if(target!==perfData.qualityTier){
       perfData.qualityTier=target;
-      if(target===2){
-        bloomPass.enabled=NEON; bloomPass.strength=0.75; smaaPass.enabled=true;
-      }else if(target===1){
-        bloomPass.enabled=NEON; bloomPass.strength=0.45; smaaPass.enabled=true;
-      }else{
-        bloomPass.enabled=false; bloomPass.strength=0; smaaPass.enabled=false;
-      }
+      if(target===2){ bloomPass.enabled=NEON; bloomPass.strength=0.65; smaaPass.enabled=true; }
+      else if(target===1){ bloomPass.enabled=NEON; bloomPass.strength=0.4; smaaPass.enabled=true; }
+      else { bloomPass.enabled=false; bloomPass.strength=0; smaaPass.enabled=false; }
     }
     if(perfPanel && perfData.frames%30===0){
       perfPanel.textContent=`fps:${(1000/perfData.avgMs).toFixed(1)} ms:${perfData.avgMs.toFixed(1)} pR:${currentPR.toFixed(2)} worst:${perfData.worstMs.toFixed(1)} q:${perfData.qualityTier}`;
@@ -554,9 +524,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   function startLoop(){
-    let last=performance.now(),acc=0;
+    let last=performance.now(), acc=0;
     function tick(now){
-      const dt=Math.min(250,now-last); last=now; acc+=dt;
+      const dt=Math.min(250, now-last); last=now; acc+=dt;
       let steps=0;
       const maxSteps=maxStepsForFrame(dt);
       while(acc>=FIXED_DT && steps<maxSteps){
@@ -564,10 +534,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         acc-=FIXED_DT; steps++;
       }
       clampVelocities();
-      fxMgr.update(fxCtx,dt);
+      fxMgr.update(fxCtx, dt);
       updateThreeFromMatter();
       const t0=performance.now();
-      if(bloomPass.enabled || smaaPass.enabled) composer.render(); else renderer.render(scene,camera);
+      (bloomPass.enabled || smaaPass.enabled) ? composer.render() : renderer.render(scene,camera);
       adaptQuality(dt + (performance.now()-t0));
       requestAnimationFrame(tick);
     }
@@ -585,7 +555,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       Body.setVelocity(b,{x,y});
     }
   }
-
   function updateThreeFromMatter(){
     dynamicBodies.forEach(body=>{
       const mesh=meshById.get(body.id);
@@ -594,7 +563,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         mesh.rotation.z=body.angle;
       }
       const label=labelById.get(body.id);
-      if(label) label.position.set(body.position.x,body.position.y + BALL_RADIUS*2.2,0);
+      if(label) label.position.set(body.position.x, body.position.y + BALL_RADIUS*2.2,0);
     });
   }
 
@@ -602,7 +571,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const multi=Math.max(1,Math.min(5,Number(optMultiDrop.value||1)));
     for(let i=0;i<multi;i++) spawnSingle({username,avatarUrl});
   }
-
   function spawnSingle({username,avatarUrl}){
     const jitter=PEG_SPACING*0.35;
     const dropX=Math.max(-BOARD_WIDTH/2+4,Math.min(BOARD_WIDTH/2-4,(Math.random()-0.5)*jitter));
@@ -652,19 +620,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if('requestIdleCallback' in window) requestIdleCallback(applyTex,{timeout:600}); else setTimeout(applyTex,0);
     sfxDrop();
   }
-
   function tryRemoveBall(body){
     try{
       const mesh=meshById.get(body.id);
       if(mesh){
         scene.remove(mesh);
-        if(mesh.material?.map) mesh.material.map.dispose();
+        mesh.material?.map?.dispose();
         mesh.material?.dispose();
       }
       const lbl=labelById.get(body.id);
       if(lbl){
         scene.remove(lbl);
-        if(lbl.material?.map) lbl.material.map.dispose();
+        lbl.material?.map?.dispose();
         lbl.material?.dispose();
       }
       meshById.delete(body.id);
@@ -741,14 +708,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const command=(obj.command||'').toLowerCase();
       if(command.startsWith(REDEEM_PREFIX)){
         const tier=command.split(':')[1];
-        handleRedeemEvent(id,username,avatarUrl,tier);
+        handleRedeemEvent(id, username, avatarUrl, tier);
         return;
       }
       if(command.includes('drop') || command.startsWith('gift')){
         spawnBallSet({ username, avatarUrl });
       }
     });
-
     FirebaseREST.onValue('/leaderboard',(data)=>{
       if(data && typeof data==='object'){
         for(const k of Object.keys(data)){
@@ -756,16 +722,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
           if(entry?.username){
             leaderboard[entry.username]={
               username:entry.username,
-              avatarUrl:entry.avatarUrl||'',
-              score:entry.score||0,
-              lastUpdate:entry.lastUpdate||0
+              avatarUrl: entry.avatarUrl||'',
+              score: entry.score||0,
+              lastUpdate: entry.lastUpdate||0
             };
           }
         }
         refreshLeaderboard();
       } else clearLeaderboardLocal();
     });
-
     FirebaseREST.onValue('/config',(data)=>{
       const enabled=!!(data && data.spawnEnabled);
       spawnStatusEl.textContent=enabled?'true':'false';
@@ -784,7 +749,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       camera,
       renderer,
       gsap,
-      onCrateClick:(tier)=>devRedeem(tier,'ClickUser')
+      onCrateClick:(tier)=>devRedeem(tier,'ClickUser'),
+      initialScale: CRATE_SCALE
     });
   }
 
@@ -802,41 +768,31 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       btn.addEventListener('click',()=>{
         const act=btn.dataset.act;
         if(act==='drop') devDrop('DevDrop');
-        else if(act.startsWith('redeem-')){
-          devRedeem(act.split('-')[1],'DevUser');
-        }
+        else if(act.startsWith('redeem-')) devRedeem(act.split('-')[1],'DevUser');
       });
     });
   }
 
-  /* Draggable commands panel */
   function initCommandsPanelDrag(){
     if(!commandsPanel) return;
-    const handle = commandsPanel.querySelector('.drag-handle') || commandsPanel;
-    let dragging=false;
-    let startX=0,startY=0;
-    let originLeft=0, originTop=0;
-    const overlay = document.getElementById('overlay');
-
-    // Restore position if saved
-    const savedX = localStorage.getItem('plk_cmd_left');
-    const savedY = localStorage.getItem('plk_cmd_top');
+    const handle=commandsPanel.querySelector('.drag-handle')||commandsPanel;
+    let dragging=false,startX=0,startY=0,originLeft=0,originTop=0;
+    const overlay=document.getElementById('overlay');
+    const savedX=localStorage.getItem('plk_cmd_left');
+    const savedY=localStorage.getItem('plk_cmd_top');
     if(savedX && savedY){
       commandsPanel.classList.add('floating');
       commandsPanel.style.left=savedX+'px';
       commandsPanel.style.top =savedY+'px';
     }
-
-    function pointerDown(e){
+    function down(e){
       if(e.button!==0) return;
       dragging=true;
       const rect=commandsPanel.getBoundingClientRect();
       const oRect=overlay.getBoundingClientRect();
-      startX=e.clientX;
-      startY=e.clientY;
+      startX=e.clientX; startY=e.clientY;
       originLeft=rect.left - oRect.left;
       originTop =rect.top  - oRect.top;
-      // Convert to floating absolute if not already
       if(!commandsPanel.classList.contains('floating')){
         commandsPanel.classList.add('floating');
         commandsPanel.style.left=originLeft+'px';
@@ -845,37 +801,32 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       commandsPanel.classList.add('dragging');
       e.preventDefault();
     }
-    function pointerMove(e){
+    function move(e){
       if(!dragging) return;
       const dx=e.clientX-startX;
       const dy=e.clientY-startY;
       const oRect=overlay.getBoundingClientRect();
       let newLeft=originLeft+dx;
       let newTop =originTop +dy;
-      // Constrain
       const panelRect=commandsPanel.getBoundingClientRect();
-      const w=panelRect.width;
-      const h=panelRect.height;
-      newLeft=Math.max(0,Math.min(oRect.width - w, newLeft));
-      newTop =Math.max(0,Math.min(oRect.height - h, newTop));
+      newLeft=Math.max(0,Math.min(oRect.width - panelRect.width, newLeft));
+      newTop =Math.max(0,Math.min(oRect.height - panelRect.height, newTop));
       commandsPanel.style.left=newLeft+'px';
       commandsPanel.style.top =newTop +'px';
     }
-    function pointerUp(){
+    function up(){
       if(!dragging) return;
       dragging=false;
       commandsPanel.classList.remove('dragging');
-      // Save
-      const top=parseFloat(commandsPanel.style.top)||0;
-      const left=parseFloat(commandsPanel.style.left)||0;
-      localStorage.setItem('plk_cmd_left',String(left));
-      localStorage.setItem('plk_cmd_top', String(top));
+      localStorage.setItem('plk_cmd_left',String(parseFloat(commandsPanel.style.left)||0));
+      localStorage.setItem('plk_cmd_top', String(parseFloat(commandsPanel.style.top)||0));
     }
-    handle.addEventListener('pointerdown',pointerDown);
-    window.addEventListener('pointermove',pointerMove);
-    window.addEventListener('pointerup',pointerUp);
+    handle.addEventListener('pointerdown',down);
+    window.addEventListener('pointermove',move);
+    window.addEventListener('pointerup',up);
   }
 
+  // UI listeners
   btnGear.addEventListener('click', showSettings);
   btnCloseSettings.addEventListener('click', hideSettings);
   let audioBound=false;
@@ -895,6 +846,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   optDropSpeed.addEventListener('input', applySettings);
   optGravity.addEventListener('input', applySettings);
   optMultiDrop.addEventListener('input', applySettings);
+  optCrateScale.addEventListener('input', ()=>{ applySettings(); });
   optNeon.addEventListener('change', applySettings);
   optParticles.addEventListener('change', applySettings);
   optVolume.addEventListener('input', e=>setAudioVolume(Number(e.target.value)));
@@ -908,7 +860,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert('Saved admin settings.');
     }catch{ alert('Save failed.'); }
   });
-
   btnReset.addEventListener('click', async ()=>{
     const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if(!token) return alert('Provide token.');
@@ -919,7 +870,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert('Leaderboard reset.');
     }catch{ alert('Reset failed.'); }
   });
-
   btnToggleSpawn.addEventListener('click', async ()=>{
     const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if(!token) return alert('Provide token.');
@@ -930,7 +880,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert(`Spawn set to ${!curr}`);
     }catch{ alert('Toggle failed.'); }
   });
-
   btnSimulate.addEventListener('click', async ()=>{
     try{
       const name='LocalTester'+Math.floor(Math.random()*1000);
@@ -952,6 +901,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     initTeasers();
     initDevPanel();
     initCommandsPanelDrag();
+    // ensure scale applied if loaded before teasers ready
+    setTeaserScale(CRATE_SCALE);
     startLoop();
   }
   start();
