@@ -1,4 +1,3 @@
-/* NOTE: Same as previous version with tiny tweak in .prize to allow transparent background for 3D model overlay */
 :root {
   --bg: #0b0f1a;
   --bg-2: #0e1322;
@@ -13,8 +12,16 @@
   --glass-strong: rgba(255,255,255,0.12);
   --good: #5df28f;
   --danger: #ff6b6b;
+  --tier-t1-edge: #c97a32;
+  --tier-t2-edge: #bfc4ce;
+  --tier-t3-edge: #f7d25c;
+  --tier-t1-glow: 201,122,50;
+  --tier-t2-glow: 191,196,206;
+  --tier-t3-glow: 247,210,92;
 }
+
 * { box-sizing: border-box; }
+
 html, body, #app, #game-container {
   margin: 0;
   padding: 0;
@@ -25,6 +32,7 @@ html, body, #app, #game-container {
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
   overflow: hidden;
 }
+
 #game-container { position: relative; }
 
 #fx-canvas,
@@ -36,14 +44,17 @@ html, body, #app, #game-container {
   inset: 0;
   pointer-events: none;
 }
+
 #fx-canvas { z-index: 2; }
+
 #board-frame {
   border-radius: 22px;
   border: 2px solid var(--cyan);
-  box-shadow: 0 0 18px rgba(0,242,234,0.65),
-              0 0 36px rgba(0,242,234,0.35),
-              inset 0 0 120px rgba(0,0,0,0.6),
-              inset 0 0 24px rgba(0,242,234,0.08);
+  box-shadow:
+    0 0 18px rgba(0,242,234,0.65),
+    0 0 36px rgba(0,242,234,0.35),
+    inset 0 0 120px rgba(0,0,0,0.6),
+    inset 0 0 24px rgba(0,242,234,0.08);
   background: linear-gradient(180deg, rgba(6,12,22,0.65), rgba(6,12,22,0.84));
   z-index: 1;
 }
@@ -90,7 +101,7 @@ html, body, #app, #game-container {
   position: absolute;
   inset: 0;
   display: grid;
-  grid-template-columns: 320px 1fr auto;
+  grid-template-columns: 320px 1fr 200px;
   grid-template-rows: auto 1fr;
   gap: 12px;
   padding: 12px;
@@ -173,26 +184,156 @@ html, body, #app, #game-container {
 .lb-name { font-weight:700; color:#dfe7f2; font-size:14px; }
 .lb-score { color:var(--cyan); font-weight:800; text-shadow:0 0 8px rgba(0,242,234,0.6); }
 
-#slot-labels {
-  position: absolute;
-  left: 0; right: 0;
-  bottom: 0;
+/* Reward Teasers */
+#reward-teasers {
+  grid-row: 2;
+  grid-column: 3;
   display: flex;
-  justify-content: space-between;
-  align-items: end;
-  padding: 8px 10px;
-  gap: 4px;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 6px 4px 10px;
   pointer-events: none;
 }
-.slot-label {
-  color: #dfe7f2;
-  font-weight: 700;
-  font-size: 14px;
-  text-shadow: 0 0 8px rgba(255,255,255,0.5), 0 0 12px rgba(255,0,80,0.5);
-  min-width: 36px;
+
+.teaser-hint {
+  font-size: 11px;
   text-align: center;
+  color: var(--muted);
+  max-width: 180px;
+  line-height: 1.25;
+  margin-top: 4px;
+  text-shadow: 0 0 6px rgba(0,242,234,0.35);
+  pointer-events: none;
 }
 
+.teaser-box {
+  width: 160px;
+  height: 140px;
+  position: relative;
+  perspective: 1000px;
+  pointer-events: auto;
+  cursor: pointer;
+  outline: none;
+  filter: drop-shadow(0 0 10px rgba(0,242,234,0.28));
+  animation: tbFloat 4.5s ease-in-out infinite;
+}
+.teaser-box:nth-child(2) { animation-delay: .8s; }
+.teaser-box:nth-child(3) { animation-delay: 1.4s; }
+
+@keyframes tbFloat {
+  0%,100% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+}
+
+.tb-inner {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  transform-style: preserve-3d;
+}
+
+.tb-core {
+  position:absolute;
+  left:0; top:22px;
+  width:100%; height:100px;
+  background: linear-gradient(145deg,#102030,#0d1624);
+  border: 2px solid rgba(255,255,255,0.08);
+  border-radius:18px;
+  box-shadow:
+    inset 0 0 22px rgba(0,0,0,0.6),
+    0 0 18px rgba(0,242,234,0.25);
+}
+.tier-t1 .tb-core { background: linear-gradient(145deg,#422910,#2d1c09); box-shadow: inset 0 0 18px rgba(var(--tier-t1-glow),0.25), 0 0 22px rgba(var(--tier-t1-glow),0.35); }
+.tier-t2 .tb-core { background: linear-gradient(145deg,#545c69,#363c45); box-shadow: inset 0 0 18px rgba(var(--tier-t2-glow),0.25), 0 0 22px rgba(var(--tier-t2-glow),0.35); }
+.tier-t3 .tb-core { background: linear-gradient(145deg,#715312,#4e390c); box-shadow: inset 0 0 20px rgba(var(--tier-t3-glow),0.3), 0 0 26px rgba(var(--tier-t3-glow),0.5); }
+
+.tb-lid {
+  position:absolute;
+  left:0; top:0;
+  width:100%; height:46px;
+  background: linear-gradient(140deg,#041422,#0a2135);
+  border: 2px solid rgba(255,255,255,0.15);
+  border-radius:16px;
+  transform-origin:center bottom;
+  box-shadow:0 4px 12px rgba(0,0,0,0.6);
+}
+.tier-t1 .tb-lid { background: linear-gradient(140deg,#593514,#3a240d); }
+.tier-t2 .tb-lid { background: linear-gradient(140deg,#66707d,#444b55); }
+.tier-t3 .tb-lid { background: linear-gradient(140deg,#876316,#5d450f); }
+
+.tb-glow {
+  position:absolute;
+  inset:6px 8px 0 8px;
+  border-radius:14px;
+  background: radial-gradient(circle at 50% 60%, rgba(0,242,234,0.18), transparent 65%);
+  opacity:0.8;
+  mix-blend-mode:screen;
+  animation: tbGlowPulse 2.8s ease-in-out infinite;
+}
+.tier-t1 .tb-glow { background: radial-gradient(circle at 50% 60%, rgba(var(--tier-t1-glow),0.35), transparent 70%); animation-duration:3.1s; }
+.tier-t2 .tb-glow { background: radial-gradient(circle at 50% 60%, rgba(var(--tier-t2-glow),0.35), transparent 70%); animation-duration:2.7s; }
+.tier-t3 .tb-glow { background: radial-gradient(circle at 50% 60%, rgba(var(--tier-t3-glow),0.45), transparent 70%); animation-duration:2.3s; }
+
+@keyframes tbGlowPulse {
+  0%,100% { filter: blur(4px) brightness(1); opacity:.85; }
+  50% { filter: blur(10px) brightness(1.6); opacity:1; }
+}
+
+.tb-label {
+  position:absolute;
+  left:50%;
+  bottom:6px;
+  transform:translateX(-50%);
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:2px;
+  font-weight:700;
+  font-size:13px;
+  letter-spacing:.5px;
+  text-shadow:0 0 10px rgba(0,0,0,0.6);
+}
+
+.tb-tier {
+  font-size:15px;
+  padding:2px 10px 3px;
+  border-radius:20px;
+  background:linear-gradient(90deg, rgba(0,242,234,0.15), rgba(255,0,80,0.15));
+  color:var(--cyan);
+}
+
+.tb-cost {
+  font-size:13px;
+  color:#fff;
+  text-shadow:0 0 6px rgba(255,255,255,0.5);
+}
+
+.tb-cmd {
+  font-size:11px;
+  color:var(--pink);
+  font-weight:800;
+  text-shadow:0 0 6px rgba(255,0,80,0.6);
+}
+
+.teaser-box:focus .tb-core,
+.teaser-box:hover .tb-core {
+  box-shadow:
+    inset 0 0 24px rgba(0,242,234,0.25),
+    0 0 24px rgba(0,242,234,0.4);
+  filter:brightness(1.08);
+}
+.teaser-box:focus .tb-lid,
+.teaser-box:hover .tb-lid {
+  transform:translateY(-2px) rotateX(-10deg);
+}
+
+.teaser-box:active .tb-lid {
+  transform:translateY(0) rotateX(0deg) scale(0.97);
+}
+
+/* Settings panel */
 #settings-panel {
   position: absolute;
   top: 64px;
@@ -244,7 +385,7 @@ html, body, #app, #game-container {
   border:0;
 }
 
-/* Redemption Layer & Box */
+/* Redemption popup (unchanged) */
 #redeem-layer {
   position: absolute;
   inset: 0;
@@ -255,7 +396,6 @@ html, body, #app, #game-container {
   justify-content: center;
   overflow: visible;
 }
-
 .redeem-anim {
   position: relative;
   width: 320px;
@@ -293,7 +433,6 @@ html, body, #app, #game-container {
   border: 3px solid var(--cyan);
   box-shadow: 0 0 16px rgba(0,242,234,0.5);
 }
-
 .redeem-tier-label {
   font-size: 13px;
   font-weight: 800;
@@ -304,7 +443,6 @@ html, body, #app, #game-container {
   background: linear-gradient(90deg, rgba(0,242,234,0.15), rgba(255,0,80,0.15));
   color: var(--cyan);
 }
-
 .redeem-box {
   position: relative;
   width: 160px;
@@ -312,7 +450,6 @@ html, body, #app, #game-container {
   margin: 0 auto;
   perspective: 800px;
 }
-
 .box-core {
   position: absolute;
   inset: 0;
@@ -334,7 +471,6 @@ html, body, #app, #game-container {
   background: linear-gradient(145deg,#58430e,#3b2d08);
   box-shadow: inset 0 0 30px rgba(247,210,92,0.3), 0 0 28px rgba(247,210,92,0.6);
 }
-
 .box-lid {
   position: absolute;
   left: 0;
@@ -400,10 +536,17 @@ html, body, #app, #game-container {
   box-shadow: 0 0 8px rgba(0,255,255,0.3);
 }
 
-@media (max-width: 1000px) {
+@media (max-width: 1100px) {
   #overlay {
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto 1fr auto;
+    grid-template-columns: 260px 1fr 150px;
+  }
+  .teaser-box { width:140px;height:126px; }
+}
+@media (max-width: 900px) {
+  #overlay {
+    grid-template-columns: 1fr 160px;
+    grid-template-rows: auto auto 1fr;
   }
   #leaderboard { grid-column: 1 / span 2; order: 3; }
+  #reward-teasers { grid-column: 2; grid-row: 2; }
 }

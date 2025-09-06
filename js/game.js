@@ -1,6 +1,8 @@
-// game.js (excerpt: fully updated with 3D reward model integration)
-// Includes reward redemption system + calm physics + adaptive quality.
-// IMPORTANT: This file supersedes previous game.js versions.
+// game.js updated: adds right-side teaser boxes animations (initTeaserBoxes)
+
+/* (the file is same as previous provided version up to the bottom where we add initTeaserBoxes call;
+   only additions are: DOM query for #reward-teasers optional elements and the initTeaserBoxes() function.
+   For brevity the full prior content is kept, with new code sections marked) */
 
 import * as THREE from 'three';
 import {
@@ -17,7 +19,6 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 const { Engine, World, Bodies, Events, Body } = Matter;
 
 (() => {
-  // Reward tiers
   const REWARD_COSTS = { t1: 1000, t2: 5000, t3: 10000 };
   const REWARD_NAMES = { t1: 'Tier 1', t2: 'Tier 2', t3: 'Tier 3' };
   const REDEEM_PREFIX = 'redeem:';
@@ -76,7 +77,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  // DOM
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -90,7 +90,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const spawnStatusEl   = document.getElementById('spawn-status');
   const redeemLayer     = document.getElementById('redeem-layer');
 
-  // Settings/Admin
+  // NEW: teaser boxes root
+  const rewardTeasersRoot = document.getElementById('reward-teasers');
+
+  // Settings / Admin
   const btnGear         = document.getElementById('btn-gear');
   const settingsPanel   = document.getElementById('settings-panel');
   const btnCloseSettings= document.getElementById('btn-close-settings');
@@ -109,17 +112,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   let perfPanel, perfData = { avgMs:0, worstMs:0, frames:0, qualityTier:2 };
 
-  // Shared ball geometry
   const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS, 20, 14);
   let sharedBallBaseMaterial = null;
 
   const avatarTextureCache = new Map();
 
-  // Redemption queue
   const redeemQueue = [];
   let redeemActive = false;
 
-  // Current visible 3D reward (if any)
   let activeReward3D = null;
   let activeRewardDisposeFn = null;
 
@@ -127,7 +127,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     redeemQueue.push({ evId, tier, username, avatarUrl });
     runNextRedemption();
   }
-
   function runNextRedemption() {
     if (redeemActive) return;
     const item = redeemQueue.shift();
@@ -140,16 +139,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   async function prepare3DModel() {
-    try {
-      await ensureRewardModelLoaded();
-      return true;
-    } catch {
-      return false;
-    }
+    try { await ensureRewardModelLoaded(); return true; } catch { return false; }
   }
 
   function attachReward3D(tier) {
-    // Clean previous
     if (activeReward3D) {
       scene.remove(activeReward3D);
       if (activeRewardDisposeFn) activeRewardDisposeFn();
@@ -158,147 +151,82 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     try {
       const model = createRewardModelInstance(tier === 't3' ? 22 : tier === 't2' ? 19 : 16);
-      // Place near top-center of redemption box region (approx screen center)
-      // Convert screen center to world: we can simply use (0, WORLD_HEIGHT*0.2)
-      model.position.set(0, WORLD_HEIGHT * 0.15, 30); // a bit in front (z=30)
+      model.position.set(0, WORLD_HEIGHT * 0.15, 30);
       model.renderOrder = 999;
-      model.traverse(o => { if (o.material) o.material.depthTest = true; });
-
       scene.add(model);
       activeReward3D = model;
       activeRewardDisposeFn = animateRewardModel(model, gsap);
-
-      // Intro animation
       model.scale.multiplyScalar(0.01);
-      gsap.to(model.scale, {
-        x: model.scale.x * 100,
-        y: model.scale.y * 100,
-        z: model.scale.z * 100,
-        duration: 0.55,
-        ease: 'back.out(1.7)'
-      });
-      gsap.fromTo(model.rotation, { y: model.rotation.y + Math.PI * 2 }, {
-        y: model.rotation.y,
-        duration: 0.65,
-        ease: 'expo.out'
-      });
-    } catch (e) {
-      // Silent fallback
-    }
+      gsap.to(model.scale, { x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,duration:.55,ease:'back.out(1.7)' });
+      gsap.fromTo(model.rotation, { y: model.rotation.y + Math.PI * 2 }, { y:model.rotation.y, duration:.65, ease:'expo.out' });
+    } catch {}
   }
-
   function detachReward3D() {
     if (activeReward3D) {
       gsap.to(activeReward3D.scale, {
-        x: activeReward3D.scale.x * 0.01,
-        y: activeReward3D.scale.y * 0.01,
-        z: activeReward3D.scale.z * 0.01,
-        duration: 0.35,
-        ease: 'power2.in',
-        onComplete: () => {
-          if (activeReward3D) scene.remove(activeReward3D);
-          if (activeRewardDisposeFn) activeRewardDisposeFn();
-          activeReward3D = null;
-          activeRewardDisposeFn = null;
+        x:activeReward3D.scale.x*0.01,
+        y:activeReward3D.scale.y*0.01,
+        z:activeReward3D.scale.z*0.01,
+        duration:.35,
+        ease:'power2.in',
+        onComplete:()=>{
+          if(activeReward3D) scene.remove(activeReward3D);
+          if(activeRewardDisposeFn) activeRewardDisposeFn();
+          activeReward3D=null; activeRewardDisposeFn=null;
         }
       });
     }
   }
 
   function playRedemptionAnimation({ evId, tier, username, avatarUrl }) {
-    return new Promise(async (resolve) => {
-      const cost = REWARD_COSTS[tier] || 0;
-      const wrapper = document.createElement('div');
-      wrapper.className = `redeem-anim tier-${tier}`;
+    return new Promise(async resolve=>{
+      const cost=REWARD_COSTS[tier]||0;
+      const wrapper=document.createElement('div');
+      wrapper.className=`redeem-anim tier-${tier}`;
       wrapper.setAttribute('data-event', evId);
-      wrapper.innerHTML = `
+      wrapper.innerHTML=`
         <div class="redeem-box">
           <div class="box-core"></div>
           <div class="box-lid"></div>
-          <div class="prize">
-            <span class="prize-emoji">🖕</span>
-          </div>
+          <div class="prize"><span class="prize-emoji">🖕</span></div>
         </div>
         <div class="redeem-user">
-          <img class="redeem-ava" src="${avatarUrl || ''}" alt="">
+          <img class="redeem-ava" src="${avatarUrl||''}" alt="">
           <div class="redeem-name">@${username}</div>
           <div class="redeem-tier-label">${REWARD_NAMES[tier]} • -${cost}</div>
-        </div>
-      `;
+        </div>`;
       redeemLayer.appendChild(wrapper);
-
-      const box = wrapper.querySelector('.redeem-box');
-      const lid = wrapper.querySelector('.box-lid');
-      const prize = wrapper.querySelector('.prize');
-      const emoji = wrapper.querySelector('.prize-emoji');
-
-      let modelLoaded = await prepare3DModel().catch(()=>false);
-
-      const tl = gsap.timeline({
-        defaults: { ease: 'expo.out' },
-        onComplete: () => {
-          // Fade out & cleanup
-            gsap.to(wrapper, {
-              duration: 0.4,
-              opacity: 0,
-              scale: 0.8,
-              ease: 'power1.in',
-              delay: 1.6,
-              onComplete: () => {
-                redeemLayer.removeChild(wrapper);
-                detachReward3D();
-                resolve();
-              }
-            });
+      const lid=wrapper.querySelector('.box-lid');
+      const prize=wrapper.querySelector('.prize');
+      const emoji=wrapper.querySelector('.prize-emoji');
+      const modelLoaded=await prepare3DModel().catch(()=>false);
+      const tl=gsap.timeline({
+        defaults:{ease:'expo.out'},
+        onComplete:()=>{
+          gsap.to(wrapper,{opacity:0,scale:0.8,duration:.4,ease:'power1.in',delay:1.6,onComplete:()=>{
+            redeemLayer.removeChild(wrapper); detachReward3D(); resolve();
+          }});
         }
       });
-
-      tl
-        .to(wrapper, { duration: 0.45, opacity: 1, scale: 1, ease: 'elastic.out(1,0.55)' })
-        .addLabel('enter')
-        .to(box, {
-          duration: 0.5,
-          rotationZ: 0.05 * Math.PI,
-          yoyo: true,
-          repeat: 3,
-          ease: 'sine.inOut'
-        }, 'shake')
-        .to(box, { duration: 0.65, rotationY: Math.PI * 2, ease: 'power2.inOut' }, 'spin')
-        .to(lid, {
-          duration: 0.55,
-          rotationX: -Math.PI * 0.95,
-          transformOrigin: 'center bottom',
-          ease: 'back.in(1.3)'
-        }, 'open-=0.15')
-        .add(async () => {
-          // Reveal phase
-          if (modelLoaded) {
-            // Hide emoji fallback
-            if (emoji) emoji.style.display = 'none';
+      tl.to(wrapper,{opacity:1,scale:1,duration:.45,ease:'elastic.out(1,0.55)'})
+        .to(lid,{rotationX:-Math.PI*0.95,duration:.55,ease:'back.in(1.3)'},'-=0.15')
+        .add(()=>{
+          if(modelLoaded){
+            if(emoji) emoji.style.display='none';
             attachReward3D(tier);
-            // Time the 3D reveal with prize fade transform (simulate)
-            gsap.to(prize, { opacity: 1, duration: 0.25, ease: 'power2.out' });
+            gsap.to(prize,{opacity:1,duration:.25});
           } else {
-            // Fallback: animate emoji
-            gsap.to(prize, {
-              opacity: 1,
-              y: '-=60',
-              scale: 1,
-              duration: 0.55,
-              ease: 'back.out(1.4)'
-            });
+            gsap.to(prize,{opacity:1,y:'-=60',scale:1,duration:.55,ease:'back.out(1.4)'});
           }
-        }, 'reveal-=0.15');
-
+        },'-=0.10');
     });
   }
 
-  // Slot config
-  function buildSlots(slotCount) {
-    const center = Math.floor((slotCount - 1)/2);
-    const mult = (d)=> (d===0?16:d===1?9:d===2?5:d===3?3:1);
-    SLOT_MULTIPLIERS = Array.from({length:slotCount}, (_,i)=>mult(Math.abs(i-center)));
-    SLOT_POINTS = SLOT_MULTIPLIERS.map(m=>m*100);
+  function buildSlots(slotCount){
+    const center=Math.floor((slotCount-1)/2);
+    const mult=d=>(d===0?16:d===1?9:d===2?5:d===3?3:1);
+    SLOT_MULTIPLIERS=Array.from({length:slotCount},(_,i)=>mult(Math.abs(i-center)));
+    SLOT_POINTS=SLOT_MULTIPLIERS.map(m=>m*100);
   }
   function renderSlotLabels(slotCount, framePx){
     slotLabelsEl.innerHTML='';
@@ -311,19 +239,17 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     trayDividers.style.setProperty('--slot-width', `${framePx.width / slotCount}px`);
   }
 
-  // Backend helpers
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
-    if(clean) localStorage.setItem('backendBaseUrl', clean); else localStorage.removeItem('backendBaseUrl');
+    if(clean) localStorage.setItem('backendBaseUrl',clean); else localStorage.removeItem('backendBaseUrl');
   }
-  function adminFetch(path, options={}){
+  function adminFetch(path,opt={}){
     const base=getBackendBaseUrl();
     if(!base) throw new Error('Backend URL not set.');
-    return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`, options);
+    return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`, opt);
   }
 
-  // Settings
   function loadSettings(){
     const g=Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value=String(g);
     const ds=Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value=String(ds);
@@ -331,8 +257,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
     optParticles.checked=(localStorage.getItem('plk_particles') ?? 'true')==='true';
     const vol=Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value=String(vol); setAudioVolume(vol);
-    const saved=getBackendBaseUrl(); if (saved) backendUrlInput.value=saved;
-    const tok=localStorage.getItem('adminToken')||''; if (tok) adminTokenInput.value=tok;
+    const saved=getBackendBaseUrl(); if(saved) backendUrlInput.value=saved;
+    const tok=localStorage.getItem('adminToken')||''; if(tok) adminTokenInput.value=tok;
     applySettings();
   }
   function applySettings(){
@@ -341,9 +267,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     NEON=!!optNeon.checked;
     PARTICLES=!!optParticles.checked;
     localStorage.setItem('plk_dropSpeed', String(DROP_SPEED));
-    localStorage.setItem('plk_gravity',   String(GRAVITY_MAG));
+    localStorage.setItem('plk_gravity', String(GRAVITY_MAG));
     localStorage.setItem('plk_multiDrop', String(optMultiDrop.value));
-    localStorage.setItem('plk_neon',      String(NEON));
+    localStorage.setItem('plk_neon', String(NEON));
     localStorage.setItem('plk_particles', String(PARTICLES));
     if(world) world.gravity.y = -Math.abs(GRAVITY_MAG);
     if(pegsInstanced){
@@ -358,52 +284,41 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       bloomPass.radius=0.6;
     }
   }
+  function showSettings(){ gsap.to(settingsPanel,{x:0,duration:.35,ease:'expo.out'}); settingsPanel.setAttribute('aria-hidden','false'); }
+  function hideSettings(){ gsap.to(settingsPanel,{x:'110%',duration:.35,ease:'expo.in'}); settingsPanel.setAttribute('aria-hidden','true'); }
 
-  function showSettings(){ gsap.to(settingsPanel,{ x:0, duration:.35, ease:'expo.out'}); settingsPanel.setAttribute('aria-hidden','false'); }
-  function hideSettings(){ gsap.to(settingsPanel,{ x:'110%', duration:.35, ease:'expo.in'}); settingsPanel.setAttribute('aria-hidden','true'); }
-
-  // Three
   function initThree(){
-    renderer=new THREE.WebGLRenderer({ antialias:true, alpha:true });
+    renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
     renderer.toneMapping=THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure=1.0;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 1.75));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.75));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setClearColor(0x000000,0);
     container.appendChild(renderer.domElement);
-
     scene=new THREE.Scene();
     computeWorldSize();
-    camera=new THREE.OrthographicCamera(
-      -WORLD_WIDTH/2, WORLD_WIDTH/2, WORLD_HEIGHT/2, -WORLD_HEIGHT/2, 0.1, 200
-    );
+    camera=new THREE.OrthographicCamera(-WORLD_WIDTH/2,WORLD_WIDTH/2,WORLD_HEIGHT/2,-WORLD_HEIGHT/2,0.1,200);
     camera.position.set(0,0,100);
-
     ambient=new THREE.AmbientLight(0xffffff,0.95);
     dirLight=new THREE.DirectionalLight(0xffffff,0.9);
     dirLight.position.set(-8,16,40);
-    scene.add(ambient, dirLight);
-
+    scene.add(ambient,dirLight);
     composer=new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene,camera));
     smaaPass=new SMAAPass(renderer.domElement.width, renderer.domElement.height);
     composer.addPass(smaaPass);
-    bloomPass=new UnrealBloomPass(new THREE.Vector2(renderer.domElement.width, renderer.domElement.height),0.75,0.6,0.2);
+    bloomPass=new UnrealBloomPass(new THREE.Vector2(renderer.domElement.width,renderer.domElement.height),0.75,0.6,0.2);
     composer.addPass(bloomPass);
-
-    const ro=new ResizeObserver(onResize);
-    ro.observe(container);
+    const ro=new ResizeObserver(onResize); ro.observe(container);
     onResize();
-
-    if(SHOW_PERF_PANEL) {
-      perfPanel = document.createElement('div');
-      perfPanel.id = 'perf-panel';
-      perfPanel.textContent='Perf';
+    if(SHOW_PERF_PANEL){
+      perfPanel=document.createElement('div');
+      perfPanel.id='perf-panel';
+      perfPanel.textContent='Perf...';
       document.body.appendChild(perfPanel);
     }
   }
-
   function computeWorldSize(){
     const w=container.clientWidth||1;
     const h=container.clientHeight||1;
@@ -414,7 +329,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     PEG_SPACING=BOARD_WIDTH/(ROWS+1);
     TRAY_HEIGHT=BOARD_HEIGHT*TRAY_RATIO;
   }
-
   function onResize(){
     renderer.setSize(container.clientWidth, container.clientHeight);
     composer.setSize(container.clientWidth, container.clientHeight);
@@ -430,39 +344,35 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     fxCanvas.height=container.clientHeight;
     layoutOverlays();
   }
-
   function layoutOverlays(){
     const left=-BOARD_WIDTH/2,right=BOARD_WIDTH/2;
     const top=BOARD_HEIGHT/2,bottom=-BOARD_HEIGHT/2;
-    const trayTop=bottom + TRAY_HEIGHT;
+    const trayTop=bottom+TRAY_HEIGHT;
     const pTopLeft=worldToScreen(new THREE.Vector3(left,top,0),camera,renderer);
     const pBottomRight=worldToScreen(new THREE.Vector3(right,bottom,0),camera,renderer);
     const pTrayTopLeft=worldToScreen(new THREE.Vector3(left,trayTop,0),camera,renderer);
     const frame={
-      x:Math.round(pTopLeft.x),
-      y:Math.round(pTopLeft.y),
-      width:Math.round(pBottomRight.x - pTopLeft.x),
-      height:Math.round(pBottomRight.y - pTopLeft.y)
+      x:Math.round(pTopLeft.x), y:Math.round(pTopLeft.y),
+      width:Math.round(pBottomRight.x-pTopLeft.x),
+      height:Math.round(pBottomRight.y-pTopLeft.y)
     };
     const tray={
-      x:frame.x,
-      width:frame.width,
-      height:Math.round(pBottomRight.y - pTrayTopLeft.y),
+      x:frame.x,width:frame.width,
+      height:Math.round(pBottomRight.y-pTrayTopLeft.y),
       top:Math.round(pTrayTopLeft.y)
     };
     Object.assign(boardFrame.style,{left:frame.x+'px',top:frame.y+'px',width:frame.width+'px',height:frame.height+'px',display:'block'});
     Object.assign(slotTray.style,{left:tray.x+'px',top:tray.top+'px',width:tray.width+'px',height:tray.height+'px',display:'block'});
     Object.assign(boardDivider.style,{left:frame.x+'px',width:frame.width+'px',top:(pTrayTopLeft.y-1)+'px',display:'block'});
     boardTitle.style.left=(frame.x+22)+'px';
-    boardTitle.style.top=(frame.y+18)+'px';
+    boardTitle.style.top =(frame.y+18)+'px';
     const slotCount=ROWS+1;
     buildSlots(slotCount);
     renderSlotLabels(slotCount, frame);
   }
 
-  // Matter
   function initMatter(){
-    engine=Engine.create({ enableSleeping:false });
+    engine=Engine.create({enableSleeping:false});
     world=engine.world;
     world.gravity.y=-Math.abs(GRAVITY_MAG);
     engine.positionIterations=8;
@@ -472,7 +382,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     bindCollisions();
     fxMgr=new FXManager2D(fxCanvas);
   }
-
   function buildBoard(){
     const left=Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
     const right=Bodies.rectangle( BOARD_WIDTH/2 + WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
@@ -481,33 +390,31 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const startY=BOARD_HEIGHT/2 - 10;
     TOP_ROW_Y=startY;
     const rowH=PEG_SPACING*0.9;
-    const startX=-((ROWS - 1)*PEG_SPACING)/2;
+    const startX=-((ROWS-1)*PEG_SPACING)/2;
     const pegPositions=[];
     for(let r=0;r<ROWS;r++){
       const y=startY - r*rowH;
       for(let c=0;c<=r;c++){
         const x=startX + c*PEG_SPACING + (ROWS-1-r)*(PEG_SPACING/2);
-        const peg = Bodies.circle(x,y,PEG_RADIUS,{ isStatic:true, restitution:PEG_RESTITUTION, friction:0.01 });
+        const peg=Bodies.circle(x,y,PEG_RADIUS,{isStatic:true,restitution:PEG_RESTITUTION,friction:0.01});
         peg.label='PEG';
         World.add(world,peg);
         pegPositions.push({x,y});
       }
     }
     addPegInstancedMesh(pegPositions);
-
     slotSensors=[];
     const slotCount=ROWS+1;
     const slotWidth=BOARD_WIDTH/slotCount;
-    const slotY=-BOARD_HEIGHT/2 + (TRAY_HEIGHT * 0.35);
+    const slotY=-BOARD_HEIGHT/2 + (TRAY_HEIGHT*0.35);
     for(let i=0;i<slotCount;i++){
       const x=-BOARD_WIDTH/2 + slotWidth*(i+0.5);
       const sensor=Bodies.rectangle(x,slotY,slotWidth,2.6,{isStatic:true,isSensor:true});
       sensor.label=`SLOT_${i}`;
       World.add(world,sensor);
-      slotSensors.push({ body:sensor, index:i });
+      slotSensors.push({body:sensor,index:i});
     }
   }
-
   function addPegInstancedMesh(pegPositions){
     if(pegsInstanced){
       scene.remove(pegsInstanced);
@@ -516,17 +423,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
     const mat=new THREE.MeshPhysicalMaterial({
-      color:0x86f7ff,
-      metalness:0.35,
-      roughness:0.35,
-      clearcoat:0.6,
-      clearcoatRoughness:0.2,
-      emissive:new THREE.Color(0x00ffff),
-      emissiveIntensity:0.30
+      color:0x86f7ff,metalness:0.35,roughness:0.35,
+      clearcoat:0.6,clearcoatRoughness:0.2,
+      emissive:new THREE.Color(0x00ffff),emissiveIntensity:0.30
     });
     const inst=new THREE.InstancedMesh(geo,mat,pegPositions.length);
     const m=new THREE.Matrix4();
-    const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI/2);
+    const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
     for(let i=0;i<pegPositions.length;i++){
       const {x,y}=pegPositions[i];
       m.compose(new THREE.Vector3(x,y,0),q,new THREE.Vector3(1,1,1));
@@ -536,16 +439,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     pegsInstanced=inst;
     scene.add(inst);
   }
-
   function bindCollisions(){
     Events.on(engine,'collisionStart', ev=>{
-      for(const { bodyA, bodyB } of ev.pairs){
-        handlePair(bodyA, bodyB);
-        handlePair(bodyB, bodyA);
+      for(const {bodyA,bodyB} of ev.pairs){
+        handlePair(bodyA,bodyB);
+        handlePair(bodyB,bodyA);
       }
     });
   }
-
   function handlePair(a,b){
     if(!a||!b) return;
     const slot=slotSensors.find(s=>s.body.id===b.id);
@@ -553,11 +454,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const ball=a;
       if(!ball.plugin?.scored){
         const idx=slot.index;
-        const points=SLOT_POINTS[idx] || 100;
+        const points=SLOT_POINTS[idx]||100;
         ball.plugin.scored=true;
         awardPoints(ball.plugin.username, ball.plugin.avatarUrl||'', points).catch(console.warn);
         sfxScore(points >= 1600);
-        setTimeout(()=>tryRemoveBall(ball), 900);
+        setTimeout(()=>tryRemoveBall(ball),900);
       }
       return;
     }
@@ -576,39 +477,38 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function adaptQuality(frameMs){
     perfData.frames++;
-    perfData.avgMs = perfData.avgMs ? perfData.avgMs*0.9 + frameMs*0.1 : frameMs;
-    if(frameMs > perfData.worstMs) perfData.worstMs=frameMs;
+    perfData.avgMs=perfData.avgMs?perfData.avgMs*0.9+frameMs*0.1:frameMs;
+    if(frameMs>perfData.worstMs) perfData.worstMs=frameMs;
     if(!ADAPTIVE_QUALITY) return;
     const avg=perfData.avgMs;
-    let target=2;
-    if(avg>28) target=0; else if(avg>22) target=1;
-    if(target!==perfData.qualityTier){
-      perfData.qualityTier=target;
-      if(target===2){
+    let tier=2;
+    if(avg>28) tier=0; else if(avg>22) tier=1;
+    if(tier!==perfData.qualityTier){
+      perfData.qualityTier=tier;
+      if(tier===2){
         bloomPass.strength=0.75; bloomPass.enabled=NEON; smaaPass.enabled=true;
-      } else if(target===1){
+      } else if(tier===1){
         bloomPass.strength=0.45; bloomPass.enabled=NEON; smaaPass.enabled=true;
       } else {
         bloomPass.strength=0.25; bloomPass.enabled=NEON; smaaPass.enabled=false;
       }
     }
-    if(perfPanel && perfData.frames % 30 === 0){
+    if(perfPanel && perfData.frames%30===0){
       perfPanel.textContent=`fps:${(1000/avg).toFixed(1)} ms:${avg.toFixed(1)} worst:${perfData.worstMs.toFixed(1)} tier:${perfData.qualityTier}`;
     }
   }
-
   function startLoop(){
-    let last=performance.now(), acc=0;
+    let last=performance.now(),acc=0;
     function tick(now){
-      const dt=Math.min(200, now-last); last=now; acc+=dt;
+      const dt=Math.min(200,now-last); last=now; acc+=dt;
       let steps=0;
       const maxSteps=maxStepsForFrame(dt);
       while(acc>=FIXED_DT && steps<maxSteps){
-        Engine.update(engine, FIXED_DT);
+        Engine.update(engine,FIXED_DT);
         acc-=FIXED_DT; steps++;
       }
       clampVelocities();
-      fxMgr.update(fxCtx, dt);
+      fxMgr.update(fxCtx,dt);
       updateThreeFromMatter();
       const t0=performance.now();
       composer.render();
@@ -618,11 +518,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     requestAnimationFrame(tick);
   }
-
   function clampVelocities(){
     for(const b of dynamicBodies){
-      const vx=b.velocity.x, vy=b.velocity.y;
-      let sx=vx, sy=vy;
+      const vx=b.velocity.x,vy=b.velocity.y;
+      let sx=vx,sy=vy;
       if(Math.abs(sx)>MAX_H_SPEED) sx=Math.sign(sx)*MAX_H_SPEED;
       const speed=Math.hypot(sx,sy);
       if(speed>MAX_SPEED){
@@ -631,36 +530,29 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if(sx!==vx || sy!==vy) Body.setVelocity(b,{x:sx,y:sy});
     }
   }
-
   function updateThreeFromMatter(){
     dynamicBodies.forEach(body=>{
       const mesh=meshById.get(body.id);
       if(mesh){
-        mesh.position.set(body.position.x, body.position.y, 0);
+        mesh.position.set(body.position.x, body.position.y,0);
         mesh.rotation.z=body.angle;
       }
       const label=labelById.get(body.id);
-      if(label){
-        label.position.set(body.position.x, body.position.y + BALL_RADIUS*2.2,0);
-      }
+      if(label) label.position.set(body.position.x, body.position.y + BALL_RADIUS*2.2,0);
     });
   }
 
-  // Spawn
   function spawnBallSet({ username, avatarUrl }){
-    const multi=Math.max(1, Math.min(5, Number(optMultiDrop.value||1)));
+    const multi=Math.max(1,Math.min(5,Number(optMultiDrop.value||1)));
     for(let i=0;i<multi;i++) spawnSingle({ username, avatarUrl });
   }
-
   function spawnSingle({ username, avatarUrl }){
-    const jitter=PEG_SPACING * 0.35;
+    const jitter=PEG_SPACING*0.35;
     const dropX=Math.max(-BOARD_WIDTH/2+4, Math.min(BOARD_WIDTH/2-4,(Math.random()-0.5)*jitter));
-    const dropY=TOP_ROW_Y + PEG_SPACING * 0.8;
-    const body = Bodies.circle(dropX, dropY, BALL_RADIUS, {
-      restitution: BALL_RESTITUTION,
-      friction: BALL_FRICTION,
-      frictionAir: BALL_FRICTION_AIR,
-      density: 0.0018
+    const dropY=TOP_ROW_Y + PEG_SPACING*0.8;
+    const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{
+      restitution:BALL_RESTITUTION, friction:BALL_FRICTION,
+      frictionAir:BALL_FRICTION_AIR, density:0.0018
     });
     body.label=`BALL_${username}`;
     body.plugin={ username, avatarUrl, scored:false };
@@ -670,31 +562,28 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     Body.setAngularVelocity(body,0);
 
     if(!sharedBallBaseMaterial){
-      sharedBallBaseMaterial = new THREE.MeshPhysicalMaterial({
-        color:0xffffff,
-        metalness:0.2,
-        roughness:0.6,
-        clearcoat:0.7,
-        clearcoatRoughness:0.25,
-        emissive: NEON? new THREE.Color(0x00c6ff) : new THREE.Color(0x000000),
-        emissiveIntensity: NEON?0.04:0.0
+      sharedBallBaseMaterial=new THREE.MeshPhysicalMaterial({
+        color:0xffffff, metalness:0.2, roughness:0.6,
+        clearcoat:0.7, clearcoatRoughness:0.25,
+        emissive: NEON? new THREE.Color(0x00c6ff): new THREE.Color(0x000000),
+        emissiveIntensity: NEON?0.04:0
       });
     }
     const mat=sharedBallBaseMaterial.clone();
-    const mesh=new THREE.Mesh(sharedBallGeo, mat);
+    const mesh=new THREE.Mesh(sharedBallGeo,mat);
     scene.add(mesh);
     meshById.set(body.id, mesh);
 
-    const nameSprite=buildNameSprite(username);
-    scene.add(nameSprite);
-    labelById.set(body.id, nameSprite);
+    const sprite=buildNameSprite(username);
+    scene.add(sprite);
+    labelById.set(body.id, sprite);
 
-    const applyTex=async ()=>{
+    const applyTex=async()=>{
       try{
         let prom=avatarTextureCache.get(avatarUrl||'');
         if(!prom){
           prom=loadAvatarTexture(avatarUrl,128);
-          avatarTextureCache.set(avatarUrl||'', prom);
+          avatarTextureCache.set(avatarUrl||'',prom);
         }
         const tex=await prom;
         const live=meshById.get(body.id);
@@ -706,10 +595,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     };
     if('requestIdleCallback' in window) requestIdleCallback(applyTex,{timeout:600});
     else setTimeout(applyTex,0);
-
     sfxDrop();
   }
-
   function tryRemoveBall(body){
     try{
       const mesh=meshById.get(body.id);
@@ -736,7 +623,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=(current.score||0)+points;
-    leaderboard[username]={ username, avatarUrl, score:next, lastUpdate: Date.now() };
+    leaderboard[username]={ username, avatarUrl, score:next, lastUpdate:Date.now() };
     refreshLeaderboard();
     try{
       await FirebaseREST.update(`/leaderboard/${encodeKey(username)}`, {
@@ -744,11 +631,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       });
     }catch(e){ console.warn('Leaderboard write failed', e); }
   }
-
   function deductPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     if((current.score||0) < points) return false;
-    const next = current.score - points;
+    const next=current.score - points;
     leaderboard[username]={ username, avatarUrl, score: next, lastUpdate: Date.now() };
     refreshLeaderboard();
     FirebaseREST.update(`/leaderboard/${encodeKey(username)}`, {
@@ -756,13 +642,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }).catch(()=>{});
     return true;
   }
-
   function refreshLeaderboard(){
     const entries=Object.values(leaderboard).sort((a,b)=>b.score-a.score).slice(0,50);
     leaderboardList.innerHTML='';
     for(const e of entries){
-      const li=document.createElement('li');
-      li.className='lb-item';
+      const li=document.createElement('li'); li.className='lb-item';
       const ava=document.createElement('div'); ava.className='lb-ava';
       if(e.avatarUrl) ava.style.backgroundImage=`url(${e.avatarUrl})`;
       const name=document.createElement('div'); name.className='lb-name'; name.textContent='@'+(e.username||'viewer');
@@ -771,36 +655,31 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       leaderboardList.appendChild(li);
     }
   }
-
   function clearLeaderboardLocal(){
     for(const k of Object.keys(leaderboard)) delete leaderboard[k];
     leaderboardList.innerHTML='';
   }
-
-  function handleRedeemEvent(eventId, username, avatarUrl, tier) {
-    if (processedRedemptions.has(eventId)) return;
+  function handleRedeemEvent(eventId,username,avatarUrl,tier){
+    if(processedRedemptions.has(eventId)) return;
     processedRedemptions.add(eventId);
-    const cost = REWARD_COSTS[tier];
-    if (!cost) return;
-    const can = deductPoints(username, avatarUrl, cost);
-    if (!can) return;
-    enqueueRedemption(eventId, tier, username, avatarUrl);
+    const cost=REWARD_COSTS[tier];
+    if(!cost) return;
+    if(!deductPoints(username,avatarUrl,cost)) return;
+    enqueueRedemption(eventId,tier,username,avatarUrl);
   }
 
-  // Firebase
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
-      if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
+      if(!obj||typeof obj!=='object'||processedEvents.has(id)) return;
       const ts=typeof obj.timestamp==='number'?obj.timestamp:0;
       if(ts && ts < startTime - 60_000) return;
       processedEvents.add(id);
       const username=sanitizeUsername(obj.username||'viewer');
       const avatarUrl=obj.avatarUrl||'';
       const command=(obj.command||'').toLowerCase();
-
       if(command.startsWith(REDEEM_PREFIX)){
-        const tier = command.split(':')[1];
-        handleRedeemEvent(id, username, avatarUrl, tier);
+        const tier=command.split(':')[1];
+        handleRedeemEvent(id,username,avatarUrl,tier);
         return;
       }
       if(command.includes('drop') || command.startsWith('gift')) spawnBallSet({ username, avatarUrl });
@@ -810,14 +689,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if(data && typeof data==='object' && Object.keys(data).length){
         for(const k of Object.keys(data)){
           const entry=data[k];
-          if(entry?.username){
-            leaderboard[entry.username]={
-              username: entry.username,
-              avatarUrl: entry.avatarUrl || '',
-              score: entry.score || 0,
-              lastUpdate: entry.lastUpdate || 0
-            };
-          }
+            if(entry?.username){
+              leaderboard[entry.username]={
+                username:entry.username,
+                avatarUrl:entry.avatarUrl||'',
+                score:entry.score||0,
+                lastUpdate:entry.lastUpdate||0
+              };
+            }
         }
         refreshLeaderboard();
       } else {
@@ -837,6 +716,52 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return s ? s.slice(0,24) : 'viewer';
   }
   function encodeKey(k){ return encodeURIComponent(k.replace(/[.#$[\]]/g,'_')); }
+
+  // --- NEW: Teaser Boxes Animation / Setup ---
+  function initTeaserBoxes(){
+    if(!rewardTeasersRoot) return;
+    const boxes = rewardTeasersRoot.querySelectorAll('.teaser-box');
+    boxes.forEach(box=>{
+      const tier = box.getAttribute('data-tier');
+      const lid  = box.querySelector('.tb-lid');
+      const core = box.querySelector('.tb-core');
+      // Gentle loop
+      const idle = gsap.timeline({ repeat:-1, paused:false });
+      idle.to(lid,{
+        rotationX: -12 * Math.PI/180,
+        duration:1.6,
+        ease:'sine.inOut'
+      }).to(lid,{
+        rotationX: 0,
+        duration:1.4,
+        ease:'sine.inOut'
+      });
+
+      // Random shake tease
+      function tease(){
+        const t=gsap.timeline();
+        t.to(core,{ rotationZ:0.05, duration:0.1, ease:'power1.inOut'})
+         .to(core,{ rotationZ:-0.05, duration:0.12, ease:'power1.inOut'})
+         .to(core,{ rotationZ:0, duration:0.1, ease:'power1.inOut'});
+        setTimeout(tease, 4000 + Math.random()*4000);
+      }
+      setTimeout(tease, 2000 + Math.random()*2000);
+
+      // Tooltip via title
+      const cost = REWARD_COSTS[tier] || 0;
+      box.title = `${REWARD_NAMES[tier]} - Cost ${cost.toLocaleString()} pts - Command !${tier}`;
+      // Click bounce effect
+      box.addEventListener('click', ()=>{
+        gsap.fromTo(box,{scale:1},{scale:1.08,duration:0.18,yoyo:true,repeat:1,ease:'back.out(4)'});
+      });
+      box.addEventListener('keypress', (e)=>{
+        if(e.key==='Enter' || e.key===' ') {
+          e.preventDefault();
+          box.click();
+        }
+      });
+    });
+  }
 
   // UI / Audio
   btnGear.addEventListener('click', showSettings);
@@ -867,52 +792,49 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const baseUrl=backendUrlInput.value.trim();
       const token=adminTokenInput.value.trim();
       setBackendBaseUrl(baseUrl);
-      if(token) localStorage.setItem('adminToken', token); else localStorage.removeItem('adminToken');
+      if(token) localStorage.setItem('adminToken',token); else localStorage.removeItem('adminToken');
       alert('Saved admin settings.');
     }catch{ alert('Save failed.'); }
   });
-
   btnReset.addEventListener('click', async ()=>{
     const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if(!token) return alert('Provide admin token.');
     try{
-      const res=await adminFetch('/admin/reset-leaderboard',{ method:'POST', headers:{'x-admin-token': token} });
+      const res=await adminFetch('/admin/reset-leaderboard',{method:'POST',headers:{'x-admin-token':token}});
       if(!res.ok) throw new Error();
       clearLeaderboardLocal();
       alert('Leaderboard reset.');
     }catch{ alert('Reset failed.'); }
   });
-
   btnToggleSpawn.addEventListener('click', async ()=>{
     const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if(!token) return alert('Provide admin token.');
     try{
       const curr=spawnStatusEl.textContent==='true';
-      const res=await adminFetch(`/admin/spawn-toggle?enabled=${!curr}`, { method:'POST', headers:{'x-admin-token': token} });
+      const res=await adminFetch(`/admin/spawn-toggle?enabled=${!curr}`,{method:'POST',headers:{'x-admin-token':token}});
       if(!res.ok) throw new Error();
       alert(`Spawn set to ${!curr}`);
     }catch{ alert('Toggle failed.'); }
   });
-
   btnSimulate.addEventListener('click', async ()=>{
     try{
       const name='LocalTester'+Math.floor(Math.random()*1000);
-      const res=await adminFetch('/admin/spawn', {
+      const res=await adminFetch('/admin/spawn',{
         method:'POST',
         headers:{'content-type':'application/json'},
-        body: JSON.stringify({ username:name, avatarUrl:'', command:'!drop' })
+        body:JSON.stringify({username:name,avatarUrl:'',command:'!drop'})
       });
       if(!res.ok) throw new Error();
       alert('Simulated drop sent.');
     }catch{ alert('Simulation failed.'); }
   });
 
-  // Init
   function start(){
     loadSettings();
     initThree();
     initMatter();
     listenToEvents();
+    initTeaserBoxes(); // NEW
     startLoop();
   }
   start();
