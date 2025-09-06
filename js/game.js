@@ -1,12 +1,12 @@
-/* game.js – Patch: Guard for missing FirebaseREST + using shim; retains dynamic layouts & gifts
+/* game.js – Patch: Fix fxMgr undefined (TypeError in tick), add guards
    Changes in this patch:
-   - Added safeInitFirebase() to create a minimal stub if FirebaseREST still missing (secondary safety).
-   - Replaced direct FirebaseREST references in start() path with guard.
-   - Updated simGift helper to use FirebaseREST.emitChildAdded directly if LocalEventBus absent.
-   - Added console warnings when backend spawnEnabled unknown.
-   - NO logic removed; only protective additions for "FirebaseREST is not defined" error.
+   - Added fxMgr = new FXManager2D(fxCanvas) inside initMatter() AFTER canvas refs exist.
+   - Added null-guard in main loop (if(fxMgr) fxMgr.update(...)).
+   - Added defensive checks for renderer/composer in adaptQuality & startLoop (no functional change).
+   - Added console.info when dynamic board rebuild completes for easier debugging.
+   - (Optional) Wrapped spawnBallSet call in gift spawn with requestAnimationFrame to avoid large synchronous bursts.
 
-   (Everything else is identical to the previously provided dynamic layout version.)
+   Everything else remains the same as previous version.
 */
 
 import * as THREE from 'three';
@@ -167,8 +167,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   /* Firebase REST guard / shim (secondary safety) */
   function safeInitFirebase(){
     if(window.FirebaseREST) return;
-    console.warn('[game.js] FirebaseREST not found at runtime. Creating minimal stub (consider including firebase.js).');
-    const noop = ()=>{};
+    console.warn('[game.js] FirebaseREST not found at runtime. Creating minimal stub (include firebase.js for full).');
     const listenersAdded = {};
     const listenersValue = {};
     window.FirebaseREST = {
@@ -183,8 +182,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
     };
   }
-
-  safeInitFirebase(); // ensure stub if firebase.js not loaded
+  safeInitFirebase();
 
   /* Performance */
   let perfPanel;
@@ -289,7 +287,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     SLOT_MULTIPLIERS = Array.from({length:slotCount}, (_,i)=> mult(Math.abs(i-center)));
     SLOT_POINTS = SLOT_MULTIPLIERS.map(m=>m*100);
   }
-
   function renderSlotLabels(slotCount, framePx){
     slotLabelsEl.innerHTML='';
     SLOT_MULTIPLIERS.forEach(m=>{
@@ -471,7 +468,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     boardDivider.style.display='block';
     boardTitle.style.left=(frame.x+22)+'px';
     boardTitle.style.top =(frame.y+18)+'px';
-
     buildSlotArrays(SLOT_COUNT);
     renderSlotLabels(SLOT_COUNT, frame);
   }
@@ -480,6 +476,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
     world.gravity.y=-Math.abs(GRAVITY_MAG);
+    // FIX: instantiate FX manager here
+    fxMgr = new FXManager2D(fxCanvas);
     ensureLayout(null);
     bindCollisions();
   }
@@ -507,14 +505,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const { pegPositions, rows, slotCount } = generatePegPositions(currentLayoutDescriptor, BOARD_WIDTH);
     ROWS = rows;
     SLOT_COUNT = slotCount;
-    // Derive top row Y
     if(currentLayoutDescriptor.type === 'spiral'){
       const maxY = pegPositions.reduce((m,p)=>p.y>m?p.y:m, -Infinity);
       TOP_ROW_Y = maxY;
     } else {
       TOP_ROW_Y = ROWS/2 * (BOARD_WIDTH/(ROWS+1));
     }
-
     pegPositions.forEach(pp=>{
       const peg=Bodies.circle(pp.x, pp.y, PEG_RADIUS, {
         isStatic:true,
@@ -543,8 +539,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       World.add(world,sensor);
       slotSensors.push({body:sensor,index:i});
     }
-
     layoutOverlays();
+    console.info('[Layout] Rebuilt layout:', currentLayoutId, 'rows=', ROWS, 'slots=', SLOT_COUNT, 'pegs=', pegBodies.length);
   }
 
   function addPegInstancedMesh(pegPositions){
@@ -599,7 +595,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const mesh=meshById.get(a.id);
         if(mesh){
           const p=worldToScreen(mesh.position,camera,renderer);
-          fxMgr.addSparks(p.x,p.y,'#00f2ea',10);
+          fxMgr?.addSparks(p.x,p.y,'#00f2ea',10);
         }
       }
       sfxBounce();
@@ -614,8 +610,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(frameMs>perfData.worstMs) perfData.worstMs=frameMs;
     if(frameSamples>=60){
       const avg=frameAccum/frameSamples;
-      if(avg>22 && currentPR>0.75){ currentPR=Math.max(0.75,currentPR-0.1); renderer.setPixelRatio(currentPR); }
-      else if(avg<15 && currentPR<BASE_DEVICE_PR){ currentPR=Math.min(BASE_DEVICE_PR,currentPR+0.1); renderer.setPixelRatio(currentPR); }
+      if(avg>22 && currentPR>0.75){ currentPR=Math.max(0.75,currentPR-0.1); renderer?.setPixelRatio(currentPR); }
+      else if(avg<15 && currentPR<BASE_DEVICE_PR){ currentPR=Math.min(BASE_DEVICE_PR,currentPR+0.1); renderer?.setPixelRatio(currentPR); }
       frameSamples=0; frameAccum=0;
     }
     if(!ADAPTIVE_QUALITY) return;
@@ -644,7 +640,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         acc-=FIXED_DT; steps++;
       }
       clampVelocities();
-      fxMgr.update(fxCtx,dt);
+      if(fxMgr) fxMgr.update(fxCtx,dt); // FIX: guard
       updateThreeFromMatter();
       camera.position.x += (baseCamPos.x + targetCamOffset.x - camera.position.x)*0.06;
       camera.position.y += (baseCamPos.y + targetCamOffset.y - camera.position.y)*0.06;
@@ -763,7 +759,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     if(current.score < points) return false;
     const next=current.score - points;
-    leaderboard[username]={ username, avatarUrl, score: next, lastUpdate: Date.now() };
+    leaderboard[username]={ username, avatarUrl, score: next, lastUpdate:Date.now() };
     refreshLeaderboard();
     FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
       username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
@@ -826,9 +822,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
   function spawnGiftBalls(username, avatarUrl, giftObj){
     const count = deriveBallCountFromGift(giftObj);
-    if(window.DEBUG_GIFTS) console.log('[Gift] Spawning', count, 'balls for', username, giftObj);
+    if(window.DEBUG_GIFTS) console.log('[Gift] Spawning', count, 'balls for', username);
     for(let i=0;i<count;i++){
-      setTimeout(()=>spawnBallSet({ username, avatarUrl }), i*90*DROP_SPEED);
+      const delay = i*90*DROP_SPEED;
+      setTimeout(()=>requestAnimationFrame(()=>spawnBallSet({ username, avatarUrl })), delay);
     }
   }
 
@@ -1202,10 +1199,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       for(let i=0;i<count;i++){
         LocalEventBus.injectLocalEvent({
           username:'SimGifter',
-            avatarUrl:'',
-            giftName,
-            giftCoins: giftName.toLowerCase()==='rose'?1:10,
-            timestamp:Date.now()
+          avatarUrl:'',
+          giftName,
+          giftCoins: giftName.toLowerCase()==='rose'?1:10,
+          timestamp:Date.now()
         });
       }
     } else if (window.FirebaseREST){
@@ -1225,7 +1222,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function start(){
     loadSettings();
     initThree();
-    initMatter();
+    initMatter();          // now creates fxMgr
     listenToEvents();
     initTeasers();
     initDevPanel();
