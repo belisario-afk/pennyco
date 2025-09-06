@@ -1,9 +1,8 @@
-/* game.js
-   Updates:
-   - Redemption focus mode (dims everything via body.redeem-focus)
-   - Crate & reward model moved visually "front" (depthTest off, high renderOrder) handled in pbrRewards & rewardModel
-   - Enter/exit focus around redemption animation
-   - (Drag/scale system retained)
+/* game.js (Command panel safeguard & UI reset)
+   Additions:
+     - ensureVisiblePanels(): clamps / restores off‑screen panels (esp. commands-panel)
+     - Reset UI button (btn-reset-ui) clears stored panel positions/scales and recenters
+     - Safety timer to clear stuck redeem-focus mode after 6s
 */
 
 import * as THREE from 'three';
@@ -100,6 +99,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const settingsPanel   = document.getElementById('settings-panel');
   const btnGear         = document.getElementById('btn-gear');
   const btnCloseSettings= document.getElementById('btn-close-settings');
+  const btnResetUI      = document.getElementById('btn-reset-ui');
 
   // Settings inputs
   const optDropSpeed    = document.getElementById('opt-drop-speed');
@@ -126,7 +126,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     settingsPanel?.setAttribute('aria-hidden','true');
   }
 
-  // Performance
+  // Perf
   let perfPanel;
   const perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
   const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
@@ -145,6 +145,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function enterRedemptionFocus(){
     document.body.classList.add('redeem-focus');
+    // safety auto-clear
+    setTimeout(()=>document.body.classList.remove('redeem-focus'), 6000);
   }
   function exitRedemptionFocus(){
     document.body.classList.remove('redeem-focus');
@@ -198,7 +200,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   function playRedemptionAnimation({evId,tier,username,avatarUrl}){
     return new Promise(async resolve=>{
       enterRedemptionFocus();
-
       const hud=document.createElement('div');
       hud.className=`redeem-user-card tier-${tier}`;
       hud.innerHTML=`<img class="redeem-ava" src="${avatarUrl||''}" alt=""><div class="redeem-name">@${username}</div><div class="redeem-tier-label">${REWARD_NAMES[tier]} • -${REWARD_COSTS[tier]||0}</div>`;
@@ -383,6 +384,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     fxCanvas.height=container.clientHeight;
     layoutOverlays();
     updateTeaserLayout();
+    ensureVisiblePanels(); // re-clamp after resize
   }
 
   function layoutOverlays(){
@@ -456,10 +458,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
     const mat=new THREE.MeshPhysicalMaterial({
-      color:0x86f7ff,metalness:0.35,roughness:0.35,
-      clearcoat:0.6,clearcoatRoughness:0.2,
+      color:0x86f7ff,metalness:0.25,roughness:0.55,
+      clearcoat:0.25,clearcoatRoughness:0.6,
       emissive:new THREE.Color(0x00ffff),
-      emissiveIntensity:0.23
+      emissiveIntensity:0.18
     });
     const inst=new THREE.InstancedMesh(geo,mat,pegPositions.length);
     const m=new THREE.Matrix4();
@@ -626,7 +628,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const sprite=buildNameSprite(username);
     scene.add(sprite);
     labelById.set(body.id,sprite);
-
     const applyTex=async()=>{
       try{
         let prom=avatarTextureCache.get(avatarUrl||'');
@@ -799,8 +800,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  function initCommandsPanelDrag(){ /* Already implemented in earlier version - no changes retained */ }
-
+  // ---------- PANEL DRAG/SCALE (existing logic trimmed to essentials) ----------
   function initDraggables(){
     const overlay=document.getElementById('overlay');
     const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
@@ -821,7 +821,40 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       applyScale(el,s);
       saveState(el);
     }, { passive:false });
+    ensureVisiblePanels();
   }
+
+  function ensureVisiblePanels(){
+    const overlay=document.getElementById('overlay');
+    const oRect=overlay.getBoundingClientRect();
+    document.querySelectorAll('[data-drag][data-scale]').forEach(panel=>{
+      const pRect=panel.getBoundingClientRect();
+      // translate extracted from dataset
+      let x=parseFloat(panel.dataset.x||'0');
+      let y=parseFloat(panel.dataset.y||'0');
+      let changed=false;
+      if(pRect.width > oRect.width) { x=8; changed=true; }
+      if(pRect.height> oRect.height){ y=8; changed=true; }
+      if(pRect.right < oRect.left + 40){ x=8; changed=true; }
+      if(pRect.bottom< oRect.top  + 40){ y=8; changed=true; }
+      if(pRect.left  > oRect.right - 40){ x = oRect.width - pRect.width - 16; changed=true; }
+      if(pRect.top   > oRect.bottom- 40){ y = oRect.height - pRect.height - 16; changed=true; }
+      if(changed){
+        panel.dataset.x = x;
+        panel.dataset.y = y;
+        // also clamp scale if too small
+        let s=parseFloat(panel.dataset.scale||'1');
+        if(s<0.3){ s=0.8; panel.dataset.scale=s; }
+        renderTransform(panel);
+        saveState(panel);
+      }
+    });
+    // guarantee commands panel visible
+    if(commandsPanel && commandsPanel.style.display==='none'){
+      commandsPanel.style.display='block';
+    }
+  }
+
   function preparePanel(panel, overlay){
     panel.style.position='absolute';
     if(!panel.querySelector('.resize-handle')){
@@ -843,10 +876,15 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
   function computeDefaultPosition(panel, overlay){
     const oRect=overlay.getBoundingClientRect();
-    const pRect=panel.getBoundingClientRect();
-    const left=Math.max(8, Math.min(oRect.width - pRect.width - 8, pRect.left - oRect.left));
-    const top =Math.max(8, Math.min(oRect.height - pRect.height - 8, pRect.top  - oRect.top ));
-    return { left, top };
+    const defaultOffsets = {
+      'commands-panel': { x:oRect.width - 380, y:120 },
+      'leaderboard': { x:14, y:120 },
+      'reward-teasers': { x:oRect.width - 380, y:14 },
+      'settings-panel': { x:oRect.width - 400, y:80 }
+    };
+    const d = defaultOffsets[panel.id];
+    if(d) return { left:d.x, top:d.y };
+    return { left:Math.min(40,oRect.width-200), top:Math.min(80,oRect.height-200) };
   }
   function attachDrag(panel, overlay){
     const dragHandles = panel.querySelectorAll('.drag-bar, .cmd-title, .drag-handle');
@@ -892,8 +930,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(!handle) return;
     let resizing=false,startX=0,startScale=1;
     handle.addEventListener('pointerdown',e=>{
-      e.stopPropagation();
-      e.preventDefault();
+      e.stopPropagation(); e.preventDefault();
       resizing=true;
       startX=e.clientX;
       startScale=parseFloat(panel.dataset.scale||'1');
@@ -911,6 +948,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         resizing=false;
         panel.classList.remove('dragging');
         saveState(panel);
+        ensureVisiblePanels();
       }
     });
   }
@@ -939,8 +977,20 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
   function clamp(v,a,b){ return v<a?a:v>b?b:v; }
 
+  // UI / Audio
   btnGear?.addEventListener('click', showSettings);
   btnCloseSettings?.addEventListener('click', hideSettings);
+  btnResetUI?.addEventListener('click', ()=>{
+    // clear all stored panel pos / scale keys
+    Object.keys(localStorage).filter(k=>k.startsWith('plk_') && (k.endsWith('_pos')||k.endsWith('_scale'))).forEach(k=>localStorage.removeItem(k));
+    document.querySelectorAll('[data-drag][data-scale]').forEach(p=>{
+      p.dataset.x=''; p.dataset.y=''; p.dataset.scale='1';
+      p.style.transform='';
+    });
+    ensureVisiblePanels();
+    alert('UI panel positions reset.');
+  });
+
   let audioBound=false;
   function bindAudioUnlockOnce(){
     if(audioBound) return;
@@ -955,6 +1005,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
   bindAudioUnlockOnce();
 
+  // Settings events
   optDropSpeed.addEventListener('input', applySettings);
   optGravity.addEventListener('input', applySettings);
   optMultiDrop.addEventListener('input', applySettings);

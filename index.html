@@ -159,31 +159,37 @@
             </label>
           </div>
 
+          <div class="settings-group">
+            <h4>UI Layout</h4>
+            <button id="btn-reset-ui" class="btn alt" type="button">Reset UI Panels</button>
+            <small style="opacity:.7;line-height:1.3;">If a panel (like COMMANDS) disappears or moves off screen, click this to restore defaults.</small>
+          </div>
+
           <hr class="divider" aria-hidden="true">
 
-            <div class="settings-group">
-              <h4>Admin</h4>
-              <label>Backend URL (Render)
-                <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url">
-              </label>
-              <label class="visually-hidden">Admin Username
-                <input id="admin-username" name="username" type="text" value="admin" autocomplete="username" tabindex="-1">
-              </label>
-              <label>Admin Token / DB Auth
-                <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
-              </label>
-              <div class="admin-actions">
-                <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
-                <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
-              </div>
-              <div class="admin-actions">
-                <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
-                <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
-              </div>
-              <div class="admin-status">
-                <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
-              </div>
+          <div class="settings-group">
+            <h4>Admin</h4>
+            <label>Backend URL (Render)
+              <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url">
+            </label>
+            <label class="visually-hidden">Admin Username
+              <input id="admin-username" name="username" type="text" value="admin" autocomplete="username" tabindex="-1">
+            </label>
+            <label>Admin Token / DB Auth
+              <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
+            </label>
+            <div class="admin-actions">
+              <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
+              <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
             </div>
+            <div class="admin-actions">
+              <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
+              <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
+            </div>
+            <div class="admin-status">
+              <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -192,7 +198,7 @@
         <div class="dev-row">
           <button data-act="drop">Drop</button>
           <button data-act="redeem-t1">T1</button>
-          <button data-act="redeem-t2">T2</button>
+            <button data-act="redeem-t2">T2</button>
           <button data-act="redeem-t3">T3</button>
           <label class="dev-free"><input id="dev-free-toggle" type="checkbox"> free</label>
         </div>
