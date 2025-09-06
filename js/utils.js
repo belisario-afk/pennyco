@@ -87,7 +87,7 @@ export function buildNameSprite(username){
   canvas.width=w; canvas.height=h;
   ctx.fillStyle='rgba(0,0,0,0.35)';
   roundRect(ctx,0,0,w,h,12); ctx.fill();
-  ctx.shadowColor='rgba(0,242,234,0.9)'; ctx.shadowBlur=18;
+  ctx.shadowColor='rgba(0,242,234,0.7)'; ctx.shadowBlur=14;
   ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(text, w/2, h/2+4);
   const tex=new THREE.CanvasTexture(canvas);

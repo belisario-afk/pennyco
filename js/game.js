@@ -1,10 +1,9 @@
 /* game.js
-   Added:
-     - Universal drag & scale manager for panels with [data-drag][data-scale]
-     - Persistent per-panel position & scale (localStorage)
-     - Settings panel open/close fixed (class .open)
-     - Resize handles & Alt+Scroll scaling support
-     - Gift card click test triggers dev drop
+   Updates:
+   - Redemption focus mode (dims everything via body.redeem-focus)
+   - Crate & reward model moved visually "front" (depthTest off, high renderOrder) handled in pbrRewards & rewardModel
+   - Enter/exit focus around redemption animation
+   - (Drag/scale system retained)
 */
 
 import * as THREE from 'three';
@@ -27,7 +26,6 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 const { Engine, World, Bodies, Events, Body } = Matter;
 
 (() => {
-  /********** Config **********/
   const REWARD_COSTS = { t1:1000, t2:5000, t3:10000 };
   const REWARD_NAMES = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
   const REDEEM_PREFIX = 'redeem:';
@@ -83,7 +81,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  /********** DOM refs **********/
+  // DOM
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -103,7 +101,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnGear         = document.getElementById('btn-gear');
   const btnCloseSettings= document.getElementById('btn-close-settings');
 
-  // settings inputs
+  // Settings inputs
   const optDropSpeed    = document.getElementById('opt-drop-speed');
   const optGravity      = document.getElementById('opt-gravity');
   const optMultiDrop    = document.getElementById('opt-multidrop');
@@ -119,36 +117,38 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
   const btnSimulate     = document.getElementById('btn-simulate');
 
-  /********** Settings panel show/hide (fixed) **********/
   function showSettings(){
-    if(!settingsPanel) return;
-    settingsPanel.classList.add('open');
-    settingsPanel.setAttribute('aria-hidden','false');
+    settingsPanel?.classList.add('open');
+    settingsPanel?.setAttribute('aria-hidden','false');
   }
   function hideSettings(){
-    if(!settingsPanel) return;
-    settingsPanel.classList.remove('open');
-    settingsPanel.setAttribute('aria-hidden','true');
+    settingsPanel?.classList.remove('open');
+    settingsPanel?.setAttribute('aria-hidden','true');
   }
 
-  /********** Performance **********/
+  // Performance
   let perfPanel;
   const perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
   const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
   let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
   let frameSamples=0, frameAccum=0;
 
-  /********** Shared materials **********/
   const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
   let sharedBallBaseMaterial = null;
   const avatarTextureCache = new Map();
 
-  /********** Redemption queue **********/
   const redeemQueue = [];
   let redeemActive = false;
   let activeReward3D = null;
   let activeRewardDisposeFn = null;
   let activeRedemptionCrate = null;
+
+  function enterRedemptionFocus(){
+    document.body.classList.add('redeem-focus');
+  }
+  function exitRedemptionFocus(){
+    document.body.classList.remove('redeem-focus');
+  }
 
   function enqueueRedemption(evId,tier,username,avatarUrl){
     redeemQueue.push({evId,tier,username,avatarUrl});
@@ -159,7 +159,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const item=redeemQueue.shift();
     if(!item) return;
     redeemActive=true;
-    playRedemptionAnimation(item).then(()=>{redeemActive=false;runNextRedemption();});
+    playRedemptionAnimation(item).then(()=>{ redeemActive=false; runNextRedemption(); });
   }
   async function prepare3DModel(){
     try{ await ensureRewardModelLoaded(); return true; }catch{ return false; }
@@ -172,13 +172,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     try{
       const model=createRewardModelInstance(tier==='t3'?22:tier==='t2'?19:16);
-      model.position.set(0,WORLD_HEIGHT*0.25,15);
-      model.renderOrder=999;
+      model.position.set(0,WORLD_HEIGHT*0.27,15);
       scene.add(model);
       activeReward3D=model;
       activeRewardDisposeFn=animateRewardModel(model, gsap);
       model.scale.multiplyScalar(0.01);
-      gsap.to(model.scale,{x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,duration:.55,ease:'back.out(1.7)'});
+      gsap.to(model.scale,{x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,duration:.5,ease:'back.out(1.6)'});
     }catch{}
   }
   function detachReward3D(){
@@ -187,8 +186,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         x:activeReward3D.scale.x*0.01,
         y:activeReward3D.scale.y*0.01,
         z:activeReward3D.scale.z*0.01,
-        duration:.35,
-        ease:'power2.in',
+        duration:.3,ease:'power2.in',
         onComplete:()=>{
           if(activeReward3D) scene.remove(activeReward3D);
           if(activeRewardDisposeFn) activeRewardDisposeFn();
@@ -199,31 +197,36 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
   function playRedemptionAnimation({evId,tier,username,avatarUrl}){
     return new Promise(async resolve=>{
+      enterRedemptionFocus();
+
       const hud=document.createElement('div');
       hud.className=`redeem-user-card tier-${tier}`;
       hud.innerHTML=`<img class="redeem-ava" src="${avatarUrl||''}" alt=""><div class="redeem-name">@${username}</div><div class="redeem-tier-label">${REWARD_NAMES[tier]} • -${REWARD_COSTS[tier]||0}</div>`;
       redeemLayer.appendChild(hud);
-      gsap.to(hud,{opacity:1,y:0,scale:1,duration:.55,ease:'back.out(1.6)'});
-      activeRedemptionCrate=createRedemptionCrate(tier);
-      activeRedemptionCrate.position.set(0,WORLD_HEIGHT*0.1,10);
+      gsap.to(hud,{opacity:1,y:0,scale:1,duration:.45,ease:'back.out(1.5)'});
+
+      activeRedemptionCrate = createRedemptionCrate(tier);
+      activeRedemptionCrate.position.set(0,WORLD_HEIGHT*0.05,12);
       scene.add(activeRedemptionCrate);
       animateCrateEntrance(activeRedemptionCrate, gsap);
-      const modelLoaded=await prepare3DModel().catch(()=>false);
+
+      const modelLoaded = await prepare3DModel().catch(()=>false);
       setTimeout(async ()=>{
         await openCrate(activeRedemptionCrate, gsap);
         if(modelLoaded) attachReward3D(tier);
-      },850);
+      }, 700);
+
       setTimeout(()=>{
-        gsap.to(hud,{opacity:0,y:24,scale:0.85,duration:.45,ease:'power1.in',onComplete:()=>redeemLayer.removeChild(hud)});
+        gsap.to(hud,{opacity:0,y:24,scale:0.85,duration:.35,ease:'power1.in',onComplete:()=>redeemLayer.removeChild(hud)});
         detachReward3D();
         disposeRedemptionCrate(activeRedemptionCrate, gsap);
         activeRedemptionCrate=null;
+        exitRedemptionFocus();
         resolve();
-      },4200);
+      }, 3600);
     });
   }
 
-  /********** Slots **********/
   function buildSlots(slotCount){
     const center=Math.floor((slotCount-1)/2);
     const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
@@ -244,7 +247,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
   }
 
-  /********** Backend helpers **********/
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -256,7 +258,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
   }
 
-  /********** Settings load/save **********/
   devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
   devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
@@ -273,7 +274,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const tok=localStorage.getItem('adminToken')||''; if(tok) adminTokenInput.value=tok;
     applySettings();
   }
-
   function applySettings(){
     DROP_SPEED=Number(optDropSpeed.value);
     GRAVITY_MAG=Number(optGravity.value);
@@ -292,20 +292,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     setTeaserScale(CRATE_SCALE);
     if(bloomPass){
       bloomPass.enabled=NEON;
-      bloomPass.strength=NEON?0.65:0;
+      bloomPass.strength=NEON?0.6:0;
     }
   }
 
-  /********** Three.js setup **********/
   let pegsInstanced;
   let baseCamPos=new THREE.Vector3(0,0,100);
   let targetCamOffset=new THREE.Vector3();
-
   function initThree(){
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
     renderer.toneMapping=THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure=1.25;
+    renderer.toneMappingExposure=1.22;
     renderer.setPixelRatio(currentPR);
     renderer.setSize(container.clientWidth,container.clientHeight);
     renderer.setClearColor(0x000000,0);
@@ -316,8 +314,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     camera=new THREE.OrthographicCamera(-WORLD_WIDTH/2,WORLD_WIDTH/2,WORLD_HEIGHT/2,-WORLD_HEIGHT/2,0.1,300);
     camera.position.copy(baseCamPos);
 
-    ambient=new THREE.AmbientLight(0xffffff,1.05);
-    dirLight=new THREE.DirectionalLight(0xffffff,1.15);
+    ambient=new THREE.AmbientLight(0xffffff,1.0);
+    dirLight=new THREE.DirectionalLight(0xffffff,1.05);
     dirLight.position.set(-18,30,60);
     scene.add(ambient,dirLight);
 
@@ -325,7 +323,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     composer.addPass(new RenderPass(scene,camera));
     smaaPass=new SMAAPass(renderer.domElement.width,renderer.domElement.height);
     composer.addPass(smaaPass);
-    bloomPass=new UnrealBloomPass(new THREE.Vector2(renderer.domElement.width,renderer.domElement.height),0.65,0.55,0.25);
+    bloomPass=new UnrealBloomPass(new THREE.Vector2(renderer.domElement.width,renderer.domElement.height),0.6,0.5,0.25);
     composer.addPass(bloomPass);
 
     const ro=new ResizeObserver(onResize); ro.observe(container);
@@ -345,11 +343,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderer.domElement.addEventListener('pointermove',e=>{
       const xNorm=(e.clientX/rectTarget.w)*2 - 1;
       const yNorm=(e.clientY/rectTarget.h)*2 - 1;
-      targetCamOffset.x = xNorm * 3;
-      targetCamOffset.y = yNorm * 2;
+      targetCamOffset.x = xNorm * 2.5;
+      targetCamOffset.y = yNorm * 1.8;
     });
 
-    // Raycast for teaser crates
     const raycaster=new THREE.Raycaster();
     const pt=new THREE.Vector2();
     renderer.domElement.addEventListener('pointerdown',e=>{
@@ -371,7 +368,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     PEG_SPACING=BOARD_WIDTH/(ROWS+1);
     TRAY_HEIGHT=BOARD_HEIGHT*TRAY_RATIO;
   }
-
   function onResize(){
     renderer.setSize(container.clientWidth,container.clientHeight);
     composer.setSize(container.clientWidth,container.clientHeight);
@@ -411,7 +407,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderSlotLabels(slotCount, frame);
   }
 
-  /********** Matter / physics **********/
   function initMatter(){
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
@@ -420,7 +415,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     bindCollisions();
     fxMgr=new FXManager2D(fxCanvas);
   }
-
   function buildBoard(){
     const left=Bodies.rectangle(-BOARD_WIDTH/2 - WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
     const right=Bodies.rectangle( BOARD_WIDTH/2 + WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
@@ -454,7 +448,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       slotSensors.push({body:sensor,index:i});
     }
   }
-
   function addPegInstancedMesh(pegPositions){
     if(pegsInstanced){
       scene.remove(pegsInstanced);
@@ -466,7 +459,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       color:0x86f7ff,metalness:0.35,roughness:0.35,
       clearcoat:0.6,clearcoatRoughness:0.2,
       emissive:new THREE.Color(0x00ffff),
-      emissiveIntensity:0.25
+      emissiveIntensity:0.23
     });
     const inst=new THREE.InstancedMesh(geo,mat,pegPositions.length);
     const m=new THREE.Matrix4();
@@ -480,7 +473,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     pegsInstanced=inst;
     scene.add(inst);
   }
-
   function bindCollisions(){
     Events.on(engine,'collisionStart', ev=>{
       for(const {bodyA,bodyB} of ev.pairs){
@@ -489,7 +481,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
     });
   }
-
   function handlePair(a,b){
     if(!a||!b) return;
     const slot=slotSensors.find(s=>s.body.id===b.id);
@@ -510,7 +501,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const mesh=meshById.get(a.id);
         if(mesh){
           const p2=worldToScreen(mesh.position,camera,renderer);
-          fxMgr.addSparks(p2.x,p2.y,'#00f2ea',12);
+          fxMgr.addSparks(p2.x,p2.y,'#00f2ea',10);
         }
       }
       sfxBounce();
@@ -518,7 +509,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
-  /********** Loop / performance **********/
   function adaptQuality(frameMs){
     frameAccum+=frameMs;
     frameSamples++;
@@ -542,8 +532,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(avg>30) target=0; else if(avg>23) target=1;
     if(target!==perfData.qualityTier){
       perfData.qualityTier=target;
-      if(target===2){ bloomPass.enabled=NEON; bloomPass.strength=0.65; smaaPass.enabled=true; }
-      else if(target===1){ bloomPass.enabled=NEON; bloomPass.strength=0.4; smaaPass.enabled=true; }
+      if(target===2){ bloomPass.enabled=NEON; bloomPass.strength=0.6; smaaPass.enabled=true; }
+      else if(target===1){ bloomPass.enabled=NEON; bloomPass.strength=0.38; smaaPass.enabled=true; }
       else { bloomPass.enabled=false; bloomPass.strength=0; smaaPass.enabled=false; }
     }
     if(perfPanel && perfData.frames%30===0){
@@ -557,8 +547,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     function tick(now){
       const dt=Math.min(250,now-last); last=now; acc+=dt;
       let steps=0;
-      const maxSteps=maxStepsForFrame(dt);
-      while(acc>=FIXED_DT && steps<maxSteps){
+      while(acc>=FIXED_DT && steps<maxStepsForFrame(dt)){
         Engine.update(engine,FIXED_DT);
         acc-=FIXED_DT; steps++;
       }
@@ -566,14 +555,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       fxMgr.update(fxCtx,dt);
       updateThreeFromMatter();
 
-      camera.position.x += (baseCamPos.x + targetCamOffset.x - camera.position.x)*0.06;
-      camera.position.y += (baseCamPos.y + targetCamOffset.y - camera.position.y)*0.06;
+      camera.position.x += (0 + targetCamOffset.x - camera.position.x)*0.06;
+      camera.position.y += (0 + targetCamOffset.y - camera.position.y)*0.06;
 
       if(NEON){
         vibranceTime += dt*0.001;
-        const pulse = 1 + Math.sin(vibranceTime*2.2)*0.15*VIBRANCE_PULSE;
-        bloomPass.strength = (perfData.qualityTier===0?0.35:0.55)*pulse + (NEON?0.1:0);
-        renderer.toneMappingExposure = 1.18 * (1 + 0.08*VIBRANCE_PULSE*Math.sin(vibranceTime*1.5+1));
+        const pulse = 1 + Math.sin(vibranceTime*2.1)*0.14*VIBRANCE_PULSE;
+        bloomPass.strength = (perfData.qualityTier===0?0.32:0.5)*pulse + (NEON?0.08:0);
+        renderer.toneMappingExposure = 1.15 * (1 + 0.07*VIBRANCE_PULSE*Math.sin(vibranceTime*1.4+1));
       }
 
       const t0=performance.now();
@@ -595,7 +584,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       Body.setVelocity(b,{x,y});
     }
   }
-
   function updateThreeFromMatter(){
     dynamicBodies.forEach(body=>{
       const mesh=meshById.get(body.id);
@@ -608,7 +596,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /********** Spawning **********/
   function spawnBallSet({username,avatarUrl}){
     const multi=Math.max(1,Math.min(5,Number(optMultiDrop.value||1)));
     for(let i=0;i<multi;i++) spawnSingle({username,avatarUrl});
@@ -628,8 +615,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       sharedBallBaseMaterial=new THREE.MeshPhysicalMaterial({
         color:0xffffff,metalness:0.25,roughness:0.5,
         clearcoat:0.7,clearcoatRoughness:0.25,
-        emissive:NEON?new THREE.Color(0x00c6ff):new THREE.Color(0x000000),
-        emissiveIntensity:NEON?0.05:0
+        emissive:NEON?new THREE.Color(0x00b8e8):new THREE.Color(0x000000),
+        emissiveIntensity:NEON?0.04:0
       });
     }
     const mat=sharedBallBaseMaterial.clone();
@@ -655,7 +642,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if('requestIdleCallback' in window) requestIdleCallback(applyTex,{timeout:600}); else setTimeout(applyTex,0);
     sfxDrop();
   }
-
   function tryRemoveBall(body){
     try{
       const mesh=meshById.get(body.id);
@@ -677,7 +663,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{}
   }
 
-  /********** Leaderboard & points **********/
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=(current.score||0)+points;
@@ -721,6 +706,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     for(const k of Object.keys(leaderboard)) delete leaderboard[k];
     leaderboardList.innerHTML='';
   }
+
   function handleRedeemEvent(eventId, username, avatarUrl, tier){
     if(processedRedemptions.has(eventId)) return;
     processedRedemptions.add(eventId);
@@ -733,7 +719,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
-  /********** Firebase events **********/
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
@@ -756,14 +741,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if(data && typeof data==='object'){
         for(const k of Object.keys(data)){
           const entry=data[k];
-            if(entry?.username){
-              leaderboard[entry.username]={
-                username:entry.username,
-                avatarUrl:entry.avatarUrl||'',
-                score:entry.score||0,
-                lastUpdate:entry.lastUpdate||0
-              };
-            }
+          if(entry?.username){
+            leaderboard[entry.username]={
+              username:entry.username,
+              avatarUrl: entry.avatarUrl||'',
+              score: entry.score||0,
+              lastUpdate: entry.lastUpdate||0
+            };
+          }
         }
         refreshLeaderboard();
       } else clearLeaderboardLocal();
@@ -774,13 +759,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       spawnStatusEl.style.color=enabled?'var(--good)':'var(--danger)';
     });
   }
-
   function sanitizeUsername(u){
     const s=String(u||'').trim();
     return s ? s.slice(0,24) : 'viewer';
   }
 
-  /********** Teasers & Dev **********/
   function initTeasers(){
     initPBRTeasers({
       scene,
@@ -816,19 +799,16 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /********** Drag + Scale Manager **********/
+  function initCommandsPanelDrag(){ /* Already implemented in earlier version - no changes retained */ }
+
   function initDraggables(){
     const overlay=document.getElementById('overlay');
     const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
-
     panels.forEach(panel=>{
-      // Make absolute & restore saved state
       preparePanel(panel, overlay);
       attachDrag(panel, overlay);
       attachScale(panel);
     });
-
-    // Global helpers (Alt+Wheel to scale hovered panel)
     window.addEventListener('wheel', e=>{
       if(!e.altKey) return;
       const el=e.target.closest('[data-drag][data-scale]');
@@ -842,34 +822,25 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       saveState(el);
     }, { passive:false });
   }
-
   function preparePanel(panel, overlay){
     panel.style.position='absolute';
-    panel.style.willChange='transform';
-    panel.classList.add('drag-enabled');
-
-    // Add resize handle if not present
     if(!panel.querySelector('.resize-handle')){
       const h=document.createElement('div');
       h.className='resize-handle';
       h.textContent='↘';
       panel.appendChild(h);
     }
-
     const posKey=storageKey(panel,'pos');
     const scaleKey=storageKey(panel,'scale');
     const posJSON=localStorage.getItem(posKey);
     const scaleStr=localStorage.getItem(scaleKey);
-
     let { left, top } = posJSON? JSON.parse(posJSON): computeDefaultPosition(panel, overlay);
     let scale = scaleStr? parseFloat(scaleStr): 1;
-
     panel.dataset.x = left;
     panel.dataset.y = top;
     panel.dataset.scale = scale;
     renderTransform(panel);
   }
-
   function computeDefaultPosition(panel, overlay){
     const oRect=overlay.getBoundingClientRect();
     const pRect=panel.getBoundingClientRect();
@@ -877,12 +848,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const top =Math.max(8, Math.min(oRect.height - pRect.height - 8, pRect.top  - oRect.top ));
     return { left, top };
   }
-
   function attachDrag(panel, overlay){
-    const dragHandles = panel.querySelectorAll('.drag-bar, .cmd-title, .drag-handle, .gear, .logo');
+    const dragHandles = panel.querySelectorAll('.drag-bar, .cmd-title, .drag-handle');
     const handleList = dragHandles.length? dragHandles : [panel];
     let dragging=false,startX=0,startY=0,startLeft=0,startTop=0;
-
     handleList.forEach(h=>{
       h.style.cursor='grab';
       h.addEventListener('pointerdown',e=>{
@@ -896,7 +865,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         e.preventDefault();
       });
     });
-
     window.addEventListener('pointermove',e=>{
       if(!dragging) return;
       const oRect=overlay.getBoundingClientRect();
@@ -911,7 +879,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       panel.dataset.y = ny;
       renderTransform(panel);
     });
-
     window.addEventListener('pointerup',()=>{
       if(dragging){
         dragging=false;
@@ -920,12 +887,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
     });
   }
-
   function attachScale(panel){
     const handle=panel.querySelector('.resize-handle');
     if(!handle) return;
     let resizing=false,startX=0,startScale=1;
-
     handle.addEventListener('pointerdown',e=>{
       e.stopPropagation();
       e.preventDefault();
@@ -934,7 +899,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       startScale=parseFloat(panel.dataset.scale||'1');
       panel.classList.add('dragging');
     });
-
     window.addEventListener('pointermove',e=>{
       if(!resizing) return;
       const dx=e.clientX-startX;
@@ -942,7 +906,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       newScale=clamp(newScale,0.4,3.5);
       applyScale(panel,newScale);
     });
-
     window.addEventListener('pointerup',()=>{
       if(resizing){
         resizing=false;
@@ -951,19 +914,16 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
     });
   }
-
   function applyScale(panel,s){
     panel.dataset.scale = s;
     renderTransform(panel);
   }
-
   function renderTransform(panel){
     const x=parseFloat(panel.dataset.x||'0');
     const y=parseFloat(panel.dataset.y||'0');
     const s=parseFloat(panel.dataset.scale||'1');
     panel.style.transform=`translate(${x}px,${y}px) scale(${s})`;
   }
-
   function saveState(panel){
     const posKey=storageKey(panel,'pos');
     const scaleKey=storageKey(panel,'scale');
@@ -973,18 +933,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     localStorage.setItem(posKey,JSON.stringify({left:x,top:y}));
     localStorage.setItem(scaleKey,String(s));
   }
-
   function storageKey(panel,suffix){
     const id=panel.id || panel.dataset.panel || 'panel';
     return `plk_${id}_${suffix}`;
   }
-
   function clamp(v,a,b){ return v<a?a:v>b?b:v; }
 
-  /********** UI & audio **********/
   btnGear?.addEventListener('click', showSettings);
   btnCloseSettings?.addEventListener('click', hideSettings);
-
   let audioBound=false;
   function bindAudioUnlockOnce(){
     if(audioBound) return;
@@ -1017,7 +973,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert('Saved admin settings.');
     }catch{ alert('Save failed.'); }
   });
-
   btnReset.addEventListener('click', async ()=>{
     const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if(!token) return alert('Provide token.');
@@ -1028,7 +983,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert('Leaderboard reset.');
     }catch{ alert('Reset failed.'); }
   });
-
   btnToggleSpawn.addEventListener('click', async ()=>{
     const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
     if(!token) return alert('Provide token.');
@@ -1039,7 +993,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       alert(`Spawn set to ${!curr}`);
     }catch{ alert('Toggle failed.'); }
   });
-
   btnSimulate.addEventListener('click', async ()=>{
     try{
       const name='LocalTester'+Math.floor(Math.random()*1000);
@@ -1053,7 +1006,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{ alert('Simulation failed.'); }
   });
 
-  /********** Start **********/
   function start(){
     loadSettings();
     initThree();

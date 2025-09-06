@@ -1,4 +1,8 @@
-// pbrRewards.js - teaser & redemption crates (brightness toned down + scalable)
+// pbrRewards.js
+// Adjusted: Dramatically reduced brightness (emissive), toned idle pulses,
+// added bringCrateToFront() for redemption (depthTest off + high renderOrder).
+// All teaser crates now less bright. Easy scale via setTeaserScale exported in prior version.
+
 import * as THREE from 'three';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 
@@ -13,14 +17,12 @@ const crateByTier = new Map();
 let sceneRef, cameraRef, gsapRef;
 
 const TIER_ORDER = ['t3','t2','t1'];
-
-// Default (can be changed at runtime)
 let teaserScale = 4.4;
 
 const tierParams = {
-  t1: { color: 0x995b24, emissive: 0x1d1006, metalness:0.85, roughness:0.5,  accent:0xffb271 },
-  t2: { color: 0xcad2da, emissive: 0x242c35, metalness:0.9,  roughness:0.32, accent:0xf2f5f8 },
-  t3: { color: 0xf7d25c, emissive: 0x291c00, metalness:0.95, roughness:0.26, accent:0xfff3c4 }
+  t1: { color: 0x8d551f, emissive: 0x231305, metalness:0.82, roughness:0.55, accent:0xe9a461 },
+  t2: { color: 0xbcc4cc, emissive: 0x262e36, metalness:0.88, roughness:0.36, accent:0xe5e9ee },
+  t3: { color: 0xeac454, emissive: 0x241700, metalness:0.92, roughness:0.32, accent:0xf3e6b4 }
 };
 
 export function setTeaserScale(s){
@@ -54,7 +56,7 @@ function createAccentEdges(size=1.02){
   return new THREE.EdgesGeometry(new THREE.BoxGeometry(size, size*0.85, size));
 }
 function createCornerPosts(){
-  return new THREE.CylinderGeometry(0.07,0.07,0.9,10,1);
+  return new THREE.CylinderGeometry(0.065,0.065,0.9,10,1);
 }
 
 function makeLabelCanvas(tier){
@@ -62,30 +64,24 @@ function makeLabelCanvas(tier){
   canvas.width=512; canvas.height=256;
   const ctx=canvas.getContext('2d');
   ctx.clearRect(0,0,512,256);
-  ctx.font='900 120px Inter,Arial,sans-serif';
+  ctx.font='900 118px Inter,Arial,sans-serif';
   ctx.textAlign='center';
   ctx.textBaseline='middle';
-  const grad=ctx.createRadialGradient(256,128,10,256,128,240);
-  grad.addColorStop(0,'rgba(255,255,255,0.12)');
+  const grad=ctx.createRadialGradient(256,128,10,256,128,230);
+  grad.addColorStop(0,'rgba(255,255,255,0.08)');
   grad.addColorStop(1,'rgba(255,255,255,0)');
   ctx.fillStyle=grad;
   ctx.fillRect(0,0,512,256);
-  ctx.lineWidth=6;
-  ctx.strokeStyle='rgba(0,0,0,0.55)';
+  ctx.lineWidth=5;
+  ctx.strokeStyle='rgba(0,0,0,0.45)';
   ctx.strokeText(tier.toUpperCase(),256,128);
-  const fill=ctx.createLinearGradient(60,0,452,0);
+  const fill=ctx.createLinearGradient(80,0,432,0);
   if(tier==='t3'){
-    fill.addColorStop(0,'#fff4c2');
-    fill.addColorStop(0.5,'#f7d25c');
-    fill.addColorStop(1,'#ffb23d');
-  } else if(tier==='t2'){
-    fill.addColorStop(0,'#ffffff');
-    fill.addColorStop(0.5,'#d6e0e9');
-    fill.addColorStop(1,'#97a2ae');
-  } else {
-    fill.addColorStop(0,'#ffd5aa');
-    fill.addColorStop(0.5,'#c97a32');
-    fill.addColorStop(1,'#5a340f');
+    fill.addColorStop(0,'#fff3bf'); fill.addColorStop(0.5,'#eac454'); fill.addColorStop(1,'#e89f3a');
+  }else if(tier==='t2'){
+    fill.addColorStop(0,'#ffffff'); fill.addColorStop(0.5,'#d4dde4'); fill.addColorStop(1,'#8e99a6');
+  }else{
+    fill.addColorStop(0,'#ffcfa4'); fill.addColorStop(0.5,'#b96e29'); fill.addColorStop(1,'#4a2b11');
   }
   ctx.fillStyle=fill;
   ctx.fillText(tier.toUpperCase(),256,128);
@@ -95,11 +91,11 @@ function createLabelMesh(tier){
   const canvas=makeLabelCanvas(tier);
   const tex=new THREE.CanvasTexture(canvas);
   tex.anisotropy=4;
-  const mat=new THREE.MeshBasicMaterial({ map:tex, transparent:true, depthWrite:false });
-  const geo=new THREE.PlaneGeometry(2.2,2.2*canvas.height/canvas.width);
+  const mat=new THREE.MeshBasicMaterial({ map:tex, transparent:true, depthWrite:false, opacity:0.85 });
+  const geo=new THREE.PlaneGeometry(2.1,2.1*canvas.height/canvas.width);
   const mesh=new THREE.Mesh(geo,mat);
-  mesh.position.set(0,1.25,0);
-  mesh.renderOrder=1000;
+  mesh.position.set(0,1.2,0);
+  mesh.renderOrder=40;
   return mesh;
 }
 
@@ -107,12 +103,12 @@ function createCrateMesh(tier, scale=teaserScale){
   const p=tierParams[tier] || tierParams.t1;
   const { body, lid }=makeCrateGeometry();
 
-  // Dimmer emissive intensities
+  // Lowered emissive intensities for brightness reduction
   const bodyMat=new THREE.MeshStandardMaterial({
     color:p.color, metalness:p.metalness, roughness:p.roughness,
-    emissive:p.emissive, emissiveIntensity:0.16
+    emissive:p.emissive, emissiveIntensity:0.07
   });
-  const lidMat=bodyMat.clone(); lidMat.emissiveIntensity=0.22;
+  const lidMat=bodyMat.clone(); lidMat.emissiveIntensity=0.09;
 
   const bodyMesh=new THREE.Mesh(body, bodyMat);
   bodyMesh.name=`crateBody_${tier}`;
@@ -121,13 +117,13 @@ function createCrateMesh(tier, scale=teaserScale){
   lidMesh.name=`crateLid_${tier}`;
 
   const edgesGeo=createAccentEdges();
-  const edgeMat=new THREE.LineBasicMaterial({ color:p.accent, transparent:true, opacity:0.4 });
+  const edgeMat=new THREE.LineBasicMaterial({ color:p.accent, transparent:true, opacity:0.25 });
   const edges=new THREE.LineSegments(edgesGeo,edgeMat);
 
   const postsGeo=createCornerPosts();
   const postMat=new THREE.MeshStandardMaterial({
-    color:p.accent, metalness:0.95, roughness:0.35,
-    emissive:p.accent, emissiveIntensity:0.18
+    color:p.accent, metalness:0.85, roughness:0.45,
+    emissive:p.accent, emissiveIntensity:0.05
   });
   const postPositions=[[0.48,0,0.48],[-0.48,0,0.48],[0.48,0,-0.48],[-0.48,0,-0.48]];
   const postGroup=new THREE.Group();
@@ -137,10 +133,10 @@ function createCrateMesh(tier, scale=teaserScale){
     postGroup.add(mesh);
   });
 
-  const ringGeo=new THREE.TorusGeometry(0.95,0.055,14,50);
+  const ringGeo=new THREE.TorusGeometry(0.93,0.045,12,40);
   const ringMat=new THREE.MeshStandardMaterial({
-    color:p.accent, metalness:1, roughness:0.25,
-    emissive:p.accent, emissiveIntensity:0.12
+    color:p.accent, metalness:0.9, roughness:0.4,
+    emissive:p.accent, emissiveIntensity:0.05
   });
   const ring=new THREE.Mesh(ringGeo,ringMat);
   ring.rotation.x=Math.PI/2;
@@ -158,30 +154,22 @@ function createCrateMesh(tier, scale=teaserScale){
 function animateTeaserIdle(crate){
   if(!gsapRef) return;
   const tier=crate.userData.tier;
-  const floatAmp=tier==='t3'?0.25: tier==='t2'?0.2: 0.16;
-  const dur=tier==='t3'?3.8: tier==='t2'?4.3:4.7;
+  const floatAmp=tier==='t3'?0.18: tier==='t2'?0.16: 0.14;
+  const dur=tier==='t3'?5.2: tier==='t2'?5.6:6.0;
   const startY=crate.position.y;
   gsapRef.to(crate.position,{
     y:startY+floatAmp,duration:dur/2,ease:'sine.inOut',repeat:-1,yoyo:true
   });
+  // very slow subtle rotation
   gsapRef.to(crate.rotation,{
-    y:crate.rotation.y + (tier==='t3'?Math.PI*2:Math.PI),
-    duration:tier==='t3'?16:22,ease:'linear',repeat:-1
+    y:crate.rotation.y + (tier==='t3'?Math.PI:Math.PI*0.75),
+    duration:tier==='t3'?30:36,
+    ease:'linear',
+    repeat:-1
   });
-
-  if(crate.userData.label){
-    const lbl=crate.userData.label;
-    const baseY=lbl.position.y;
-    gsapRef.to(lbl.position,{
-      y:baseY+0.18,duration:2.6,ease:'sine.inOut',yoyo:true,repeat:-1
-    });
-    gsapRef.to(lbl.material,{
-      opacity:0.58,duration:2.2,ease:'sine.inOut',yoyo:true,repeat:-1
-    });
-  }
 }
 
-export function initPBRTeasers({scene,camera,renderer,gsap,onCrateClick, initialScale}){
+export function initPBRTeasers({scene,camera,renderer,gsap,onCrateClick,initialScale}){
   sceneRef=scene; cameraRef=camera; gsapRef=gsap;
   if(typeof initialScale==='number') teaserScale=initialScale;
   loadEnvironment(renderer).then(env=>{
@@ -201,7 +189,7 @@ export function initPBRTeasers({scene,camera,renderer,gsap,onCrateClick, initial
       gsap.fromTo(crate.scale,
         {x:crate.scale.x,y:crate.scale.y,z:crate.scale.z},
         {x:teaserScale,y:teaserScale,z:teaserScale,
-         duration:0.85,ease:'back.out(1.8)',delay:0.15*i});
+         duration:0.75,ease:'back.out(1.6)',delay:0.12*i});
       i++;
     });
   }
@@ -215,7 +203,7 @@ export function updateTeaserLayout(){
   const marginX=8;
   const baseX=right - marginX;
   const startY=top - 14;
-  const gap=(teaserScale*2.4);
+  const gap=(teaserScale*2.3);
   crates.forEach((c,i)=>c.position.set(baseX, startY - i*gap, 0));
 }
 
@@ -227,20 +215,39 @@ export function raycastTeasers(raycaster){
   if(o?.userData?.onClick){
     o.userData.onClick();
     gsapRef.to(o.rotation,{
-      x:o.rotation.x+0.5,duration:0.25,ease:'back.out(2)',yoyo:true,repeat:1
+      x:o.rotation.x+0.4,duration:0.25,ease:'back.out(2)',yoyo:true,repeat:1
     });
   }
 }
 
-export function createRedemptionCrate(tier){
-  const crate=createCrateMesh(tier, teaserScale * 2.6);
-  crate.userData.teaser=false;
-  crate.userData.opened=false;
-  crate.traverse(o=>{
-    if(o.isMesh && o.material?.emissive){
-      o.material.emissiveIntensity *= 1.4; // modest boost only for redemption
+// ==== FRONT FOCUS HELPERS ====
+function bringCrateToFront(crate){
+  crate.position.z = 40; // still inside ortho frustum
+  crate.traverse(obj=>{
+    if(obj.isMesh){
+      obj.renderOrder = 2000;
+      obj.material.depthTest = false;
+      obj.material.depthWrite = false;
+      obj.material.transparent = true;
+      // reduce brightness baseline
+      if(obj.material.emissiveIntensity){
+        obj.material.emissiveIntensity = Math.min(0.12, obj.material.emissiveIntensity);
+      }
+    }
+    if(obj.isLineSegments){
+      obj.renderOrder = 2001;
     }
   });
+  if(crate.userData?.label){
+    crate.userData.label.renderOrder = 2100;
+  }
+}
+
+export function createRedemptionCrate(tier){
+  const crate=createCrateMesh(tier, teaserScale * 2.4);
+  crate.userData.teaser=false;
+  crate.userData.opened=false;
+  bringCrateToFront(crate);
   return crate;
 }
 
@@ -248,11 +255,11 @@ export function animateCrateEntrance(crate,gsap){
   crate.scale.multiplyScalar(0.01);
   gsap.to(crate.scale,{
     x:crate.scale.x*100,y:crate.scale.y*100,z:crate.scale.z*100,
-    duration:0.75,ease:'back.out(2)'
+    duration:0.65,ease:'back.out(2)'
   });
   gsap.fromTo(crate.rotation,
-    {y:crate.rotation.y + Math.PI*2},
-    {y:crate.rotation.y,duration:1.05,ease:'expo.out'}
+    {y:crate.rotation.y + Math.PI*1.5},
+    {y:crate.rotation.y,duration:0.9,ease:'expo.out'}
   );
 }
 
@@ -263,12 +270,12 @@ export function openCrate(crate,gsap){
     const lid=crate.userData.lid || crate.children.find(c=>c.name.includes('crateLid'));
     if(!lid){ res(); return; }
     gsap.to(lid.rotation,{
-      x:-Math.PI*0.92,duration:0.65,ease:'back.in(1.15)',onComplete:res
+      x:-Math.PI*0.85,duration:0.55,ease:'back.in(1.1)',onComplete:res
     });
     gsap.fromTo(crate.scale,
       {x:crate.scale.x,y:crate.scale.y,z:crate.scale.z},
-      {x:crate.scale.x*1.05,y:crate.scale.y*1.05,z:crate.scale.z*1.05,
-       duration:0.26,yoyo:true,repeat:1,ease:'sine.inOut'});
+      {x:crate.scale.x*1.04,y:crate.scale.y*1.04,z:crate.scale.z*1.04,
+       duration:0.22,yoyo:true,repeat:1,ease:'sine.inOut'});
   });
 }
 
@@ -276,7 +283,7 @@ export function disposeRedemptionCrate(crate,gsap){
   if(!crate) return;
   gsap.to(crate.scale,{
     x:crate.scale.x*0.01,y:crate.scale.y*0.01,z:crate.scale.z*0.01,
-    duration:0.48,ease:'power2.in',
+    duration:0.42,ease:'power2.in',
     onComplete:()=>{
       crate.parent?.remove(crate);
       crate.traverse(o=>{
