@@ -1,11 +1,11 @@
-/* game.js – Restored formatting + unified draggable system + targetCamOffset fix
-   Key points:
-   - targetCamOffset declared (fix crash)
-   - All panels with [data-drag][data-scale] use translate + scale
-   - Safe restore if offscreen
-   - Commands panel never dimmed & always forced visible
-   - Added window.resetAllPanels() to clear stored layout
-   - Leaderboard & multipliers styling intact (CSS handles)
+/* game.js – Gift Drop Fix + Prior Features
+   Changes (Gift Support):
+   - Added detection of TikTok gift events even without 'command'
+   - GIFT_BALL_MAP for mapping gift names / IDs to ball counts
+   - Derives fallback ball count from coin/diamond values when name unmapped
+   - spawnGiftBalls() handles multi spawns (still independent single spawns)
+   - Console helpers: simGift(name, count?), toggle gift debug via window.DEBUG_GIFTS = true
+   - Maintains: matte crates, redemption focus, draggable panels, command panel visibility, crate sound
 */
 
 import * as THREE from 'three';
@@ -28,13 +28,29 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 const { Engine, World, Bodies, Events, Body } = Matter;
 
 (() => {
-  /* Config */
+  /* ================= CONFIG ================= */
   const REWARD_COSTS = { t1:1000, t2:5000, t3:10000 };
   const REWARD_NAMES = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
   const REDEEM_PREFIX = 'redeem:';
   const DEV_BYPASS_DEFAULT = true;
   const SHOW_PERF_PANEL = true;
   const ADAPTIVE_QUALITY = true;
+
+  // Gift to ball count mapping (case-insensitive keys)
+  const GIFT_BALL_MAP = {
+    'rose': 1,
+    'finger heart': 1,
+    'finger_heart': 1,
+    'gg': 2,
+    'unicorn': 5,
+    'lion': 8,
+    'castle': 12
+  };
+  // Fallback ratio if coins / diamonds present and no mapping
+  const COIN_TO_BALL_RATIO = 10; // 1 ball per 10 coins (min 1)
+
+  // Maximum balls per single gift event to prevent spam
+  const MAX_BALLS_PER_GIFT = 25;
 
   const FIXED_DT = 1000/60;
   const MAX_STEPS_BASE = 4;
@@ -86,7 +102,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  /* Camera offset (fix for ReferenceError) */
+  /* Camera offset */
   const targetCamOffset = new THREE.Vector3();
   const baseCamPos = new THREE.Vector3(0,0,100);
 
@@ -133,16 +149,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return Number.isFinite(n)?n:f;
   };
 
-  function showSettings(){
-    settingsPanel?.classList.add('open');
-    settingsPanel?.setAttribute('aria-hidden','false');
-  }
-  function hideSettings(){
-    settingsPanel?.classList.remove('open');
-    settingsPanel?.setAttribute('aria-hidden','true');
-  }
-
-  /* Performance tracking */
+  /* Performance */
   let perfPanel;
   const perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
   const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
@@ -153,7 +160,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let sharedBallBaseMaterial = null;
   const avatarTextureCache = new Map();
 
-  /* Redemption queue */
+  /* Redemption */
   const redeemQueue = [];
   let redeemActive = false;
   let activeReward3D = null;
@@ -199,7 +206,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       x:activeReward3D.scale.x*0.01,
       y:activeReward3D.scale.y*0.01,
       z:activeReward3D.scale.z*0.01,
-      duration:.35,ease:'power2.in',
+      duration:.35,
+      ease:'power2.in',
       onComplete:()=>{
         if(activeReward3D) scene.remove(activeReward3D);
         if(activeRewardDisposeFn) activeRewardDisposeFn();
@@ -207,7 +215,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
     });
   }
-  function playRedemptionAnimation({evId,tier,username,avatarUrl}){
+  function playRedemptionAnimation({tier,username,avatarUrl}){
     return new Promise(async resolve=>{
       enterRedemptionFocus();
       const hud=document.createElement('div');
@@ -237,7 +245,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Slots & multipliers */
+  /* Slots & Labels */
   function buildSlots(slotCount){
     const center=Math.floor((slotCount-1)/2);
     const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
@@ -255,7 +263,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
   }
 
-  /* Backend placeholder */
+  /* Backend base */
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -267,19 +275,19 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
   }
 
-  /* Settings load/save/apply */
+  /* Settings */
   devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
   devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
   function loadSettings(){
-    const applyRange=(key,el,def)=>{ const v=Number(localStorage.getItem(key) ?? def); if(!Number.isNaN(v)) el.value=v; };
-    applyRange('plk_gravity',optGravity,'1');
-    applyRange('plk_dropSpeed',optDropSpeed,'0.5');
-    applyRange('plk_crate_scale',optCrateScale,'4.4');
-    applyRange('plk_vibrance',optVibrance,'0.4');
+    const read = (k,d)=>Number(localStorage.getItem(k) ?? d);
+    const g=read('plk_gravity',1); optGravity.value=g;
+    const ds=read('plk_dropSpeed',0.5); optDropSpeed.value=ds;
+    const cs=read('plk_crate_scale',4.4); optCrateScale.value=cs; CRATE_SCALE=cs;
+    const vb=read('plk_vibrance',0.4); optVibrance.value=vb; VIBRANCE_PULSE=vb;
     optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
     optParticles.checked=(localStorage.getItem('plk_particles') ?? 'true')==='true';
-    const vol=Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value=vol; setAudioVolume(vol);
+    const vol=read('plk_volume',0.5); optVolume.value=vol; setAudioVolume(vol);
     const savedBase=getBackendBaseUrl(); if(savedBase) backendUrlInput.value=savedBase;
     const tok=localStorage.getItem('adminToken')||''; if(tok) adminTokenInput.value=tok;
     applySettings();
@@ -305,7 +313,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
-  /* Three.js init */
+  /* Three.js */
   function initThree(){
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -347,7 +355,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     updateRect();
     window.addEventListener('resize',updateRect);
 
-    renderer.domElement.addEventListener('pointermove', e=>{
+    renderer.domElement.addEventListener('pointermove',e=>{
       const xNorm=(e.clientX/rectTarget.w)*2 - 1;
       const yNorm=(e.clientY/rectTarget.h)*2 - 1;
       targetCamOffset.x = xNorm * 2.5;
@@ -392,7 +400,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     fxCanvas.height=container.clientHeight;
     layoutOverlays();
     updateTeaserLayout();
-    ensurePanelOnScreen(commandsPanel,true);
+    forceCommandsVisible();
   }
 
   function layoutOverlays(){
@@ -493,7 +501,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const points=SLOT_POINTS[idx]||100;
         a.plugin.scored=true;
         awardPoints(a.plugin.username,a.plugin.avatarUrl||'',points).catch(console.warn);
-        sfxScore(points >= 1600);
+        sfxScore(points>=1600);
         setTimeout(()=>tryRemoveBall(a),900);
       }
       return;
@@ -502,8 +510,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if(PARTICLES){
         const mesh=meshById.get(a.id);
         if(mesh){
-          const p2=worldToScreen(mesh.position,camera,renderer);
-          fxMgr.addSparks(p2.x,p2.y,'#00f2ea',10);
+          const p=worldToScreen(mesh.position,camera,renderer);
+          fxMgr.addSparks(p.x,p.y,'#00f2ea',10);
         }
       }
       sfxBounce();
@@ -511,7 +519,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
-  /* Loop */
+  /* Main Loop */
   function adaptQuality(frameMs){
     frameAccum+=frameMs; frameSamples++;
     perfData.frames++;
@@ -551,7 +559,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       clampVelocities();
       fxMgr.update(fxCtx,dt);
       updateThreeFromMatter();
-
       camera.position.x += (baseCamPos.x + targetCamOffset.x - camera.position.x)*0.06;
       camera.position.y += (baseCamPos.y + targetCamOffset.y - camera.position.y)*0.06;
 
@@ -617,13 +624,13 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const mesh=new THREE.Mesh(sharedBallGeo,sharedBallBaseMaterial.clone());
     scene.add(mesh);
     meshById.set(body.id,mesh);
-    const sprite=buildNameSprite(username);
+    const sprite=buildNameSprite(body.plugin.username);
     scene.add(sprite);
     labelById.set(body.id,sprite);
     const applyTex=async()=>{
       try{
-        let prom=avatarTextureCache.get(avatarUrl||'');
-        if(!prom){ prom=loadAvatarTexture(avatarUrl,128); avatarTextureCache.set(avatarUrl||'',prom); }
+        let prom=avatarTextureCache.get(body.plugin.avatarUrl||'');
+        if(!prom){ prom=loadAvatarTexture(body.plugin.avatarUrl,128); avatarTextureCache.set(body.plugin.avatarUrl||'',prom); }
         const tex=await prom;
         const live=meshById.get(body.id);
         if(live){ live.material.map=tex; live.material.needsUpdate=true; }
@@ -653,7 +660,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{}
   }
 
-  /* Leaderboard & points */
+  /* Points */
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=current.score+points;
@@ -707,47 +714,114 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
-  /* Firebase event listening */
+  /* ============ Gift Handling Logic ============ */
+
+  function resolveGiftName(obj){
+    return (obj.giftName || obj.gift || obj.gift_type || obj.giftType || obj.itemName || obj.name || '').toString();
+  }
+
+  function deriveBallCountFromGift(eventObj){
+    const rawName = resolveGiftName(eventObj).trim();
+    const key = rawName.toLowerCase();
+    if(key && GIFT_BALL_MAP[key]) return GIFT_BALL_MAP[key];
+
+    // Use coin / diamond based fallback:
+    const coins = eventObj.giftCoins ?? eventObj.coins ?? eventObj.coin ?? eventObj.diamondCount ?? eventObj.diamonds ?? eventObj.value;
+    if(typeof coins === 'number' && coins > 0){
+      return clamp(Math.floor(coins / COIN_TO_BALL_RATIO) || 1, 1, MAX_BALLS_PER_GIFT);
+    }
+
+    // Repeat / count multipliers:
+    const repeat = eventObj.repeatCount || eventObj.count || eventObj.quantity;
+    if(typeof repeat === 'number' && repeat > 0){
+      return clamp(repeat, 1, MAX_BALLS_PER_GIFT);
+    }
+
+    return 1; // default
+  }
+
+  function isGiftEvent(obj){
+    if(!obj || typeof obj !== 'object') return false;
+    if(obj.type && String(obj.type).toLowerCase().includes('gift')) return true;
+    if('giftName' in obj || 'gift' in obj || 'giftId' in obj || 'giftType' in obj) return true;
+    if('giftCoins' in obj || 'coins' in obj || 'diamondCount' in obj || 'diamonds' in obj) return true;
+    // Some backends might send "event":"gift"
+    if(String(obj.event||'').toLowerCase()==='gift') return true;
+    return false;
+  }
+
+  function spawnGiftBalls(username, avatarUrl, giftObj){
+    const count = deriveBallCountFromGift(giftObj);
+    if(window.DEBUG_GIFTS) console.log('[Gift] Spawning balls:', {username, count, giftObj});
+    for(let i=0;i<count;i++){
+      // Slight stagger (optional)
+      setTimeout(()=>spawnBallSet({ username, avatarUrl }), i*90*DROP_SPEED);
+    }
+  }
+
+  /* Listen to backend events */
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
       const ts=typeof obj.timestamp==='number'?obj.timestamp:0;
       if(ts && ts < startTime - 60_000) return;
       processedEvents.add(id);
+
       const username=sanitize(obj.username||'viewer');
       const avatarUrl=obj.avatarUrl||'';
       const command=(obj.command||'').toLowerCase();
+
+      // Redemption command
       if(command.startsWith(REDEEM_PREFIX)){
         const tier=command.split(':')[1];
         handleRedeemEvent(id, username, avatarUrl, tier);
         return;
       }
+
+      // Gift detection (even if no command)
+      if(isGiftEvent(obj)){
+        // Check spawn enabled (unless devFreeToggle overrides)
+        const spawnEnabledText = spawnStatusEl?.textContent || 'unknown';
+        if(spawnEnabledText === 'false' && !devFreeToggle.checked){
+          if(window.DEBUG_GIFTS) console.warn('[Gift] Spawn disabled in config; ignoring gift.');
+          return;
+        }
+        spawnGiftBalls(username, avatarUrl, obj);
+        return;
+      }
+
+      // Command-based drop
       if(command.includes('drop') || command.startsWith('gift')){
         spawnBallSet({ username, avatarUrl });
       }
     });
+
+    // Leaderboard sync
     FirebaseREST.onValue('/leaderboard',(data)=>{
       if(data && typeof data==='object'){
         for(const k of Object.keys(data)){
           const entry=data[k];
-          if(entry?.username){
+            if(entry?.username){
             leaderboard[entry.username]={
               username:entry.username,
-              avatarUrl:entry.avatarUrl||'',
-              score:entry.score||0,
-              lastUpdate:entry.lastUpdate||0
+              avatarUrl: entry.avatarUrl||'',
+              score: entry.score||0,
+              lastUpdate: entry.lastUpdate||0
             };
           }
         }
         refreshLeaderboard();
       } else clearLeaderboardLocal();
     });
+
+    // Config (spawn toggle)
     FirebaseREST.onValue('/config',(data)=>{
       const enabled=!!(data && data.spawnEnabled);
       spawnStatusEl.textContent=enabled?'true':'false';
       spawnStatusEl.style.color=enabled?'var(--good)':'var(--danger)';
     });
   }
+
   function sanitize(u){
     const s=String(u||'').trim();
     return s ? s.slice(0,24) : 'viewer';
@@ -790,7 +864,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Unified Drag + Scale System */
+  /* Unified Drag + Scale (reuse existing markup) */
   function initDraggables(){
     const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
     panels.forEach(p=>{
@@ -799,8 +873,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       attachScale(p);
       ensurePanelOnScreen(p,true);
     });
-
-    // Alt+Wheel scale
     window.addEventListener('wheel', e=>{
       if(!e.altKey) return;
       const el=e.target.closest('[data-drag][data-scale]');
@@ -815,7 +887,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       if(el===commandsPanel) forceCommandsVisible();
     }, { passive:false });
 
-    // global helpers
     window.resetAllPanels=()=>{
       panels.forEach(p=>{
         localStorage.removeItem(storageKey(p,'pos'));
@@ -843,8 +914,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     const posKey=storageKey(panel,'pos');
     const scaleKey=storageKey(panel,'scale');
-    let x=40,y=120;
-    let scale=1;
+    let x=40,y=120,scale=1;
     try{
       const posJSON=localStorage.getItem(posKey);
       if(posJSON){
@@ -865,7 +935,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const handles = panel.querySelectorAll('.drag-bar, .cmd-title, .drag-handle');
     const dragEls = handles.length?handles:[panel];
     let dragging=false,sx=0,sy=0,startX=0,startY=0;
-
     dragEls.forEach(h=>{
       h.style.cursor='grab';
       h.addEventListener('pointerdown',e=>{
@@ -879,7 +948,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         e.preventDefault();
       });
     });
-
     window.addEventListener('pointermove',e=>{
       if(!dragging) return;
       let nx=startX+(e.clientX-sx);
@@ -888,7 +956,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       panel.dataset.y=ny;
       renderTransform(panel);
     });
-
     window.addEventListener('pointerup',()=>{
       if(dragging){
         dragging=false;
@@ -904,8 +971,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(!handle) return;
     let resizing=false,sx=0,startScale=1;
     handle.addEventListener('pointerdown',e=>{
-      e.preventDefault();
-      e.stopPropagation();
+      e.preventDefault(); e.stopPropagation();
       resizing=true;
       sx=e.clientX;
       startScale=parseFloat(panel.dataset.scale||'1');
@@ -975,8 +1041,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     commandsPanel.style.pointerEvents='auto';
   }
 
-  /* UI & Audio binds */
-  btnGear?.addEventListener('click', showSettings);
+  /* UI / Audio Events */
+  function showSettingsPanel(){ showSettings(); forceCommandsVisible(); }
+
+  btnGear?.addEventListener('click', showSettingsPanel);
   btnCloseSettings?.addEventListener('click', hideSettings);
   btnResetUI?.addEventListener('click',()=>{
     if(!commandsPanel) return;
@@ -1055,7 +1123,23 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{ alert('Simulation failed.'); }
   });
 
-  /* Start */
+  /* Console Helpers */
+  window.forceShowCommands=()=>{ forceCommandsVisible(); };
+  window.simGift=(giftName='Rose', count=1)=>{
+    for(let i=0;i<count;i++){
+      const evt={
+        username:'SimGifter',
+        avatarUrl:'',
+        giftName,
+        giftCoins: giftName.toLowerCase()==='rose'?1:10,
+        timestamp:Date.now()
+      };
+      if(window.DEBUG_GIFTS) console.log('[SimGift] injecting', evt);
+      LocalEventBus.injectLocalEvent(evt);
+    }
+  };
+
+  /* Start Sequence */
   function start(){
     loadSettings();
     initThree();
