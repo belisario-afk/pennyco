@@ -1,10 +1,16 @@
 /* game.js
-   Enhancements:
-   - Peg-wall wedge mitigation (margin clamp + runtime nudge)
-   - Live layout cycling button (#btn-next-layout)
-   - Animated peg morph / crossfade between layouts
-   - Server-driven custom layout JSON loader (URL input + button)
-   - Retains gift -> ball logic, redemption, adaptive quality
+   Stable build with:
+   - Dynamic layouts (classic, honeycomb, gaps, spiral + custom JSON)
+   - Animated layout transitions (morph or crossfade)
+   - Live layout cycle button (🔁)
+   - Gift -> ball spawning (TikTok-like gift events)
+   - Redemption crates & reward models
+   - Peg-wall wedge mitigation (margin clamp + wall nudge)
+   - Draggable / scalable panels
+   - FirebaseREST shim compatibility (firebase.js)
+   - Fixed brace / syntax integrity (previous “Unexpected token }” resolved)
+
+   If you still see syntax errors, hard refresh (Shift+Reload) and ensure no partial cached file.
 */
 
 import * as THREE from 'three';
@@ -12,7 +18,9 @@ import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
   FXManager2D, initAudioOnce, setAudioVolume, sfxBounce, sfxDrop, sfxScore
 } from './utils.js';
-import { ensureRewardModelLoaded, createRewardModelInstance, animateRewardModel } from './rewardModel.js';
+import {
+  ensureRewardModelLoaded, createRewardModelInstance, animateRewardModel
+} from './rewardModel.js';
 import {
   initPBRTeasers, updateTeaserLayout, raycastTeasers,
   createRedemptionCrate, animateCrateEntrance, openCrate,
@@ -30,7 +38,11 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 
 const { Engine, World, Bodies, Events, Body } = Matter;
 
-/* ------------------ CONFIG / CONSTANTS ------------------ */
+(function PlinkooGame(){
+
+/* -------------------------------------------------
+   CONFIG / CONSTANTS
+-------------------------------------------------- */
 const REWARD_COSTS = { t1:1000, t2:5000, t3:10000 };
 const REWARD_NAMES = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
 const REDEEM_PREFIX = 'redeem:';
@@ -38,25 +50,17 @@ const DEV_BYPASS_DEFAULT = true;
 const SHOW_PERF_PANEL = true;
 const ADAPTIVE_QUALITY = true;
 
-/* Gifts -> spawn counts */
 const GIFT_BALL_MAP = {
-  'rose': 1,
-  'finger heart': 1,
-  'finger_heart': 1,
-  'gg': 2,
-  'unicorn': 5,
-  'lion': 8,
-  'castle': 12
+  'rose':1,'finger heart':1,'finger_heart':1,
+  'gg':2,'unicorn':5,'lion':8,'castle':12
 };
 const COIN_TO_BALL_RATIO = 10;
 const MAX_BALLS_PER_GIFT = 25;
 
-/* Time step */
 const FIXED_DT = 1000/60;
 const MAX_STEPS_BASE = 4;
 const maxStepsForFrame = dt => dt > 140 ? 1 : dt > 90 ? 2 : MAX_STEPS_BASE;
 
-/* World dims (height constant) */
 const WORLD_HEIGHT = 100;
 let WORLD_WIDTH = 56.25;
 let BOARD_HEIGHT = WORLD_HEIGHT * 0.82;
@@ -64,21 +68,19 @@ let BOARD_WIDTH  = 0;
 let TRAY_HEIGHT  = 0;
 const TRAY_RATIO = 0.22;
 
-/* Dynamic layout variables */
 let ROWS = 12;
 let SLOT_COUNT = ROWS + 1;
 
-/* Physical constants */
 const PEG_RADIUS = 0.75;
 const BALL_RADIUS = 1.5;
 const WALL_THICKNESS = 2.0;
 
-/* Peg / Wall Wedge mitigation */
-const WALL_CLEAR_MARGIN = PEG_RADIUS * 1.25 + 0.4;   // minimum clearance from wall for pegs
-const WALL_NUDGE_ZONE   = BALL_RADIUS * 1.4;         // horizontal distance from wall to apply nudge
-const WALL_NUDGE_FORCE  = 0.35;                      // inward velocity boost if near-stuck
+/* Peg / wall wedge mitigation */
+const WALL_CLEAR_MARGIN = PEG_RADIUS * 1.25 + 0.4;
+const WALL_NUDGE_ZONE   = BALL_RADIUS * 1.4;
+const WALL_NUDGE_FORCE  = 0.35;
 
-/* Tunables */
+/* Tweaks */
 let GRAVITY_MAG = 1.0;
 let DROP_SPEED   = 0.5;
 let NEON = true;
@@ -86,6 +88,7 @@ let PARTICLES = true;
 let CRATE_SCALE = 4.4;
 let VIBRANCE_PULSE = 0.4;
 
+/* Physics tuning */
 const BALL_RESTITUTION = 0.06;
 const PEG_RESTITUTION  = 0.02;
 const BALL_FRICTION    = 0.04;
@@ -93,16 +96,19 @@ const BALL_FRICTION_AIR= 0.012;
 const MAX_SPEED = 28;
 const MAX_H_SPEED = 22;
 
-/* Morph / Layout Transition */
+/* Layout animation */
 const PEG_MORPH_DURATION = 0.85;
 const PEG_CROSSFADE_DURATION = 0.6;
 const PEG_COUNT_DIFF_THRESHOLD = 0.30; // 30%
 
-/* State */
+/* -------------------------------------------------
+   STATE
+-------------------------------------------------- */
 let engine, world;
 let scene, camera, renderer;
 let ambient, dirLight;
 let composer, bloomPass, smaaPass, fxMgr;
+
 let slotSensors = [];
 const dynamicBodies = new Set();
 const meshById = new Map();
@@ -110,6 +116,7 @@ const labelById = new Map();
 const leaderboard = {};
 const processedEvents = new Set();
 const processedRedemptions = new Set();
+
 let SLOT_POINTS = [];
 let SLOT_MULTIPLIERS = [];
 let TOP_ROW_Y = 0;
@@ -123,12 +130,32 @@ const targetCamOffset = new THREE.Vector3();
 const baseCamPos = new THREE.Vector3(0,0,100);
 
 let pegInstancedMesh = null;
-let oldPegInstancedMesh = null;
 const pegBodies = [];
 let wallBodies = [];
 let floorBody = null;
 
-/* DOM refs */
+/* Redemption state */
+const redeemQueue = [];
+let redeemActive = false;
+let activeReward3D = null;
+let activeRewardDisposeFn = null;
+let activeRedemptionCrate = null;
+
+/* Performance */
+let perfPanel;
+const perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
+const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
+let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
+let frameSamples=0, frameAccum=0;
+
+/* Shared resources */
+const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
+let sharedBallBaseMaterial = null;
+const avatarTextureCache = new Map();
+
+/* -------------------------------------------------
+   DOM REFERENCES
+-------------------------------------------------- */
 const container       = document.getElementById('game-container');
 const fxCanvas        = document.getElementById('fx-canvas');
 const fxCtx           = fxCanvas.getContext('2d');
@@ -145,10 +172,12 @@ const devPanel        = document.getElementById('dev-panel');
 const devFreeToggle   = document.getElementById('dev-free-toggle');
 const commandsPanel   = document.getElementById('commands-panel');
 const settingsPanel   = document.getElementById('settings-panel');
+
 const btnGear         = document.getElementById('btn-gear');
 const btnCloseSettings= document.getElementById('btn-close-settings');
 const btnResetUI      = document.getElementById('btn-reset-ui');
 const btnNextLayout   = document.getElementById('btn-next-layout');
+
 const optDropSpeed    = document.getElementById('opt-drop-speed');
 const optGravity      = document.getElementById('opt-gravity');
 const optCrateScale   = document.getElementById('opt-crate-scale');
@@ -165,7 +194,34 @@ const btnReset        = document.getElementById('btn-reset-leaderboard');
 const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
 const btnSimulate     = document.getElementById('btn-simulate');
 
-/* UI show / hide */
+/* -------------------------------------------------
+   HELPERS
+-------------------------------------------------- */
+const clamp = (v,a,b) => v<a?a:v>b?b:v;
+
+function safeInitFirebase(){
+  if(window.FirebaseREST) return;
+  console.warn('[game.js] FirebaseREST missing (using stub). Include firebase.js for production.');
+  const listenersAdded = {};
+  const listenersValue = {};
+  window.FirebaseREST = {
+    onChildAdded(p,cb){ (listenersAdded[p] ||= []).push(cb); },
+    onValue(p,cb){ (listenersValue[p] ||= []).push(cb); cb(null); },
+    update(){ return Promise.resolve({ok:true}); },
+    emitChildAdded(p,obj){ (listenersAdded[p]||[]).forEach(fn=>fn('local_'+Date.now(),obj)); },
+    emitValue(p,data){ (listenersValue[p]||[]).forEach(fn=>fn(data)); }
+  };
+}
+safeInitFirebase();
+
+function sanitize(u){
+  const s=String(u||'').trim();
+  return s ? s.slice(0,24) : 'viewer';
+}
+
+/* -------------------------------------------------
+   UI SHOW / HIDE
+-------------------------------------------------- */
 function showSettings(){
   settingsPanel?.classList.add('open');
   settingsPanel?.setAttribute('aria-hidden','false');
@@ -176,48 +232,12 @@ function hideSettings(){
 }
 function showSettingsPanel(){ showSettings(); forceCommandsVisible(); }
 
-/* Helpers */
-const clamp = (v,a,b) => v<a?a:v>b?b:v;
-
-/* Firebase shim safety */
-function safeInitFirebase(){
-  if(window.FirebaseREST) return;
-  console.warn('[game.js] FirebaseREST not provided; creating stub. Include firebase.js for production.');
-  const listenersAdded = {};
-  const listenersValue = {};
-  window.FirebaseREST = {
-    onChildAdded(p,cb){ (listenersAdded[p] ||= []).push(cb); },
-    onValue(p,cb){ (listenersValue[p] ||= []).push(cb); cb(null); },
-    update(){ return Promise.resolve({ ok:true }); },
-    emitChildAdded(p,obj){ (listenersAdded[p]||[]).forEach(fn=>fn('local_'+Date.now(),obj)); },
-    emitValue(p,data){ (listenersValue[p]||[]).forEach(fn=>fn(data)); }
-  };
-}
-safeInitFirebase();
-
-/* Performance tracking */
-let perfPanel;
-const perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
-const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
-let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
-let frameSamples=0, frameAccum=0;
-
-const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
-let sharedBallBaseMaterial = null;
-const avatarTextureCache = new Map();
-
-/* Redemption queue */
-const redeemQueue = [];
-let redeemActive = false;
-let activeReward3D = null;
-let activeRewardDisposeFn = null;
-let activeRedemptionCrate = null;
-
-/* --- Redemption Focus --- */
+/* -------------------------------------------------
+   REDEMPTION
+-------------------------------------------------- */
 function enterRedemptionFocus(){ document.body.classList.add('redeem-focus'); forceCommandsVisible(); }
 function exitRedemptionFocus(){ document.body.classList.remove('redeem-focus'); }
 
-/* Queue handlers */
 function enqueueRedemption(evId,tier,username,avatarUrl){
   redeemQueue.push({evId,tier,username,avatarUrl});
   runNextRedemption();
@@ -229,14 +249,12 @@ function runNextRedemption(){
   redeemActive=true;
   playRedemptionAnimation(item).then(()=>{redeemActive=false;runNextRedemption();});
 }
-async function prepare3DModel(){
-  try{ await ensureRewardModelLoaded(); return true; }catch{ return false; }
-}
+async function prepare3DModel(){ try{ await ensureRewardModelLoaded(); return true; }catch{ return false; } }
 function attachReward3D(tier){
   if(activeReward3D){
     scene.remove(activeReward3D);
     if(activeRewardDisposeFn) activeRewardDisposeFn();
-    activeReward3D=null; activeRewardDisposeFn=null;
+    activeReward3D=null;activeRewardDisposeFn=null;
   }
   try{
     const model=createRewardModelInstance(tier==='t3'?22:tier==='t2'?19:16);
@@ -245,10 +263,7 @@ function attachReward3D(tier){
     activeReward3D=model;
     activeRewardDisposeFn=animateRewardModel(model, gsap);
     model.scale.multiplyScalar(0.01);
-    gsap.to(model.scale,{
-      x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,
-      duration:.5,ease:'back.out(1.6)'
-    });
+    gsap.to(model.scale,{x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,duration:.5,ease:'back.out(1.6)'});
   }catch{}
 }
 function detachReward3D(){
@@ -257,12 +272,11 @@ function detachReward3D(){
     x:activeReward3D.scale.x*0.01,
     y:activeReward3D.scale.y*0.01,
     z:activeReward3D.scale.z*0.01,
-    duration:.35,
-    ease:'power2.in',
+    duration:.35,ease:'power2.in',
     onComplete:()=>{
       if(activeReward3D) scene.remove(activeReward3D);
       if(activeRewardDisposeFn) activeRewardDisposeFn();
-      activeReward3D=null; activeRewardDisposeFn=null;
+      activeReward3D=null;activeRewardDisposeFn=null;
     }
   });
 }
@@ -286,10 +300,7 @@ function playRedemptionAnimation({tier,username,avatarUrl}){
     setTimeout(async ()=>{ await openCrate(activeRedemptionCrate, gsap); if(modelLoaded) attachReward3D(tier); },700);
 
     setTimeout(()=>{
-      gsap.to(hud,{
-        opacity:0,y:24,scale:0.85,duration:.35,ease:'power1.in',
-        onComplete:()=>redeemLayer.removeChild(hud)
-      });
+      gsap.to(hud,{opacity:0,y:24,scale:0.85,duration:.35,ease:'power1.in',onComplete:()=>redeemLayer.removeChild(hud)});
       detachReward3D();
       disposeRedemptionCrate(activeRedemptionCrate, gsap);
       activeRedemptionCrate=null;
@@ -299,12 +310,14 @@ function playRedemptionAnimation({tier,username,avatarUrl}){
   });
 }
 
-/* Slots */
+/* -------------------------------------------------
+   SLOTS & LABELS
+-------------------------------------------------- */
 function buildSlotArrays(slotCount){
   const center=Math.floor((slotCount-1)/2);
-  const mult = d => d===0?16 : d===1?9 : d===2?5 : d===3?3 : 1;
-  SLOT_MULTIPLIERS = Array.from({length:slotCount}, (_,i)=> mult(Math.abs(i-center)));
-  SLOT_POINTS = SLOT_MULTIPLIERS.map(m=>m*100);
+  const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
+  SLOT_MULTIPLIERS=Array.from({length:slotCount},(_,i)=>mult(Math.abs(i-center)));
+  SLOT_POINTS=SLOT_MULTIPLIERS.map(m=>m*100);
 }
 function renderSlotLabels(slotCount, framePx){
   slotLabelsEl.innerHTML='';
@@ -317,51 +330,55 @@ function renderSlotLabels(slotCount, framePx){
   trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
 }
 
-/* Layout logic */
+/* -------------------------------------------------
+   LAYOUT SELECTION
+-------------------------------------------------- */
 function getDayOfYear(d=new Date()){
   const start=new Date(d.getFullYear(),0,0);
   const diff=d - start + (start.getTimezoneOffset()-d.getTimezoneOffset())*60000;
   return Math.floor(diff/86400000);
 }
-function dailyRotatedLayout(){
-  const all = mergedLayoutRotationList();
-  const day = getDayOfYear();
-  return all[day % all.length];
-}
 function mergedLayoutRotationList(){
   const customIds = getAllLayoutIds().filter(id=>!initialRotationOrder.includes(id));
   return [...initialRotationOrder, ...customIds];
 }
+function dailyRotatedLayout(){
+  const list = mergedLayoutRotationList();
+  return list[getDayOfYear() % list.length];
+}
 function ensureLayout(layoutId){
-  const forced = layoutId || localStorage.getItem('plk_layout_override');
-  const idToUse = forced || dailyRotatedLayout();
-  if(currentLayoutId === idToUse) return;
-  currentLayoutId = idToUse;
-  currentLayoutDescriptor = getLayoutDescriptor(idToUse,'classic');
+  const stored = localStorage.getItem('plk_layout_override');
+  const id = layoutId || stored || dailyRotatedLayout();
+  if(id === currentLayoutId) return;
+  currentLayoutId = id;
+  currentLayoutDescriptor = getLayoutDescriptor(id,'classic');
   animateLayoutTransition();
   localStorage.setItem('plk_layout_override', currentLayoutId);
 }
+function cycleLayout(){
+  const list=mergedLayoutRotationList();
+  if(!currentLayoutId){ ensureLayout(null); return; }
+  const idx=list.indexOf(currentLayoutId);
+  ensureLayout(list[(idx+1)%list.length]);
+}
 
-/* Gift handling */
+/* -------------------------------------------------
+   GIFTS
+-------------------------------------------------- */
 function resolveGiftName(obj){
-  return (obj.giftName || obj.gift || obj.gift_type || obj.giftType || obj.itemName || obj.name || '').toString();
+  return (obj.giftName||obj.gift||obj.gift_type||obj.giftType||obj.itemName||obj.name||'').toString();
 }
 function deriveBallCountFromGift(eventObj){
-  const rawName = resolveGiftName(eventObj).trim();
-  const key = rawName.toLowerCase();
+  const key=resolveGiftName(eventObj).trim().toLowerCase();
   if(key && GIFT_BALL_MAP[key]) return GIFT_BALL_MAP[key];
   const coins = eventObj.giftCoins ?? eventObj.coins ?? eventObj.coin ?? eventObj.diamondCount ?? eventObj.diamonds ?? eventObj.value;
-  if(typeof coins === 'number' && coins > 0){
-    return clamp(Math.floor(coins / COIN_TO_BALL_RATIO) || 1,1,MAX_BALLS_PER_GIFT);
-  }
+  if(typeof coins === 'number' && coins>0) return clamp(Math.floor(coins/COIN_TO_BALL_RATIO)||1,1,MAX_BALLS_PER_GIFT);
   const repeat = eventObj.repeatCount || eventObj.count || eventObj.quantity;
-  if(typeof repeat === 'number' && repeat > 0){
-    return clamp(repeat,1,MAX_BALLS_PER_GIFT);
-  }
+  if(typeof repeat==='number' && repeat>0) return clamp(repeat,1,MAX_BALLS_PER_GIFT);
   return 1;
 }
 function isGiftEvent(obj){
-  if(!obj || typeof obj !== 'object') return false;
+  if(!obj || typeof obj!=='object') return false;
   if(obj.type && String(obj.type).toLowerCase().includes('gift')) return true;
   if('giftName' in obj || 'gift' in obj || 'giftId' in obj || 'giftType' in obj) return true;
   if('giftCoins' in obj || 'coins' in obj || 'diamondCount' in obj || 'diamonds' in obj) return true;
@@ -369,14 +386,15 @@ function isGiftEvent(obj){
   return false;
 }
 function spawnGiftBalls(username, avatarUrl, giftObj){
-  const count = deriveBallCountFromGift(giftObj);
+  const count=deriveBallCountFromGift(giftObj);
   for(let i=0;i<count;i++){
-    const delay = i*90*DROP_SPEED;
-    setTimeout(()=>requestAnimationFrame(()=>spawnBallSet({ username, avatarUrl })), delay);
+    setTimeout(()=>requestAnimationFrame(()=>spawnBallSet({username,avatarUrl})), i*90*DROP_SPEED);
   }
 }
 
-/* Backend helpers */
+/* -------------------------------------------------
+   BACKEND HELPERS
+-------------------------------------------------- */
 function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
 function setBackendBaseUrl(url){
   const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -388,21 +406,22 @@ function adminFetch(path,opt={}){
   return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
 }
 
-/* Settings */
-devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
+/* -------------------------------------------------
+   SETTINGS
+-------------------------------------------------- */
+devFreeToggle.checked=(localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
 devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
 function loadSettings(){
-  const read = (k,d)=>Number(localStorage.getItem(k) ?? d);
-  optGravity.value = read('plk_gravity',1);
-  optDropSpeed.value = read('plk_dropSpeed',0.5);
-  optCrateScale.value = read('plk_crate_scale',4.4); CRATE_SCALE=Number(optCrateScale.value);
-  optVibrance.value = read('plk_vibrance',0.4); VIBRANCE_PULSE=Number(optVibrance.value);
+  const read=(k,d)=>Number(localStorage.getItem(k) ?? d);
+  optGravity.value=read('plk_gravity',1);
+  optDropSpeed.value=read('plk_dropSpeed',0.5);
+  optCrateScale.value=read('plk_crate_scale',4.4); CRATE_SCALE=Number(optCrateScale.value);
+  optVibrance.value=read('plk_vibrance',0.4); VIBRANCE_PULSE=Number(optVibrance.value);
   optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
   optParticles.checked=(localStorage.getItem('plk_particles') ?? 'true')==='true';
   const vol=read('plk_volume',0.5); optVolume.value=vol; setAudioVolume(vol);
   const savedBase=getBackendBaseUrl(); if(savedBase) backendUrlInput.value=savedBase;
-  const overrideLayout = localStorage.getItem('plk_layout_override'); if(overrideLayout) console.info('[Layout] Override stored:', overrideLayout);
   applySettings();
 }
 function applySettings(){
@@ -426,7 +445,9 @@ function applySettings(){
   }
 }
 
-/* Three.js init */
+/* -------------------------------------------------
+   THREE INITIALIZATION
+-------------------------------------------------- */
 function initThree(){
   renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
   renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -465,8 +486,7 @@ function initThree(){
 
   const rectTarget={w:0,h:0};
   function updateRect(){ const r=renderer.domElement.getBoundingClientRect(); rectTarget.w=r.width; rectTarget.h=r.height; }
-  updateRect();
-  window.addEventListener('resize',updateRect);
+  updateRect(); window.addEventListener('resize',updateRect);
 
   renderer.domElement.addEventListener('pointermove',e=>{
     const xNorm=(e.clientX/rectTarget.w)*2 - 1;
@@ -515,7 +535,9 @@ function onResize(){
   forceCommandsVisible();
 }
 
-/* Layout overlay adjustments */
+/* -------------------------------------------------
+   UI LAYOUT OVERLAYS
+-------------------------------------------------- */
 function layoutOverlays(){
   const left=-BOARD_WIDTH/2,right=BOARD_WIDTH/2;
   const top=BOARD_HEIGHT/2,bottom=-BOARD_HEIGHT/2;
@@ -537,17 +559,18 @@ function layoutOverlays(){
   renderSlotLabels(SLOT_COUNT, frame);
 }
 
-/* Physics init */
+/* -------------------------------------------------
+   MATTER / BOARD BUILD
+-------------------------------------------------- */
 function initMatter(){
   engine=Engine.create({enableSleeping:false});
   world=engine.world;
   world.gravity.y=-Math.abs(GRAVITY_MAG);
-  fxMgr = new FXManager2D(fxCanvas);
+  fxMgr=new FXManager2D(fxCanvas);
   ensureLayout(null);
   bindCollisions();
 }
 
-/* Board rebuild / transition */
 function clearExistingBoardPhysics(){
   slotSensors.forEach(s=>{ try{ World.remove(world,s.body); }catch{} });
   slotSensors=[];
@@ -556,6 +579,12 @@ function clearExistingBoardPhysics(){
   if(floorBody){ try{ World.remove(world,floorBody); }catch{} floorBody=null; }
   pegBodies.forEach(pb=>{ try{ World.remove(world,pb); }catch{} });
   pegBodies.length=0;
+  if(pegInstancedMesh){
+    scene.remove(pegInstancedMesh);
+    pegInstancedMesh.geometry.dispose();
+    pegInstancedMesh.material.dispose();
+    pegInstancedMesh=null;
+  }
 }
 
 function addWallsAndSlots(){
@@ -564,6 +593,7 @@ function addWallsAndSlots(){
   wallBodies.push(left,right);
   floorBody=Bodies.rectangle(0,-BOARD_HEIGHT/2 - 6,BOARD_WIDTH + WALL_THICKNESS*2,WALL_THICKNESS,{isStatic:true,label:'KILL'});
   World.add(world,[left,right,floorBody]);
+
   slotSensors=[];
   const slotWidth=BOARD_WIDTH/SLOT_COUNT;
   const slotY=-BOARD_HEIGHT/2 + (TRAY_HEIGHT*0.35);
@@ -576,42 +606,29 @@ function addWallsAndSlots(){
   }
 }
 
-function clampPegPositionsToBoard(pegPositions){
-  const minX = -BOARD_WIDTH/2 + WALL_CLEAR_MARGIN;
-  const maxX =  BOARD_WIDTH/2 - WALL_CLEAR_MARGIN;
-  for(const p of pegPositions){
-    if(p.x < minX) p.x = minX;
-    else if(p.x > maxX) p.x = maxX;
-  }
+function clampPegPositions(pegPositions){
+  const minX=-BOARD_WIDTH/2 + WALL_CLEAR_MARGIN;
+  const maxX= BOARD_WIDTH/2 - WALL_CLEAR_MARGIN;
+  pegPositions.forEach(p=>{
+    if(p.x<minX)p.x=minX;
+    else if(p.x>maxX)p.x=maxX;
+  });
 }
 
-function createPegBodies(pegPositions, collisionActive){
-  for(const pp of pegPositions){
-    const peg=Bodies.circle(pp.x, pp.y, PEG_RADIUS, {
+function createPegBodies(pegPositions){
+  pegPositions.forEach(pp=>{
+    const peg=Bodies.circle(pp.x,pp.y,PEG_RADIUS,{
       isStatic:true,
       restitution:PEG_RESTITUTION,
       friction:0.01,
-      label:'PEG',
-      collisionFilter: collisionActive ? undefined : { group:0, category:0, mask:0 } // disable collisions if inactive
+      label:'PEG'
     });
     pegBodies.push(peg);
-  }
-  World.add(world, pegBodies);
+  });
+  World.add(world,pegBodies);
 }
 
-function extractPositionsFromInstanced(instMesh){
-  const arr=[];
-  if(!instMesh) return arr;
-  const dummy = new THREE.Object3D();
-  for(let i=0;i<instMesh.count;i++){
-    instMesh.getMatrixAt(i,dummy.matrix);
-    dummy.matrix.decompose(dummy.position,dummy.quaternion,dummy.scale);
-    arr.push({x:dummy.position.x,y:dummy.position.y});
-  }
-  return arr;
-}
-
-function buildInstancedMesh(pegPositions){
+function buildPegInstancedMesh(pegPositions){
   const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
   const mat=new THREE.MeshPhysicalMaterial({
     color:0x86f7ff,metalness:0.35,roughness:0.35,
@@ -619,81 +636,79 @@ function buildInstancedMesh(pegPositions){
     emissive:0x00ffff,emissiveIntensity:0.23,
     transparent:true,opacity:1
   });
-  const inst=new THREE.InstancedMesh(geo,mat,pegPositions.length);
+  const mesh=new THREE.InstancedMesh(geo,mat,pegPositions.length);
   const m=new THREE.Matrix4();
   const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
   for(let i=0;i<pegPositions.length;i++){
     const {x,y}=pegPositions[i];
     m.compose(new THREE.Vector3(x,y,0),q,new THREE.Vector3(1,1,1));
-    inst.setMatrixAt(i,m);
+    mesh.setMatrixAt(i,m);
   }
-  inst.instanceMatrix.needsUpdate=true;
-  return inst;
+  mesh.instanceMatrix.needsUpdate=true;
+  return mesh;
 }
 
-/* Animate layout transition */
+function extractPositions(instMesh){
+  if(!instMesh) return [];
+  const list=[];
+  const dummy=new THREE.Object3D();
+  for(let i=0;i<instMesh.count;i++){
+    instMesh.getMatrixAt(i,dummy.matrix);
+    dummy.matrix.decompose(dummy.position,dummy.quaternion,dummy.scale);
+    list.push({x:dummy.position.x,y:dummy.position.y});
+  }
+  return list;
+}
+
+/* Layout animation */
 function animateLayoutTransition(){
   if(!currentLayoutDescriptor) return;
   computeWorldSize();
-
   const { pegPositions, rows, slotCount } = generatePegPositions(currentLayoutDescriptor, BOARD_WIDTH);
-  clampPegPositionsToBoard(pegPositions);
-  ROWS = rows;
-  SLOT_COUNT = slotCount;
-
-  // Compute top row
-  if(currentLayoutDescriptor.type === 'spiral'){
-    TOP_ROW_Y = pegPositions.reduce((m,p)=>p.y>m?p.y:m,-Infinity);
-  } else {
-    TOP_ROW_Y = ROWS/2 * (BOARD_WIDTH/(ROWS+1));
-  }
+  clampPegPositions(pegPositions);
+  ROWS=rows;
+  SLOT_COUNT=slotCount;
+  TOP_ROW_Y = currentLayoutDescriptor.type==='spiral'
+    ? pegPositions.reduce((m,p)=>p.y>m?p.y:m,-Infinity)
+    : ROWS/2 * (BOARD_WIDTH/(ROWS+1));
 
   const oldMesh = pegInstancedMesh;
-  const oldPositions = extractPositionsFromInstanced(oldMesh);
-  const newPositions = pegPositions.slice();
-
-  // Remove old physics & create new bodies (collisions disabled until end)
+  const oldPositions = extractPositions(oldMesh);
   clearExistingBoardPhysics();
-  createPegBodies(newPositions,false); // no collisions yet
+  createPegBodies(pegPositions);
   addWallsAndSlots();
   layoutOverlays();
 
-  // Build new instanced mesh
-  const newMesh = buildInstancedMesh(newPositions);
-  newMesh.material.opacity=0; // start invisible
+  const newMesh=buildPegInstancedMesh(pegPositions);
+  newMesh.material.opacity=0;
   scene.add(newMesh);
-  pegInstancedMesh = newMesh;
-
-  // Morph or crossfade
-  const oldCount = oldPositions.length;
-  const newCount = newPositions.length;
-  const countDiff = Math.abs(oldCount - newCount) / Math.max(1,newCount);
+  pegInstancedMesh=newMesh;
 
   if(!oldMesh){
-    // First layout: just fade in
-    gsap.to(newMesh.material,{opacity:1,duration:0.5,ease:'power2.out',onComplete:activateNewLayoutPhysics});
+    gsap.to(newMesh.material,{opacity:1,duration:0.5,ease:'power2.out'});
     return;
   }
 
-  if(countDiff <= PEG_COUNT_DIFF_THRESHOLD){
-    // Morph shared subset
-    const shared = Math.min(oldCount,newCount);
-    const dummy = new THREE.Object3D();
-    const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
-    const morphData = [];
+  const oldCount=oldPositions.length;
+  const newCount=pegPositions.length;
+  const diffRatio = Math.abs(oldCount-newCount)/Math.max(1,newCount);
+
+  if(diffRatio <= PEG_COUNT_DIFF_THRESHOLD){
+    // Morph shared portion
+    const shared=Math.min(oldCount,newCount);
+    const morphData=[];
     for(let i=0;i<shared;i++){
       morphData.push({
-        sx: oldPositions[i].x,
-        sy: oldPositions[i].y,
-        tx: newPositions[i].x,
-        ty: newPositions[i].y
+        sx:oldPositions[i].x, sy:oldPositions[i].y,
+        tx:pegPositions[i].x, ty:pegPositions[i].y
       });
     }
     newMesh.material.opacity=1;
-    // Keep old mesh visible
     oldMesh.material.transparent=true;
-    gsap.to(oldMesh.material,{opacity:0,duration:PEG_MORPH_DURATION*0.7,ease:'power1.in'});
+    gsap.to(oldMesh.material,{opacity:0,duration:PEG_MORPH_DURATION*0.6,ease:'power1.in'});
     const tObj={t:0};
+    const dummy=new THREE.Object3D();
+    const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
     gsap.to(tObj,{
       t:1,
       duration:PEG_MORPH_DURATION,
@@ -701,63 +716,39 @@ function animateLayoutTransition(){
       onUpdate:()=>{
         for(let i=0;i<shared;i++){
           const d=morphData[i];
-            const x=d.sx + (d.tx-d.sx)*tObj.t;
-            const y=d.sy + (d.ty-d.sy)*tObj.t;
-            dummy.position.set(x,y,0);
-            dummy.quaternion.copy(q);
-            dummy.scale.set(1,1,1);
-            dummy.updateMatrix();
-            newMesh.setMatrixAt(i,dummy.matrix);
+          dummy.position.set(
+            d.sx+(d.tx-d.sx)*tObj.t,
+            d.sy+(d.ty-d.sy)*tObj.t,
+            0
+          );
+          dummy.quaternion.copy(q);
+          dummy.scale.set(1,1,1);
+          dummy.updateMatrix();
+          newMesh.setMatrixAt(i,dummy.matrix);
         }
         newMesh.instanceMatrix.needsUpdate=true;
       },
       onComplete:()=>{
-        // If new has extra pegs beyond shared, they're already in place from build
         scene.remove(oldMesh);
         oldMesh.geometry.dispose();
         oldMesh.material.dispose();
-        activateNewLayoutPhysics();
       }
     });
   } else {
-    // Crossfade: fade old out, new in
+    // Crossfade
     oldMesh.material.transparent=true;
     gsap.to(oldMesh.material,{opacity:0,duration:PEG_CROSSFADE_DURATION,ease:'power1.in'});
-    gsap.fromTo(newMesh.material,
-      {opacity:0},
-      {
-        opacity:1,duration:PEG_CROSSFADE_DURATION,ease:'power2.out',
-        onComplete:()=>{
-          scene.remove(oldMesh);
-          oldMesh.geometry.dispose();
-          oldMesh.material.dispose();
-          activateNewLayoutPhysics();
-        }
-      }
-    );
+    gsap.to(newMesh.material,{opacity:1,duration:PEG_CROSSFADE_DURATION,ease:'power2.out',onComplete:()=>{
+      scene.remove(oldMesh);
+      oldMesh.geometry.dispose();
+      oldMesh.material.dispose();
+    }});
   }
 }
 
-function activateNewLayoutPhysics(){
-  // Enable collisions for newly created peg bodies
-  for(const pb of pegBodies){
-    if(pb.collisionFilter && pb.collisionFilter.mask===0){
-      pb.collisionFilter = { }; // reset to default
-    }
-  }
-  console.info('[Layout] Transition complete:', currentLayoutId);
-}
-
-/* Cycle layout (button) */
-function cycleLayout(){
-  const all=mergedLayoutRotationList();
-  if(!currentLayoutId){ ensureLayout(null); return; }
-  const idx=all.indexOf(currentLayoutId);
-  const next= all[(idx+1)%all.length];
-  ensureLayout(next);
-}
-
-/* Collision handling */
+/* -------------------------------------------------
+   COLLISIONS
+-------------------------------------------------- */
 function bindCollisions(){
   Events.on(engine,'collisionStart', ev=>{
     for(const {bodyA,bodyB} of ev.pairs){
@@ -793,7 +784,9 @@ function handlePair(a,b){
   if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
 }
 
-/* Performance adaptation */
+/* -------------------------------------------------
+   PERFORMANCE ADAPT
+-------------------------------------------------- */
 function adaptQuality(frameMs){
   frameAccum+=frameMs; frameSamples++;
   perfData.frames++;
@@ -820,7 +813,9 @@ function adaptQuality(frameMs){
   }
 }
 
-/* Loop */
+/* -------------------------------------------------
+   MAIN LOOP
+-------------------------------------------------- */
 let vibranceTime=0;
 function startLoop(){
   let last=performance.now(), acc=0;
@@ -832,9 +827,10 @@ function startLoop(){
       acc-=FIXED_DT; steps++;
     }
     clampVelocities();
-    nudgeBallsFromWalls(); // mitigate wedge
-    if(fxMgr) fxMgr.update(fxCtx,dt);
+    nudgeBallsFromWalls();
+    fxMgr?.update(fxCtx,dt);
     updateThreeFromMatter();
+
     camera.position.x += (baseCamPos.x + targetCamOffset.x - camera.position.x)*0.06;
     camera.position.y += (baseCamPos.y + targetCamOffset.y - camera.position.y)*0.06;
 
@@ -854,20 +850,15 @@ function startLoop(){
   requestAnimationFrame(tick);
 }
 
-/* Wedge Mitigation: Nudge Balls */
 function nudgeBallsFromWalls(){
-  const leftLimit  = -BOARD_WIDTH/2 + WALL_NUDGE_ZONE;
-  const rightLimit =  BOARD_WIDTH/2 - WALL_NUDGE_ZONE;
+  const leftLim=-BOARD_WIDTH/2 + WALL_NUDGE_ZONE;
+  const rightLim=BOARD_WIDTH/2 - WALL_NUDGE_ZONE;
   for(const b of dynamicBodies){
     if(!b.position) continue;
-    if(b.position.x < leftLimit){
-      if(b.velocity.x < 0.2){
-        Body.setVelocity(b,{x:b.velocity.x + WALL_NUDGE_FORCE, y:b.velocity.y});
-      }
-    } else if(b.position.x > rightLimit){
-      if(b.velocity.x > -0.2){
-        Body.setVelocity(b,{x:b.velocity.x - WALL_NUDGE_FORCE, y:b.velocity.y});
-      }
+    if(b.position.x < leftLim && b.velocity.x < 0.2){
+      Body.setVelocity(b,{x:b.velocity.x+WALL_NUDGE_FORCE,y:b.velocity.y});
+    }else if(b.position.x > rightLim && b.velocity.x > -0.2){
+      Body.setVelocity(b,{x:b.velocity.x-WALL_NUDGE_FORCE,y:b.velocity.y});
     }
   }
 }
@@ -876,13 +867,14 @@ function clampVelocities(){
   for(const b of dynamicBodies){
     let {x,y}=b.velocity;
     if(Math.abs(x)>MAX_H_SPEED) x=Math.sign(x)*MAX_H_SPEED;
-    const sp=Math.hypot(x,y);
-    if(sp>MAX_SPEED){
-      const k=MAX_SPEED/sp; x*=k; y*=k;
+    const s=Math.hypot(x,y);
+    if(s>MAX_SPEED){
+      const k=MAX_SPEED/s; x*=k; y*=k;
     }
     Body.setVelocity(b,{x,y});
   }
 }
+
 function updateThreeFromMatter(){
   dynamicBodies.forEach(body=>{
     const mesh=meshById.get(body.id);
@@ -895,14 +887,19 @@ function updateThreeFromMatter(){
   });
 }
 
-/* Spawn */
+/* -------------------------------------------------
+   SPAWNING
+-------------------------------------------------- */
 function spawnBallSet(o){ spawnSingle(o); }
 function spawnSingle({username,avatarUrl}){
   const margin=4;
-  const dropX = (Math.random()-0.5)*(BOARD_WIDTH - margin*2);
-  const dropY = TOP_ROW_Y + PEG_RADIUS*4;
+  const dropX=(Math.random()-0.5)*(BOARD_WIDTH - margin*2);
+  const dropY=TOP_ROW_Y + PEG_RADIUS*4;
   const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{
-    restitution:BALL_RESTITUTION,friction:BALL_FRICTION,frictionAir:BALL_FRICTION_AIR,density:0.0018
+    restitution:BALL_RESTITUTION,
+    friction:BALL_FRICTION,
+    frictionAir:BALL_FRICTION_AIR,
+    density:0.0018
   });
   body.label=`BALL_${username}`;
   body.plugin={username,avatarUrl,scored:false};
@@ -910,6 +907,7 @@ function spawnSingle({username,avatarUrl}){
   dynamicBodies.add(body);
   Body.setVelocity(body,{x:0,y:0});
   Body.setAngularVelocity(body,0);
+
   if(!sharedBallBaseMaterial){
     sharedBallBaseMaterial=new THREE.MeshPhysicalMaterial({
       color:0xffffff,metalness:0.25,roughness:0.5,
@@ -921,9 +919,11 @@ function spawnSingle({username,avatarUrl}){
   const mesh=new THREE.Mesh(sharedBallGeo,sharedBallBaseMaterial.clone());
   scene.add(mesh);
   meshById.set(body.id,mesh);
+
   const sprite=buildNameSprite(username);
   scene.add(sprite);
   labelById.set(body.id,sprite);
+
   const applyTex=async()=>{
     try{
       let prom=avatarTextureCache.get(avatarUrl||'');
@@ -936,6 +936,7 @@ function spawnSingle({username,avatarUrl}){
   ('requestIdleCallback' in window)?requestIdleCallback(applyTex,{timeout:600}):setTimeout(applyTex,0);
   sfxDrop();
 }
+
 function tryRemoveBall(body){
   try{
     const mesh=meshById.get(body.id);
@@ -953,43 +954,45 @@ function tryRemoveBall(body){
     meshById.delete(body.id);
     labelById.delete(body.id);
     dynamicBodies.delete(body);
-    World.remove(world, body);
+    World.remove(world,body);
   }catch{}
 }
 
-/* Points / leaderboard */
+/* -------------------------------------------------
+   POINTS / LEADERBOARD
+-------------------------------------------------- */
 async function awardPoints(username, avatarUrl, points){
-  const current=leaderboard[username] || { username, avatarUrl, score:0 };
+  const current=leaderboard[username]||{username,avatarUrl,score:0};
   const next=current.score+points;
-  leaderboard[username]={ username, avatarUrl, score:next, lastUpdate:Date.now() };
+  leaderboard[username]={username,avatarUrl,score:next,lastUpdate:Date.now()};
   refreshLeaderboard();
-  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
-    username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
+  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,{
+    username,avatarUrl:avatarUrl||'',score:next,lastUpdate:Date.now()
   }).catch(()=>{});
 }
 function setPointsLocal(username, avatarUrl, score){
-  leaderboard[username]={ username, avatarUrl, score, lastUpdate:Date.now() };
+  leaderboard[username]={username,avatarUrl,score,lastUpdate:Date.now()};
   refreshLeaderboard();
 }
 function deductPoints(username, avatarUrl, points){
-  const current=leaderboard[username] || { username, avatarUrl, score:0 };
-  if(current.score < points) return false;
-  const next=current.score - points;
-  leaderboard[username]={ username, avatarUrl, score: next, lastUpdate: Date.now() };
+  const cur=leaderboard[username]||{username,avatarUrl,score:0};
+  if(cur.score<points) return false;
+  const next=cur.score-points;
+  leaderboard[username]={username,avatarUrl,score:next,lastUpdate:Date.now()};
   refreshLeaderboard();
-  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
-    username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
+  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,{
+    username,avatarUrl:avatarUrl||'',score:next,lastUpdate:Date.now()
   }).catch(()=>{});
   return true;
 }
 function refreshLeaderboard(){
-  const entries=Object.values(leaderboard).sort((a,b)=>b.score-a.score).slice(0,50);
+  const items=Object.values(leaderboard).sort((a,b)=>b.score-a.score).slice(0,50);
   leaderboardList.innerHTML='';
-  for(const e of entries){
+  for(const e of items){
     const li=document.createElement('li'); li.className='lb-item';
     const ava=document.createElement('div'); ava.className='lb-ava';
     if(e.avatarUrl) ava.style.backgroundImage=`url(${e.avatarUrl})`;
-    const name=document.createElement('div'); name.className='lb-name'; name.textContent='@'+(e.username||'viewer');
+    const name=document.createElement('div'); name.className='lb-name'; name.textContent='@'+e.username;
     const score=document.createElement('div'); score.className='lb-score'; score.textContent=e.score.toLocaleString();
     li.append(ava,name,score);
     leaderboardList.appendChild(li);
@@ -999,27 +1002,29 @@ function clearLeaderboardLocal(){
   Object.keys(leaderboard).forEach(k=>delete leaderboard[k]);
   leaderboardList.innerHTML='';
 }
-function handleRedeemEvent(eventId, username, avatarUrl, tier){
-  if(processedRedemptions.has(eventId)) return;
-  processedRedemptions.add(eventId);
+function handleRedeemEvent(id, username, avatarUrl, tier){
+  if(processedRedemptions.has(id)) return;
+  processedRedemptions.add(id);
   const cost=REWARD_COSTS[tier];
   if(!cost) return;
-  if(devFreeToggle.checked && (leaderboard[username]?.score||0) < cost){
-    setPointsLocal(username, avatarUrl, cost);
+  if(devFreeToggle.checked && (leaderboard[username]?.score||0)<cost){
+    setPointsLocal(username,avatarUrl,cost);
   }
-  if(!deductPoints(username, avatarUrl, cost)) return;
-  enqueueRedemption(eventId, tier, username, avatarUrl);
+  if(!deductPoints(username,avatarUrl,cost)) return;
+  enqueueRedemption(id,tier,username,avatarUrl);
 }
 
-/* Event listening */
+/* -------------------------------------------------
+   EVENT LISTENERS (BACKEND)
+-------------------------------------------------- */
 function listenToEvents(){
   if(!window.FirebaseREST){
-    console.error('[game.js] FirebaseREST missing, events disabled.');
+    console.error('[game.js] FirebaseREST missing.');
     return;
   }
   FirebaseREST.onChildAdded('/events',(id,obj)=>{
     if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
-    const ts=typeof obj.timestamp==='number'?obj.timestamp:0;
+    const ts=Number(obj.timestamp)||0;
     if(ts && ts < startTime - 60_000) return;
     processedEvents.add(id);
 
@@ -1028,31 +1033,30 @@ function listenToEvents(){
     const command=(obj.command||'').toLowerCase();
 
     if(command.startsWith(REDEEM_PREFIX)){
-      const tier=command.split(':')[1];
-      handleRedeemEvent(id, username, avatarUrl, tier);
+      handleRedeemEvent(id,username,avatarUrl,command.split(':')[1]);
       return;
     }
     if(isGiftEvent(obj)){
-      const spawnEnabledText = spawnStatusEl?.textContent || 'unknown';
-      if(spawnEnabledText === 'false' && !devFreeToggle.checked){ return; }
-      spawnGiftBalls(username, avatarUrl, obj);
+      const spawnEnabledText=spawnStatusEl?.textContent || 'true';
+      if(spawnEnabledText==='false' && !devFreeToggle.checked) return;
+      spawnGiftBalls(username,avatarUrl,obj);
       return;
     }
     if(command.includes('drop') || command.startsWith('gift')){
-      spawnBallSet({ username, avatarUrl });
+      spawnBallSet({username,avatarUrl});
     }
   });
 
   FirebaseREST.onValue('/leaderboard',(data)=>{
     if(data && typeof data==='object'){
       for(const k of Object.keys(data)){
-        const entry=data[k];
-        if(entry?.username){
-          leaderboard[entry.username]={
-            username:entry.username,
-            avatarUrl: entry.avatarUrl||'',
-            score: entry.score||0,
-            lastUpdate: entry.lastUpdate||0
+        const e=data[k];
+        if(e?.username){
+          leaderboard[e.username]={
+            username:e.username,
+            avatarUrl:e.avatarUrl||'',
+            score:e.score||0,
+            lastUpdate:e.lastUpdate||0
           };
         }
       }
@@ -1065,34 +1069,27 @@ function listenToEvents(){
     const enabled=!!data.spawnEnabled;
     spawnStatusEl.textContent=enabled?'true':'false';
     spawnStatusEl.style.color=enabled?'var(--good)':'var(--danger)';
-    const layoutId = data.layoutId || data.layout || null;
-    if(layoutId){
-      ensureLayout(layoutId);
-    }
+    const layoutId=data.layoutId || data.layout;
+    if(layoutId) ensureLayout(layoutId);
   });
 }
 
-function sanitize(u){
-  const s=String(u||'').trim();
-  return s ? s.slice(0,24) : 'viewer';
-}
-
-/* Teasers & Dev */
+/* -------------------------------------------------
+   TEASERS & DEV
+-------------------------------------------------- */
 function initTeasers(){
   initPBRTeasers({
-    scene,
-    camera,
-    renderer,
-    gsap,
+    scene,camera,renderer,gsap,
     onCrateClick:(tier)=>devRedeem(tier,'ClickUser'),
-    initialScale: CRATE_SCALE
+    initialScale:CRATE_SCALE
   });
 }
-function devRedeem(tier='t1', user='DevUser'){
-  const id='dev_'+Date.now()+'_'+Math.random().toString(36).slice(2);
-  handleRedeemEvent(id,user,'',tier);
+function devRedeem(tier='t1',user='DevUser'){
+  handleRedeemEvent('dev_'+Date.now(),user,'',tier);
 }
-function devDrop(user='DevUser'){ spawnBallSet({ username:user, avatarUrl:'' }); }
+function devDrop(user='DevUser'){
+  spawnBallSet({username:user,avatarUrl:''});
+}
 window.devRedeem=devRedeem;
 window.devDrop=devDrop;
 
@@ -1108,13 +1105,13 @@ function initDevPanel(){
 }
 function initGiftCards(){
   document.querySelectorAll('.gift-card').forEach(card=>{
-    card.addEventListener('click',()=>{
-      devDrop(card.dataset.gift || 'GiftUser');
-    });
+    card.addEventListener('click',()=>devDrop(card.dataset.gift||'GiftUser'));
   });
 }
 
-/* Draggables */
+/* -------------------------------------------------
+   DRAGGABLE PANELS
+-------------------------------------------------- */
 function initDraggables(){
   const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
   panels.forEach(p=>{
@@ -1124,7 +1121,7 @@ function initDraggables(){
     ensurePanelOnScreen(p,true);
   });
 
-  window.addEventListener('wheel', e=>{
+  window.addEventListener('wheel',e=>{
     if(!e.altKey) return;
     const el=e.target.closest('[data-drag][data-scale]');
     if(!el) return;
@@ -1136,7 +1133,7 @@ function initDraggables(){
     renderTransform(el);
     savePanel(el);
     if(el===commandsPanel) forceCommandsVisible();
-  }, { passive:false });
+  },{passive:false});
 
   window.resetAllPanels=()=>{
     panels.forEach(p=>{
@@ -1180,9 +1177,10 @@ function preparePanel(panel){
   panel.dataset.scale=scale;
   renderTransform(panel);
 }
+
 function attachDrag(panel){
-  const handles = panel.querySelectorAll('.drag-bar, .cmd-title, .drag-handle');
-  const dragEls = handles.length?handles:[panel];
+  const handles=panel.querySelectorAll('.drag-bar,.cmd-title,.drag-handle');
+  const dragEls=handles.length?handles:[panel];
   let dragging=false,sx=0,sy=0,startX=0,startY=0;
   dragEls.forEach(h=>{
     h.style.cursor='grab';
@@ -1199,10 +1197,8 @@ function attachDrag(panel){
   });
   window.addEventListener('pointermove',e=>{
     if(!dragging) return;
-    let nx=startX+(e.clientX-sx);
-    let ny=startY+(e.clientY-sy);
-    panel.dataset.x=nx;
-    panel.dataset.y=ny;
+    panel.dataset.x=startX+(e.clientX-sx);
+    panel.dataset.y=startY+(e.clientY-sy);
     renderTransform(panel);
   });
   window.addEventListener('pointerup',()=>{
@@ -1214,6 +1210,7 @@ function attachDrag(panel){
     }
   });
 }
+
 function attachScale(panel){
   const handle=panel.querySelector('.resize-handle');
   if(!handle) return;
@@ -1241,6 +1238,7 @@ function attachScale(panel){
     }
   });
 }
+
 function renderTransform(panel){
   const x=parseFloat(panel.dataset.x||'0');
   const y=parseFloat(panel.dataset.y||'0');
@@ -1249,28 +1247,25 @@ function renderTransform(panel){
   if(panel===commandsPanel) forceCommandsVisible();
 }
 function savePanel(panel){
-  const posKey=storageKey(panel,'pos');
-  const scaleKey=storageKey(panel,'scale');
-  const x=parseFloat(panel.dataset.x||'0');
-  const y=parseFloat(panel.dataset.y||'0');
-  const s=parseFloat(panel.dataset.scale||'1');
-  localStorage.setItem(posKey,JSON.stringify({left:x,top:y}));
-  localStorage.setItem(scaleKey,String(s));
+  localStorage.setItem(storageKey(panel,'pos'),JSON.stringify({
+    left:parseFloat(panel.dataset.x||'0'),
+    top:parseFloat(panel.dataset.y||'0')
+  }));
+  localStorage.setItem(storageKey(panel,'scale'),String(parseFloat(panel.dataset.scale||'1')));
 }
 function ensurePanelOnScreen(panel, initial){
   const rect=container.getBoundingClientRect();
   const x=parseFloat(panel.dataset.x||'0');
   const y=parseFloat(panel.dataset.y||'0');
   const s=parseFloat(panel.dataset.scale||'1');
-  const w=panel.offsetWidth * s;
-  const h=panel.offsetHeight * s;
+  const w=panel.offsetWidth*s;
+  const h=panel.offsetHeight*s;
   const margin=30;
-  let changed=false;
-  let nx=x,ny=y;
-  if(x + w < margin) { nx=margin; changed=true; }
-  if(y + h < margin) { ny=margin; changed=true; }
-  if(x > rect.width  - margin){ nx=rect.width - margin - w; changed=true; }
-  if(y > rect.height - margin){ ny=rect.height - margin - h; changed=true; }
+  let nx=x,ny=y,changed=false;
+  if(x + w < margin){ nx=margin; changed=true; }
+  if(y + h < margin){ ny=margin; changed=true; }
+  if(x > rect.width - margin){ nx=rect.width - margin - w; changed=true; }
+  if(y > rect.height- margin){ ny=rect.height- margin - h; changed=true; }
   if(changed){
     panel.dataset.x=nx;
     panel.dataset.y=ny;
@@ -1280,28 +1275,32 @@ function ensurePanelOnScreen(panel, initial){
   if(panel===commandsPanel) forceCommandsVisible();
 }
 
-/* Custom Layout JSON Loader */
+/* -------------------------------------------------
+   CUSTOM LAYOUT LOADER
+-------------------------------------------------- */
 async function loadCustomLayoutsFromUrl(url){
-  if(!url) return alert('Provide a layout JSON URL.');
+  if(!url) return alert('Enter a layouts URL.');
   try{
     const res=await fetch(url,{cache:'no-store'});
     if(!res.ok) throw new Error('HTTP '+res.status);
     const json=await res.json();
-    if(!json || !Array.isArray(json.layouts)) throw new Error('Malformed JSON (expect {layouts:[...]})');
+    if(!json || !Array.isArray(json.layouts)) throw new Error('Malformed JSON expected {layouts:[...]}');
     let count=0;
-    for(const layout of json.layouts){
-      if(!layout.id) continue;
-      registerCustomLayout(layout.id, layout);
+    for(const lay of json.layouts){
+      if(!lay.id) continue;
+      registerCustomLayout(lay.id, lay);
       count++;
     }
-    alert(`Loaded ${count} custom layout(s).`);
+    alert(`Loaded ${count} layout(s).`);
   }catch(e){
-    console.warn('Layout load failed',e);
-    alert('Failed to load layouts: '+e.message);
+    console.warn('Layout load error',e);
+    alert('Layout load failed: '+e.message);
   }
 }
 
-/* Visibility */
+/* -------------------------------------------------
+   VISIBILITY / MISC
+-------------------------------------------------- */
 function forceCommandsVisible(){
   if(!commandsPanel) return;
   commandsPanel.style.opacity='1';
@@ -1323,11 +1322,13 @@ function bindAudioUnlockOnce(){
 }
 bindAudioUnlockOnce();
 
-/* Event listeners (UI) */
-btnGear?.addEventListener('click', showSettingsPanel);
-btnCloseSettings?.addEventListener('click', hideSettings);
+/* -------------------------------------------------
+   UI EVENT BINDINGS
+-------------------------------------------------- */
+btnGear?.addEventListener('click',showSettingsPanel);
+btnCloseSettings?.addEventListener('click',hideSettings);
 btnResetUI?.addEventListener('click',()=>{
-  if(!commandsPanel) return;
+  if(!commandsPanel)return;
   commandsPanel.dataset.x='40';
   commandsPanel.dataset.y='120';
   commandsPanel.dataset.scale='1';
@@ -1335,86 +1336,77 @@ btnResetUI?.addEventListener('click',()=>{
   savePanel(commandsPanel);
   forceCommandsVisible();
 });
-
-optDropSpeed.addEventListener('input', applySettings);
-optGravity.addEventListener('input', applySettings);
-optCrateScale.addEventListener('input', applySettings);
-optNeon.addEventListener('change', applySettings);
-optParticles.addEventListener('change', applySettings);
-optVibrance.addEventListener('input', applySettings);
-optVolume.addEventListener('input', e=>setAudioVolume(Number(e.target.value)));
-
+optDropSpeed.addEventListener('input',applySettings);
+optGravity.addEventListener('input',applySettings);
+optCrateScale.addEventListener('input',applySettings);
+optNeon.addEventListener('change',applySettings);
+optParticles.addEventListener('change',applySettings);
+optVibrance.addEventListener('input',applySettings);
+optVolume.addEventListener('input',e=>setAudioVolume(Number(e.target.value)));
 btnSaveAdmin.addEventListener('click',()=>{
   try{
-    const baseUrl=backendUrlInput.value.trim();
+    const base=backendUrlInput.value.trim();
     const token=adminTokenInput.value.trim();
-    setBackendBaseUrl(baseUrl);
+    setBackendBaseUrl(base);
     token?localStorage.setItem('adminToken',token):localStorage.removeItem('adminToken');
-    alert('Saved admin settings.');
-  }catch{ alert('Save failed.'); }
+    alert('Admin settings saved.');
+  }catch{ alert('Save failed'); }
 });
-btnReset.addEventListener('click', async ()=>{
+btnReset.addEventListener('click',async()=>{
   const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
   if(!token) return alert('Provide token.');
   try{
     const res=await adminFetch('/admin/reset-leaderboard',{method:'POST',headers:{'x-admin-token':token}});
-    if(!res.ok) throw new Error();
+    if(!res.ok) throw 0;
     clearLeaderboardLocal();
     alert('Leaderboard reset.');
   }catch{ alert('Reset failed.'); }
 });
-btnToggleSpawn.addEventListener('click', async ()=>{
+btnToggleSpawn.addEventListener('click',async()=>{
   const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
   if(!token) return alert('Provide token.');
   try{
     const curr=spawnStatusEl.textContent==='true';
     const res=await adminFetch(`/admin/spawn-toggle?enabled=${!curr}`,{method:'POST',headers:{'x-admin-token':token}});
-    if(!res.ok) throw new Error();
-    alert(`Spawn set to ${!curr}`);
-  }catch{ alert('Toggle failed.'); }
+    if(!res.ok) throw 0;
+    alert('Spawn set to '+(!curr));
+  }catch{ alert('Toggle failed'); }
 });
-btnSimulate.addEventListener('click', async ()=>{
+btnSimulate.addEventListener('click',async()=>{
   try{
     const name='LocalTester'+Math.floor(Math.random()*1000);
     const res=await adminFetch('/admin/spawn',{
       method:'POST',
       headers:{'content-type':'application/json'},
-      body:JSON.stringify({ username:name, avatarUrl:'', command:'!drop' })
+      body:JSON.stringify({username:name,avatarUrl:'',command:'!drop'})
     });
-    if(!res.ok) throw new Error();
+    if(!res.ok) throw 0;
     alert('Simulated drop sent.');
-  }catch{ alert('Simulation failed.'); }
+  }catch{ alert('Simulation failed'); }
 });
-btnNextLayout?.addEventListener('click', cycleLayout);
+btnNextLayout?.addEventListener('click',cycleLayout);
 btnLoadLayouts?.addEventListener('click',()=>loadCustomLayoutsFromUrl(layoutJsonUrlInput.value.trim()));
 
-window.forceShowCommands=()=>{ forceCommandsVisible(); };
-window.simGift=(giftName='Rose', count=1)=>{
+window.forceShowCommands=()=>forceCommandsVisible();
+window.simGift=(giftName='rose',count=1)=>{
   if(window.LocalEventBus){
     for(let i=0;i<count;i++){
       LocalEventBus.injectLocalEvent({
-        username:'SimGifter',
-        avatarUrl:'',
-        giftName,
-        giftCoins: giftName.toLowerCase()==='rose'?1:10,
-        timestamp:Date.now()
+        username:'SimGifter',giftName, giftCoins: giftName.toLowerCase()==='rose'?1:10, timestamp:Date.now()
       });
     }
-  } else if (window.FirebaseREST){
+  }else if(window.FirebaseREST){
     for(let i=0;i<count;i++){
       FirebaseREST.emitChildAdded('/events',{
-        username:'SimGifter',
-        giftName,
-        giftCoins: giftName.toLowerCase()==='rose'?1:10,
-        timestamp:Date.now()
+        username:'SimGifter',giftName, giftCoins: giftName.toLowerCase()==='rose'?1:10, timestamp:Date.now()
       });
     }
-  } else {
-    console.warn('No event bus available for simGift.');
   }
 };
 
-/* Start */
+/* -------------------------------------------------
+   STARTUP
+-------------------------------------------------- */
 function start(){
   loadSettings();
   initThree();
@@ -1429,4 +1421,5 @@ function start(){
   forceCommandsVisible();
 }
 start();
-})();
+
+})(); // end IIFE
