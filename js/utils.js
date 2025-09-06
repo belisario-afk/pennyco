@@ -1,6 +1,4 @@
-// (Unchanged from previous version except retaining audio guard & FX manager)
-// If you modified earlier, keep your custom bits and only ensure you still export the same API.
-
+// (Unchanged functionality; kept for completeness)
 import * as THREE from 'three';
 
 let audioCtx = null;

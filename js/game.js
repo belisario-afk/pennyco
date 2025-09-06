@@ -1,3 +1,4 @@
+// Game with reward system, adaptive performance (dynamic resolution & render skipping), local dev panel, improved multipliers.
 import * as THREE from 'three';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
@@ -71,6 +72,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
+  // DOM
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -84,7 +86,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const spawnStatusEl   = document.getElementById('spawn-status');
   const redeemLayer     = document.getElementById('redeem-layer');
   const rewardTeasersRoot = document.getElementById('reward-teasers');
+  const devPanel        = document.getElementById('dev-panel');
 
+  // Settings
   const btnGear         = document.getElementById('btn-gear');
   const settingsPanel   = document.getElementById('settings-panel');
   const btnCloseSettings= document.getElementById('btn-close-settings');
@@ -102,6 +106,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const btnSimulate     = document.getElementById('btn-simulate');
 
   let perfPanel, perfData = { avgMs:0, worstMs:0, frames:0, qualityTier:2 };
+
+  // Performance: dynamic resolution
+  const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
+  let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
+  let frameSamples = 0;
+  let frameAccum = 0;
 
   const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS, 20, 14);
   let sharedBallBaseMaterial = null;
@@ -147,15 +157,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       scene.add(model);
       activeReward3D = model;
       activeRewardDisposeFn = animateRewardModel(model, gsap);
-
       model.scale.multiplyScalar(0.01);
-      gsap.to(model.scale, {
-        x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,
-        duration:.55,ease:'back.out(1.7)'
-      });
-      gsap.fromTo(model.rotation,
-        { y: model.rotation.y + Math.PI * 2 },
-        { y: model.rotation.y, duration:.65, ease:'expo.out' });
+      gsap.to(model.scale,{x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,duration:.55,ease:'back.out(1.7)'});
+      gsap.fromTo(model.rotation,{y:model.rotation.y + Math.PI*2},{y:model.rotation.y,duration:.65,ease:'expo.out'});
     } catch {}
   }
   function detachReward3D() {
@@ -176,7 +180,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function playRedemptionAnimation({ evId, tier, username, avatarUrl }) {
     return new Promise(async resolve=>{
-      const cost=REWARD_COSTS[tier]||0;
+      const cost = REWARD_COSTS[tier]||0;
       const wrapper=document.createElement('div');
       wrapper.className=`redeem-anim tier-${tier}`;
       wrapper.setAttribute('data-event', evId);
@@ -200,7 +204,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         defaults:{ease:'expo.out'},
         onComplete:()=>{
           gsap.to(wrapper,{
-            opacity:0,scale:0.8,duration:.4,ease:'power1.in',delay:1.6,
+            opacity:0, scale:0.8, duration:.45, ease:'power1.in', delay:1.6,
             onComplete:()=>{ redeemLayer.removeChild(wrapper); detachReward3D(); resolve(); }
           });
         }
@@ -219,29 +223,24 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  // SLOT LOGIC + IMPROVED MULTIPLIER LABEL RENDERING
   function buildSlots(slotCount){
     const center=Math.floor((slotCount-1)/2);
-    const mult = d => (d===0?16:d===1?9:d===2?5:d===3?3:1);
-    SLOT_MULTIPLIERS = Array.from({length:slotCount}, (_,i)=>mult(Math.abs(i-center)));
-    SLOT_POINTS = SLOT_MULTIPLIERS.map(m=>m*100);
+    const mult=d=>(d===0?16:d===1?9:d===2?5:d===3?3:1);
+    SLOT_MULTIPLIERS=Array.from({length:slotCount},(_,i)=>mult(Math.abs(i-center)));
+    SLOT_POINTS=SLOT_MULTIPLIERS.map(m=>m*100);
   }
-
   function classForMultiplier(m){
     if(m>=16) return 'mult-top';
-    if(m>=9)  return 'mult-high';
-    if(m>=5)  return 'mult-mid';
-    if(m>=3)  return 'mult-low';
+    if(m>=9) return 'mult-high';
+    if(m>=5) return 'mult-mid';
+    if(m>=3) return 'mult-low';
     return 'mult-base';
   }
-
   function renderSlotLabels(slotCount, framePx){
     slotLabelsEl.innerHTML='';
     SLOT_MULTIPLIERS.forEach(m=>{
       const div=document.createElement('div');
       div.className='slot-label '+classForMultiplier(m);
-      div.dataset.mult=m;
-      div.setAttribute('aria-label', `Multiplier x${m}`);
       div.innerHTML=`<span class="x">x</span><span class="val">${m}</span>`;
       slotLabelsEl.appendChild(div);
     });
@@ -280,29 +279,27 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     localStorage.setItem('plk_multiDrop', String(optMultiDrop.value));
     localStorage.setItem('plk_neon',      String(NEON));
     localStorage.setItem('plk_particles', String(PARTICLES));
-    if(world) world.gravity.y = -Math.abs(GRAVITY_MAG);
+    if(world) world.gravity.y=-Math.abs(GRAVITY_MAG);
     if(pegsInstanced){
       pegsInstanced.material.emissive.set(NEON?0x00ffff:0x000000);
-      pegsInstanced.material.emissiveIntensity=NEON?0.30:0.0;
-      pegsInstanced.material.needsUpdate=true;
+      pegsInstanced.material.emissiveIntensity = NEON?0.30:0.0;
     }
     if(bloomPass){
       bloomPass.enabled=NEON;
       bloomPass.strength=NEON?0.75:0.0;
-      bloomPass.threshold=0.2;
-      bloomPass.radius=0.6;
     }
   }
+
   function showSettings(){ gsap.to(settingsPanel,{x:0,duration:.35,ease:'expo.out'}); settingsPanel.setAttribute('aria-hidden','false'); }
   function hideSettings(){ gsap.to(settingsPanel,{x:'110%',duration:.35,ease:'expo.in'}); settingsPanel.setAttribute('aria-hidden','true'); }
 
   function initThree(){
-    renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+    renderer=new THREE.WebGLRenderer({ antialias:true, alpha:true });
     renderer.outputColorSpace=THREE.SRGBColorSpace;
     renderer.toneMapping=THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure=1.0;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.75));
-    renderer.setSize(container.clientWidth,container.clientHeight);
+    renderer.setPixelRatio(currentPR);
+    renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setClearColor(0x000000,0);
     container.appendChild(renderer.domElement);
 
@@ -318,9 +315,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
     composer=new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene,camera));
-    smaaPass=new SMAAPass(renderer.domElement.width,renderer.domElement.height);
+    smaaPass=new SMAAPass(renderer.domElement.width, renderer.domElement.height);
     composer.addPass(smaaPass);
-    bloomPass=new UnrealBloomPass(new THREE.Vector2(renderer.domElement.width,renderer.domElement.height),0.75,0.6,0.2);
+    bloomPass=new UnrealBloomPass(new THREE.Vector2(renderer.domElement.width, renderer.domElement.height),0.75,0.6,0.2);
     composer.addPass(bloomPass);
 
     const ro=new ResizeObserver(onResize); ro.observe(container);
@@ -369,22 +366,23 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const pBottomRight=worldToScreen(new THREE.Vector3(right,bottom,0),camera,renderer);
     const pTrayTopLeft=worldToScreen(new THREE.Vector3(left,trayTop,0),camera,renderer);
     const frame={
-      x:Math.round(pTopLeft.x),
-      y:Math.round(pTopLeft.y),
-      width:Math.round(pBottomRight.x - pTopLeft.x),
-      height:Math.round(pBottomRight.y - pTopLeft.y)
+      x:Math.round(pTopLeft.x),y:Math.round(pTopLeft.y),
+      width:Math.round(pBottomRight.x-pTopLeft.x),
+      height:Math.round(pBottomRight.y-pTopLeft.y)
     };
     const tray={
-      x:frame.x,
-      width:frame.width,
+      x:frame.x,width:frame.width,
       height:Math.round(pBottomRight.y - pTrayTopLeft.y),
       top:Math.round(pTrayTopLeft.y)
     };
-    Object.assign(boardFrame.style,{left:frame.x+'px',top:frame.y+'px',width:frame.width+'px',height:frame.height+'px',display:'block'});
-    Object.assign(slotTray.style,{left:tray.x+'px',top:tray.top+'px',width:tray.width+'px',height:tray.height+'px',display:'block'});
-    Object.assign(boardDivider.style,{left:frame.x+'px',width:frame.width+'px',top:(pTrayTopLeft.y-1)+'px',display:'block'});
+    Object.assign(boardFrame.style,{left:frame.x+'px',top:frame.y+'px',width:frame.width+'px',height:frame.height+'px'});
+    Object.assign(slotTray.style,{left:tray.x+'px',top:tray.top+'px',width:tray.width+'px',height:tray.height+'px'});
+    boardDivider.style.left=frame.x+'px';
+    boardDivider.style.width=frame.width+'px';
+    boardDivider.style.top=(pTrayTopLeft.y-1)+'px';
+    boardDivider.style.display='block';
     boardTitle.style.left=(frame.x+22)+'px';
-    boardTitle.style.top=(frame.y+18)+'px';
+    boardTitle.style.top =(frame.y+18)+'px';
     const slotCount=ROWS+1;
     buildSlots(slotCount);
     renderSlotLabels(slotCount, frame);
@@ -407,7 +405,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const right=Bodies.rectangle( BOARD_WIDTH/2 + WALL_THICKNESS/2,0,WALL_THICKNESS,BOARD_HEIGHT,{isStatic:true});
     const floor=Bodies.rectangle(0,-BOARD_HEIGHT/2 - 6,BOARD_WIDTH + WALL_THICKNESS*2,WALL_THICKNESS,{isStatic:true,label:'KILL'});
     World.add(world,[left,right,floor]);
-    const startY=BOARD_HEIGHT/2 - 10;
+    const startY=BOARD_HEIGHT/2 -10;
     TOP_ROW_Y=startY;
     const rowH=PEG_SPACING*0.9;
     const startX=-((ROWS-1)*PEG_SPACING)/2;
@@ -418,8 +416,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const x=startX + c*PEG_SPACING + (ROWS-1-r)*(PEG_SPACING/2);
         const peg=Bodies.circle(x,y,PEG_RADIUS,{
           isStatic:true,
-            restitution:PEG_RESTITUTION,
-            friction:0.01
+          restitution:PEG_RESTITUTION,
+          friction:0.01
         });
         peg.label='PEG';
         World.add(world,peg);
@@ -427,6 +425,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
     }
     addPegInstancedMesh(pegPositions);
+
     slotSensors=[];
     const slotCount=ROWS+1;
     const slotWidth=BOARD_WIDTH/slotCount;
@@ -448,11 +447,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
     const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
     const mat=new THREE.MeshPhysicalMaterial({
-      color:0x86f7ff,
-      metalness:0.35,
-      roughness:0.35,
-      clearcoat:0.6,
-      clearcoatRoughness:0.2,
+      color:0x86f7ff,metalness:0.35,roughness:0.35,
+      clearcoat:0.6,clearcoatRoughness:0.2,
       emissive:new THREE.Color(0x00ffff),
       emissiveIntensity:0.30
     });
@@ -498,7 +494,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         const mesh=meshById.get(a.id);
         if(mesh){
           const p2=worldToScreen(mesh.position,camera,renderer);
-            fxMgr.addSparks(p2.x,p2.y,'#00f2ea',12);
+          fxMgr.addSparks(p2.x,p2.y,'#00f2ea',12);
         }
       }
       sfxBounce();
@@ -507,45 +503,77 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   function adaptQuality(frameMs){
+    frameAccum += frameMs;
+    frameSamples++;
     perfData.frames++;
     perfData.avgMs = perfData.avgMs ? perfData.avgMs*0.9 + frameMs*0.1 : frameMs;
     if(frameMs > perfData.worstMs) perfData.worstMs=frameMs;
+
+    if(frameSamples >= 60){
+      const avg = frameAccum / frameSamples;
+      // Dynamic resolution scaling
+      if(avg > 22 && currentPR > 0.75){
+        currentPR = Math.max(0.75, currentPR - 0.1);
+        renderer.setPixelRatio(currentPR);
+      } else if(avg < 15 && currentPR < BASE_DEVICE_PR){
+        currentPR = Math.min(BASE_DEVICE_PR, currentPR + 0.1);
+        renderer.setPixelRatio(currentPR);
+      }
+      frameAccum=0; frameSamples=0;
+    }
+
     if(!ADAPTIVE_QUALITY) return;
     const avg=perfData.avgMs;
     let target=2;
-    if(avg>28) target=0; else if(avg>22) target=1;
+    if(avg>30) target=0; else if(avg>23) target=1;
     if(target!==perfData.qualityTier){
       perfData.qualityTier=target;
       if(target===2){
-        bloomPass.strength=0.75; bloomPass.enabled=NEON; smaaPass.enabled=true;
+        bloomPass.enabled=NEON;
+        bloomPass.strength=0.75;
+        smaaPass.enabled=true;
       } else if(target===1){
-        bloomPass.strength=0.45; bloomPass.enabled=NEON; smaaPass.enabled=true;
+        bloomPass.enabled=NEON;
+        bloomPass.strength=0.45;
+        smaaPass.enabled=true;
       } else {
-        bloomPass.strength=0.25; bloomPass.enabled=NEON; smaaPass.enabled=false;
+        bloomPass.enabled=false;
+        bloomPass.strength=0.0;
+        smaaPass.enabled=false;
       }
     }
     if(perfPanel && perfData.frames % 30 === 0){
-      perfPanel.textContent=`fps:${(1000/avg).toFixed(1)} ms:${avg.toFixed(1)} worst:${perfData.worstMs.toFixed(1)} tier:${perfData.qualityTier}`;
+      perfPanel.textContent =
+        `fps:${(1000/perfData.avgMs).toFixed(1)} ms:${perfData.avgMs.toFixed(1)} pR:${currentPR.toFixed(2)} worst:${perfData.worstMs.toFixed(1)} q:${perfData.qualityTier}`;
     }
   }
 
   function startLoop(){
     let last=performance.now(), acc=0;
     function tick(now){
-      const dt=Math.min(200, now-last); last=now; acc+=dt;
+      const dt=Math.min(250, now-last);
+      last=now;
+      acc+=dt;
       let steps=0;
       const maxSteps=maxStepsForFrame(dt);
       while(acc>=FIXED_DT && steps<maxSteps){
-        Engine.update(engine,FIXED_DT);
+        Engine.update(engine, FIXED_DT);
         acc-=FIXED_DT; steps++;
       }
       clampVelocities();
       fxMgr.update(fxCtx, dt);
       updateThreeFromMatter();
+
+      // Rendering strategy: skip heavy composer if low quality & no effects
+      const needComposer = bloomPass.enabled || smaaPass.enabled;
       const t0=performance.now();
-      composer.render();
-      const renderCost=performance.now()-t0;
-      adaptQuality(dt+renderCost);
+      if(needComposer){
+        composer.render();
+      } else {
+        renderer.render(scene,camera);
+      }
+      const frameCost = performance.now()-t0;
+      adaptQuality(dt + frameCost);
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
@@ -553,7 +581,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function clampVelocities(){
     for(const b of dynamicBodies){
-      const vx=b.velocity.x, vy=b.velocity.y;
+      let {x: vx, y: vy} = b.velocity;
       let sx=vx, sy=vy;
       if(Math.abs(sx)>MAX_H_SPEED) sx=Math.sign(sx)*MAX_H_SPEED;
       const speed=Math.hypot(sx,sy);
@@ -585,8 +613,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     const jitter=PEG_SPACING*0.35;
     const dropX=Math.max(-BOARD_WIDTH/2+4, Math.min(BOARD_WIDTH/2-4,(Math.random()-0.5)*jitter));
     const dropY=TOP_ROW_Y + PEG_SPACING*0.8;
-
-    const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{
+    const body = Bodies.circle(dropX,dropY,BALL_RADIUS,{
       restitution:BALL_RESTITUTION,
       friction:BALL_FRICTION,
       frictionAir:BALL_FRICTION_AIR,
@@ -606,12 +633,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         roughness:0.6,
         clearcoat:0.7,
         clearcoatRoughness:0.25,
-        emissive: NEON? new THREE.Color(0x00c6ff): new THREE.Color(0x000000),
+        emissive: NEON ? new THREE.Color(0x00c6ff) : new THREE.Color(0x000000),
         emissiveIntensity: NEON?0.04:0
       });
     }
     const mat=sharedBallBaseMaterial.clone();
-    const mesh=new THREE.Mesh(sharedBallGeo, mat);
+    const mesh=new THREE.Mesh(sharedBallGeo,mat);
     scene.add(mesh);
     meshById.set(body.id, mesh);
 
@@ -619,7 +646,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     scene.add(sprite);
     labelById.set(body.id, sprite);
 
-    const applyTex=async ()=>{
+    const applyTex=async()=>{
       try{
         let prom=avatarTextureCache.get(avatarUrl||'');
         if(!prom){
@@ -636,7 +663,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     };
     if('requestIdleCallback' in window) requestIdleCallback(applyTex,{timeout:600});
     else setTimeout(applyTex,0);
-
     sfxDrop();
   }
 
@@ -672,7 +698,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       await FirebaseREST.update(`/leaderboard/${encodeKey(username)}`, {
         username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
       });
-    }catch(e){ console.warn('Leaderboard write failed', e); }
+    }catch(e){ /* ignore for now */ }
   }
 
   function deductPoints(username, avatarUrl, points){
@@ -707,12 +733,12 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     leaderboardList.innerHTML='';
   }
 
-  function handleRedeemEvent(eventId, username, avatarUrl, tier) {
-    if (processedRedemptions.has(eventId)) return;
+  function handleRedeemEvent(eventId, username, avatarUrl, tier){
+    if(processedRedemptions.has(eventId)) return;
     processedRedemptions.add(eventId);
-    const cost = REWARD_COSTS[tier];
-    if (!cost) return;
-    if (!deductPoints(username, avatarUrl, cost)) return;
+    const cost=REWARD_COSTS[tier];
+    if(!cost) return;
+    if(!deductPoints(username, avatarUrl, cost)) return;
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
@@ -725,9 +751,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const username=sanitizeUsername(obj.username||'viewer');
       const avatarUrl=obj.avatarUrl||'';
       const command=(obj.command||'').toLowerCase();
-
       if(command.startsWith(REDEEM_PREFIX)){
-        const tier = command.split(':')[1];
+        const tier=command.split(':')[1];
         handleRedeemEvent(id, username, avatarUrl, tier);
         return;
       }
@@ -735,11 +760,11 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
 
     FirebaseREST.onValue('/leaderboard',(data)=>{
-      if(data && typeof data==='object' && Object.keys(data).length){
+      if(data && typeof data==='object'){
         for(const k of Object.keys(data)){
           const entry=data[k];
           if(entry?.username){
-            leaderboard[entry.username]={
+            leaderboard[entry.username] = {
               username: entry.username,
               avatarUrl: entry.avatarUrl || '',
               score: entry.score || 0,
@@ -768,35 +793,52 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   function initTeaserBoxes(){
     if(!rewardTeasersRoot) return;
-    const boxes = rewardTeasersRoot.querySelectorAll('.teaser-box');
+    const boxes=rewardTeasersRoot.querySelectorAll('.teaser-box');
     boxes.forEach(box=>{
-      const tier = box.getAttribute('data-tier');
-      const lid  = box.querySelector('.tb-lid');
-      const core = box.querySelector('.tb-core');
-      const idle = gsap.timeline({ repeat:-1, paused:false });
-      idle.to(lid,{ rotationX:-12*Math.PI/180, duration:1.6, ease:'sine.inOut'})
-          .to(lid,{ rotationX:0, duration:1.4, ease:'sine.inOut'});
+      const lid=box.querySelector('.tb-lid');
+      const core=box.querySelector('.tb-core');
+      const idle=gsap.timeline({repeat:-1});
+      idle.to(lid,{rotationX:-12*Math.PI/180,duration:1.6,ease:'sine.inOut'})
+          .to(lid,{rotationX:0,duration:1.4,ease:'sine.inOut'});
       function tease(){
         const t=gsap.timeline();
-        t.to(core,{ rotationZ:0.05, duration:0.1, ease:'power1.inOut'})
-         .to(core,{ rotationZ:-0.05, duration:0.12, ease:'power1.inOut'})
-         .to(core,{ rotationZ:0, duration:0.1, ease:'power1.inOut'});
-        setTimeout(tease, 4000 + Math.random()*4000);
+        t.to(core,{rotationZ:0.05,duration:0.1})
+         .to(core,{rotationZ:-0.05,duration:0.12})
+         .to(core,{rotationZ:0,duration:0.1});
+        setTimeout(tease,4000+Math.random()*4000);
       }
-      setTimeout(tease, 2000 + Math.random()*2000);
-      const cost = REWARD_COSTS[tier] || 0;
-      box.title = `${REWARD_NAMES[tier]} - Cost ${cost.toLocaleString()} pts - Command !${tier}`;
-      box.addEventListener('click', ()=>{
-        gsap.fromTo(box,{scale:1},{scale:1.08,duration:0.18,yoyo:true,repeat:1,ease:'back.out(4)'});
-      });
-      box.addEventListener('keypress', e=>{
-        if(e.key==='Enter' || e.key===' '){
-          e.preventDefault(); box.click();
+      setTimeout(tease,1500+Math.random()*2000);
+    });
+  }
+
+  // Dev panel actions
+  function initDevPanel(){
+    if(!devPanel) return;
+    devPanel.querySelectorAll('button').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        const act=btn.getAttribute('data-act');
+        if(act==='drop'){
+          spawnBallSet({ username:'DevDrop', avatarUrl:'' });
+        } else if(act && act.startsWith('redeem-')){
+          const tier = act.split('-')[1];
+          devRedeem(tier,'DevUser');
         }
       });
     });
   }
 
+  // Dev helpers
+  function devRedeem(tier='t1', user='DevUser'){
+    const id='dev_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+    handleRedeemEvent(id, user, '', tier);
+  }
+  function devDrop(user='DevUser'){
+    spawnBallSet({ username:user, avatarUrl:'' });
+  }
+  window.devRedeem = devRedeem;
+  window.devDrop = devDrop;
+
+  // UI / Audio
   btnGear.addEventListener('click', showSettings);
   btnCloseSettings.addEventListener('click', hideSettings);
   let audioBound=false;
@@ -825,7 +867,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const baseUrl=backendUrlInput.value.trim();
       const token=adminTokenInput.value.trim();
       setBackendBaseUrl(baseUrl);
-      if(token) localStorage.setItem('adminToken',token); else localStorage.removeItem('adminToken');
+      if(token) localStorage.setItem('adminToken', token);
+      else localStorage.removeItem('adminToken');
       alert('Saved admin settings.');
     }catch{ alert('Save failed.'); }
   });
@@ -858,7 +901,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const res=await adminFetch('/admin/spawn',{
         method:'POST',
         headers:{'content-type':'application/json'},
-        body: JSON.stringify({ username:name, avatarUrl:'', command:'!drop' })
+        body:JSON.stringify({ username:name, avatarUrl:'', command:'!drop' })
       });
       if(!res.ok) throw new Error();
       alert('Simulated drop sent.');
@@ -871,6 +914,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     initMatter();
     listenToEvents();
     initTeaserBoxes();
+    initDevPanel();
     startLoop();
   }
   start();
