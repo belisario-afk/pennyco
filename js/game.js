@@ -1,4 +1,7 @@
-// Game modifications: added vibrance pulse (bloom modulation), parallax camera motion, vibrance slider, increased exposure, crate scale integration (already), brighter ambience.
+// Fixed: re-added showSettings() & hideSettings() that were missing (causing ReferenceError).
+// Added fallback gift click test (optional: triggers devDrop).
+// Other logic unchanged from previous version except noted fixes.
+
 import * as THREE from 'three';
 import {
   loadAvatarTexture, buildNameSprite, worldToScreen,
@@ -33,7 +36,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
   const WORLD_HEIGHT = 100;
   let WORLD_WIDTH = 56.25;
-
   let BOARD_HEIGHT = WORLD_HEIGHT * 0.82;
   let BOARD_WIDTH  = 0;
   let PEG_SPACING  = 4.2;
@@ -55,7 +57,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const PEG_RESTITUTION  = 0.02;
   const BALL_FRICTION    = 0.04;
   const BALL_FRICTION_AIR= 0.012;
-
   const MAX_SPEED = 28;
   const MAX_H_SPEED = 22;
 
@@ -78,7 +79,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let TOP_ROW_Y = 0;
   const startTime = Date.now();
 
-  // DOM
+  // DOM refs
   const container       = document.getElementById('game-container');
   const fxCanvas        = document.getElementById('fx-canvas');
   const fxCtx           = fxCanvas.getContext('2d');
@@ -95,7 +96,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   const devFreeToggle   = document.getElementById('dev-free-toggle');
   const commandsPanel   = document.getElementById('commands-panel');
 
-  // Settings
+  // Settings elements
   const btnGear         = document.getElementById('btn-gear');
   const settingsPanel   = document.getElementById('settings-panel');
   const btnCloseSettings= document.getElementById('btn-close-settings');
@@ -117,11 +118,23 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
   devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
-  // Perf
+  // Performance stats
   let perfPanel, perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
   const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
   let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
   let frameSamples=0, frameAccum=0;
+
+  // Re-added show/hide settings (FIX for ReferenceError)
+  function showSettings(){
+    if(!settingsPanel) return;
+    gsap.to(settingsPanel,{x:0,duration:.35,ease:'expo.out'});
+    settingsPanel.setAttribute('aria-hidden','false');
+  }
+  function hideSettings(){
+    if(!settingsPanel) return;
+    gsap.to(settingsPanel,{x:'110%',duration:.35,ease:'expo.in'});
+    settingsPanel.setAttribute('aria-hidden','true');
+  }
 
   const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
   let sharedBallBaseMaterial = null;
@@ -133,7 +146,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   let activeRewardDisposeFn = null;
   let activeRedemptionCrate = null;
 
-  /* Redemption queue & model handling -------------------------------- */
+  /* Redemption Queue */
   function enqueueRedemption(evId,tier,username,avatarUrl){
     redeemQueue.push({evId,tier,username,avatarUrl});
     runNextRedemption();
@@ -171,8 +184,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         x:activeReward3D.scale.x*0.01,
         y:activeReward3D.scale.y*0.01,
         z:activeReward3D.scale.z*0.01,
-        duration:.35,
-        ease:'power2.in',
+        duration:.35,ease:'power2.in',
         onComplete:()=>{
           if(activeReward3D) scene.remove(activeReward3D);
           if(activeRewardDisposeFn) activeRewardDisposeFn();
@@ -207,7 +219,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Slots ----------------------------------------------------------- */
+  /* Slots */
   function buildSlots(slotCount){
     const center=Math.floor((slotCount-1)/2);
     const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
@@ -229,10 +241,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       div.innerHTML=`<span class="x">x</span><span class="val">${m}</span>`;
       slotLabelsEl.appendChild(div);
     });
-    trayDividers.style.setProperty('--slot-width',`${framePx.width/slotCount}px`);
+    trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
   }
 
-  /* Backend / settings ---------------------------------------------- */
+  /* Backend */
   function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
   function setBackendBaseUrl(url){
     const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -245,15 +257,14 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   }
 
   function loadSettings(){
-    const g = Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value=String(g);
-    const ds= Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value=String(ds);
-    const md= Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value=String(md);
-    const cs= Number(localStorage.getItem('plk_crate_scale') ?? '4.4'); if(!Number.isNaN(cs)) { optCrateScale.value=String(cs); CRATE_SCALE=cs; }
-    const vb= Number(localStorage.getItem('plk_vibrance') ?? '0.4'); if(!Number.isNaN(vb)) { optVibrance.value=String(vb); VIBRANCE_PULSE=vb; }
+    const g=Number(localStorage.getItem('plk_gravity') ?? '1'); if(!Number.isNaN(g)) optGravity.value=String(g);
+    const ds=Number(localStorage.getItem('plk_dropSpeed') ?? '0.5'); if(!Number.isNaN(ds)) optDropSpeed.value=String(ds);
+    const md=Number(localStorage.getItem('plk_multiDrop') ?? '1'); if(!Number.isNaN(md)) optMultiDrop.value=String(md);
+    const cs=Number(localStorage.getItem('plk_crate_scale') ?? '4.4'); if(!Number.isNaN(cs)) { optCrateScale.value=String(cs); CRATE_SCALE=cs; }
+    const vb=Number(localStorage.getItem('plk_vibrance') ?? '0.4'); if(!Number.isNaN(vb)) { optVibrance.value=String(vb); VIBRANCE_PULSE=vb; }
     optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
     optParticles.checked=(localStorage.getItem('plk_particles') ?? 'true')==='true';
-    const vol=Number(localStorage.getItem('plk_volume') ?? '0.5');
-    optVolume.value=String(vol); setAudioVolume(vol);
+    const vol=Number(localStorage.getItem('plk_volume') ?? '0.5'); optVolume.value=String(vol); setAudioVolume(vol);
     const savedBase=getBackendBaseUrl(); if(savedBase) backendUrlInput.value=savedBase;
     const tok=localStorage.getItem('adminToken')||''; if(tok) adminTokenInput.value=tok;
     applySettings();
@@ -280,10 +291,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
-  /* Three.js -------------------------------------------------------- */
+  /* Three.js */
   let pegsInstanced;
-  let baseCamPos = new THREE.Vector3(0,0,100);
-  let targetCamOffset = new THREE.Vector3();
+  let baseCamPos=new THREE.Vector3(0,0,100);
+  let targetCamOffset=new THREE.Vector3();
   function initThree(){
     renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
     renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -321,19 +332,18 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       document.body.appendChild(perfPanel);
     }
 
-    // Pointer parallax
-    const rectTarget = { w:0,h:0 };
+    // Parallax
+    const rectTarget={w:0,h:0};
     function updateRect(){ const r=renderer.domElement.getBoundingClientRect(); rectTarget.w=r.width; rectTarget.h=r.height; }
     updateRect();
     window.addEventListener('resize',updateRect);
-    renderer.domElement.addEventListener('pointermove', e=>{
-      const xNorm=(e.clientX / rectTarget.w)*2 - 1;
-      const yNorm=(e.clientY / rectTarget.h)*2 - 1;
+    renderer.domElement.addEventListener('pointermove',e=>{
+      const xNorm=(e.clientX/rectTarget.w)*2 - 1;
+      const yNorm=(e.clientY/rectTarget.h)*2 - 1;
       targetCamOffset.x = xNorm * 3;
       targetCamOffset.y = yNorm * 2;
     });
   }
-
   function computeWorldSize(){
     const w=container.clientWidth||1;
     const h=container.clientHeight||1;
@@ -386,7 +396,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     renderSlotLabels(slotCount, frame);
   }
 
-  /* Matter ---------------------------------------------------------- */
+  /* Matter / Physics */
   function initMatter(){
     engine=Engine.create({enableSleeping:false});
     world=engine.world;
@@ -489,7 +499,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
   }
 
-  /* Performance & render loop -------------------------------------- */
+  /* Performance + Render Loop */
   function adaptQuality(frameMs){
     frameAccum+=frameMs;
     frameSamples++;
@@ -507,10 +517,10 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       }
       frameAccum=0; frameSamples=0;
     }
-    if(!ADAPTIVE_QUALITY)return;
+    if(!ADAPTIVE_QUALITY) return;
     const avg=perfData.avgMs;
     let target=2;
-    if(avg>30)target=0; else if(avg>23)target=1;
+    if(avg>30) target=0; else if(avg>23) target=1;
     if(target!==perfData.qualityTier){
       perfData.qualityTier=target;
       if(target===2){ bloomPass.enabled=NEON; bloomPass.strength=0.65; smaaPass.enabled=true; }
@@ -522,7 +532,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }
   }
 
-  let vibranceTime = 0;
+  let vibranceTime=0;
   function startLoop(){
     let last=performance.now(), acc=0;
     function tick(now){
@@ -537,11 +547,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       fxMgr.update(fxCtx,dt);
       updateThreeFromMatter();
 
-      // Camera parallax smoothing
       camera.position.x += (baseCamPos.x + targetCamOffset.x - camera.position.x)*0.06;
       camera.position.y += (baseCamPos.y + targetCamOffset.y - camera.position.y)*0.06;
 
-      // Vibrance pulse
       if(NEON){
         vibranceTime += dt*0.001;
         const pulse = 1 + Math.sin(vibranceTime*2.2)*0.15*VIBRANCE_PULSE;
@@ -552,7 +560,6 @@ const { Engine, World, Bodies, Events, Body } = Matter;
       const t0=performance.now();
       (bloomPass.enabled || smaaPass.enabled)?composer.render():renderer.render(scene,camera);
       adaptQuality(dt + (performance.now()-t0));
-
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
@@ -581,7 +588,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Spawning -------------------------------------------------------- */
+  /* Spawning */
   function spawnBallSet({username,avatarUrl}){
     const multi=Math.max(1,Math.min(5,Number(optMultiDrop.value||1)));
     for(let i=0;i<multi;i++) spawnSingle({username,avatarUrl});
@@ -649,7 +656,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     }catch{}
   }
 
-  /* Points / leaderboard -------------------------------------------- */
+  /* Leaderboard / Points */
   async function awardPoints(username, avatarUrl, points){
     const current=leaderboard[username] || { username, avatarUrl, score:0 };
     const next=(current.score||0)+points;
@@ -705,7 +712,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     enqueueRedemption(eventId, tier, username, avatarUrl);
   }
 
-  /* Events ---------------------------------------------------------- */
+  /* Firebase events */
   function listenToEvents(){
     FirebaseREST.onChildAdded('/events',(id,obj)=>{
       if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
@@ -731,9 +738,9 @@ const { Engine, World, Bodies, Events, Body } = Matter;
           if(entry?.username){
             leaderboard[entry.username]={
               username:entry.username,
-              avatarUrl:entry.avatarUrl||'',
-              score:entry.score||0,
-              lastUpdate:entry.lastUpdate||0
+              avatarUrl: entry.avatarUrl||'',
+              score: entry.score||0,
+              lastUpdate: entry.lastUpdate||0
             };
           }
         }
@@ -751,7 +758,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     return s ? s.slice(0,24) : 'viewer';
   }
 
-  /* Teasers & dev panel --------------------------------------------- */
+  /* Teasers & Dev */
   function initTeasers(){
     initPBRTeasers({
       scene,
@@ -780,7 +787,16 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     });
   }
 
-  /* Commands panel drag (same as previous version) ------------------ */
+  // Click gift placeholders to simulate drop (local visual test)
+  function initGiftCards(){
+    document.querySelectorAll('.gift-card').forEach(card=>{
+      card.addEventListener('click',()=>{
+        devDrop(card.dataset.gift || 'GiftUser');
+      });
+    });
+  }
+
+  /* Drag Commands Panel */
   function initCommandsPanelDrag(){
     if(!commandsPanel) return;
     const handle=commandsPanel.querySelector('.drag-handle')||commandsPanel;
@@ -806,7 +822,8 @@ const { Engine, World, Bodies, Events, Body } = Matter;
         commandsPanel.style.left=originLeft+'px';
         commandsPanel.style.top =originTop +'px';
       }
-      commandsPanel.classList.add('dragging'); e.preventDefault();
+      commandsPanel.classList.add('dragging');
+      e.preventDefault();
     }
     function move(e){
       if(!dragging) return;
@@ -833,7 +850,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     window.addEventListener('pointerup',up);
   }
 
-  /* UI & audio ------------------------------------------------------ */
+  /* UI + Audio */
   btnGear.addEventListener('click', showSettings);
   btnCloseSettings.addEventListener('click', hideSettings);
   let audioBound=false;
@@ -891,13 +908,17 @@ const { Engine, World, Bodies, Events, Body } = Matter;
   btnSimulate.addEventListener('click', async ()=>{
     try{
       const name='LocalTester'+Math.floor(Math.random()*1000);
-      const res=await adminFetch('/admin/spawn',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ username:name, avatarUrl:'', command:'!drop' })});
+      const res=await adminFetch('/admin/spawn',{
+        method:'POST',
+        headers:{'content-type':'application/json'},
+        body:JSON.stringify({ username:name, avatarUrl:'', command:'!drop' })
+      });
       if(!res.ok) throw new Error();
       alert('Simulated drop sent.');
     }catch{ alert('Simulation failed.'); }
   });
 
-  /* Start ----------------------------------------------------------- */
+  /* Start */
   function start(){
     loadSettings();
     initThree();
@@ -905,6 +926,7 @@ const { Engine, World, Bodies, Events, Body } = Matter;
     listenToEvents();
     initTeasers();
     initDevPanel();
+    initGiftCards();
     initCommandsPanelDrag();
     setTeaserScale(CRATE_SCALE);
     startLoop();
