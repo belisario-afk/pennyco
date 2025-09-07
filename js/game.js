@@ -327,7 +327,7 @@ async function attachReward3D(tier){
       activeReward3D = model;
 
       // Scale pop
-      gsap.to(model.scale,{ x:'+=0.99', y:'+=0.99', z:'+=0.99', duration:0.55, ease:'back.out(1.6)'});
+      gsap.to(model.scale,{ x:'+=1.5', y:'+=1.5', z:'+=1.5', duration:1.25, ease:'back.out(1.6)'});
       // Slow spin
       gsap.to(model.rotation,{ y:Math.PI*2, duration:8, ease:'none', repeat:-1 });
       // Gentle up-down bob
