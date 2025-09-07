@@ -65,6 +65,7 @@
             </div>
           </div>
 
+          <!-- COMMANDS PANEL (multi-drop removed) -->
           <section id="commands-panel" aria-label="Commands List" data-drag data-scale class="drag-enabled">
             <div class="cmd-title drag-handle" title="Drag to move">COMMANDS</div>
 
@@ -94,7 +95,7 @@
                   <div class="gift-name">Rose</div>
                   <div class="gift-note">Drops 1 ball</div>
                 </div>
-                <div class="gift-card" data-gift="finger heart">
+                <div class="gift-card" data-gift="finger-heart">
                   <img src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect rx='18' width='80' height='80' fill='%23ff5ca8'/%3E%3Ctext x='50%25' y='52%25' font-size='40' text-anchor='middle' fill='white'%3E❤️%3C/text%3E%3C/svg%3E" alt="Finger Heart Gift">
                   <div class="gift-name">Finger Heart</div>
                   <div class="gift-note">Drops 1 ball</div>
@@ -149,29 +150,29 @@
 
           <hr class="divider" aria-hidden="true">
 
-            <div class="settings-group">
-              <h4>Admin</h4>
-              <label>Backend URL (Render)
-                <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url">
-              </label>
-              <label class="visually-hidden">Admin Username
-                <input id="admin-username" name="username" type="text" value="admin" autocomplete="username" tabindex="-1">
-              </label>
-              <label>Admin Token / DB Auth
-                <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
-              </label>
-              <div class="admin-actions">
-                <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
-                <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
-              </div>
-              <div class="admin-actions">
-                <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
-                <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
-              </div>
-              <div class="admin-status">
-                <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
-              </div>
+          <div class="settings-group">
+            <h4>Admin</h4>
+            <label>Backend URL (Render)
+              <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url">
+            </label>
+            <label class="visually-hidden">Admin Username
+              <input id="admin-username" name="username" type="text" value="admin" autocomplete="username" tabindex="-1">
+            </label>
+            <label>Admin Token / DB Auth
+              <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
+            </label>
+            <div class="admin-actions">
+              <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
+              <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
             </div>
+            <div class="admin-actions">
+              <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
+              <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
+            </div>
+            <div class="admin-status">
+              <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -180,9 +181,9 @@
         <div class="dev-row">
           <button data-act="drop">Drop</button>
           <button data-act="redeem-t1">T1</button>
-            <button data-act="redeem-t2">T2</button>
-            <button data-act="redeem-t3">T3</button>
-            <label class="dev-free"><input id="dev-free-toggle" type="checkbox"> free</label>
+          <button data-act="redeem-t2">T2</button>
+          <button data-act="redeem-t3">T3</button>
+          <label class="dev-free"><input id="dev-free-toggle" type="checkbox"> free</label>
         </div>
       </div>
 

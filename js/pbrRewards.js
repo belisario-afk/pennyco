@@ -1,4 +1,9 @@
-// Matte crates + crate open sound (imported from utils)
+// pbrRewards.js (MATTE UPDATE)
+// Changes:
+//  - Converted crates to a matte finish (lower metalness, higher roughness, reduced emissive & env intensity)
+//  - Posts / ring / edges also de‑shined
+//  - All previous functionality (scale, redemption front focus, sound, idle anim) retained.
+
 import * as THREE from 'three';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { sfxCrateOpen } from './utils.js';
@@ -16,7 +21,11 @@ let sceneRef, cameraRef, gsapRef;
 const TIER_ORDER = ['t3','t2','t1'];
 let teaserScale = 4.4;
 
-/* Matte parameters */
+/* Matte tuned parameters:
+   - Lower metalness (≈0.1–0.2)
+   - Higher roughness (≈0.8–0.9)
+   - Muted emissive
+*/
 const tierParams = {
   t1: { color: 0x855024, emissive: 0x1c1006, metalness:0.15, roughness:0.86, accent:0xd08c54 },
   t2: { color: 0xb2bac2, emissive: 0x202830, metalness:0.12, roughness:0.88, accent:0xcfdae2 },
@@ -101,6 +110,7 @@ function createCrateMesh(tier, scale=teaserScale){
   const p=tierParams[tier] || tierParams.t1;
   const { body, lid }=makeCrateGeometry();
 
+  // Matte base materials
   const bodyMat=new THREE.MeshStandardMaterial({
     color:p.color,
     metalness:p.metalness,
@@ -120,6 +130,7 @@ function createCrateMesh(tier, scale=teaserScale){
   lidMesh.name=`crateLid_${tier}`;
 
   const edgesGeo=createAccentEdges();
+  // Duller accent lines
   const edgeMat=new THREE.LineBasicMaterial({ color:p.accent, transparent:true, opacity:0.18 });
   const edges=new THREE.LineSegments(edgesGeo,edgeMat);
 
@@ -229,6 +240,7 @@ export function raycastTeasers(raycaster){
   }
 }
 
+// ---- Redemption helpers ----
 function bringCrateToFront(crate){
   crate.position.z = 40;
   crate.traverse(obj=>{
