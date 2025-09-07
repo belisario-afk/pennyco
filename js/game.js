@@ -1,11 +1,10 @@
-/* game.js – Gift Spam Enhancement
-   Adds high-volume ball spawning for rapid gift streaks.
-
-   Key new features:
-   - Spam mode (persisted)
-   - Incremental streak handling
-   - Spawn queue for performance
-   - Adjustable throughput & safety caps
+/* game.js – Gift Spam Enhancement + Spam Mode Settings Checkbox Integrated
+   (Full file, expanded)
+   Features:
+   - Spam Mode toggle via settings checkbox (#opt-spam-mode)
+   - Persisted in localStorage (plk_spam_mode)
+   - High-volume gift streak handling with spawn queue + safety caps
+   - Matte crates, redemption focus, audio, drag/scale panels retained
 */
 
 import * as THREE from 'three';
@@ -52,17 +51,17 @@ const COIN_TO_BALL_RATIO_NORMAL = 10;
 
 /* Spam mode parameters */
 let SPAM_MODE = (localStorage.getItem('plk_spam_mode') || 'false') === 'true';
-const SPAM_MAX_BALLS_PER_EVENT = 400;          // soft clamp per single gift event
-const COIN_TO_BALL_RATIO_SPAM = 4;             // more balls per coin/diamond in spam mode
-const SPAWN_PER_FRAME = 40;                    // drain rate of queue
-const SPAM_GLOBAL_WINDOW_MS = 10_000;          // 10 second window
-const SPAM_GLOBAL_WINDOW_MAX = 6000;           // total balls in window safety cap
-/* You can raise SPAM_GLOBAL_WINDOW_MAX or set Infinity (not recommended). */
+const SPAM_MAX_BALLS_PER_EVENT = 400;
+const COIN_TO_BALL_RATIO_SPAM = 4;
+const SPAWN_PER_FRAME = 40;
+const SPAM_GLOBAL_WINDOW_MS = 10_000;
+const SPAM_GLOBAL_WINDOW_MAX = 6000; // Avoid meltdown; change to Infinity to disable
 
 function setSpamMode(on){
   SPAM_MODE = !!on;
   localStorage.setItem('plk_spam_mode', SPAM_MODE ? 'true':'false');
   console.log('[SpamMode]', SPAM_MODE ? 'ENABLED' : 'DISABLED');
+  if(optSpamMode) optSpamMode.checked = SPAM_MODE;
 }
 window.enableSpam = ()=>setSpamMode(true);
 window.disableSpam= ()=>setSpamMode(false);
@@ -157,6 +156,7 @@ const btnSaveAdmin    = document.getElementById('btn-save-admin');
 const btnReset        = document.getElementById('btn-reset-leaderboard');
 const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
 const btnSimulate     = document.getElementById('btn-simulate');
+const optSpamMode     = document.getElementById('opt-spam-mode'); // NEW
 
 /* Settings panel show/hide */
 function showSettings(){
@@ -207,12 +207,11 @@ function queueBall(username, avatarUrl){
 /* Drain spawn queue each frame */
 function drainSpawnQueue(){
   const now = performance.now();
-  // prune old timestamps
   spawnInLastWindow = spawnInLastWindow.filter(t=> now - t < SPAM_GLOBAL_WINDOW_MS);
   let allowed = Infinity;
   if(SPAM_MODE){
     const remainingWindow = SPAM_GLOBAL_WINDOW_MAX - spawnInLastWindow.length;
-    if(remainingWindow <= 0) return; // window full
+    if(remainingWindow <= 0) return;
     allowed = remainingWindow;
   }
   const batch = Math.min(spawnQueue.length, SPAWN_PER_FRAME, allowed);
@@ -342,6 +341,7 @@ function loadSettings(){
   const vol=read('plk_volume',0.5); optVolume.value=vol; setAudioVolume(vol);
   const savedBase=getBackendBaseUrl(); if(savedBase) backendUrlInput.value=savedBase;
   const tok=localStorage.getItem('adminToken')||''; if(tok) adminTokenInput.value=tok;
+  if(optSpamMode) optSpamMode.checked = SPAM_MODE; // reflect stored
   applySettings();
 }
 function applySettings(){
@@ -651,7 +651,7 @@ function updateThreeFromMatter(){
   });
 }
 
-/* Spawning (queue-based for spam) */
+/* Spawning */
 function spawnBallSet(o){ spawnSingle(o); }
 function spawnSingle({username,avatarUrl}){
   const jitter=PEG_SPACING*0.35;
@@ -786,7 +786,6 @@ function deriveBallCountFromGift(eventObj){
   const coins = eventObj.giftCoins ?? eventObj.coins ?? eventObj.coin ?? eventObj.diamondCount ?? eventObj.diamonds ?? eventObj.value;
 
   if(SPAM_MODE){
-    // Spam scaling
     if(typeof coins === 'number' && coins > 0){
       const scaled = Math.max(1, Math.floor(coins / COIN_TO_BALL_RATIO_SPAM));
       return clamp(scaled, 1, SPAM_MAX_BALLS_PER_EVENT);
@@ -819,32 +818,24 @@ function spawnGiftBalls(username, avatarUrl, giftObj){
   const giftName = resolveGiftName(giftObj).toLowerCase();
   let total = deriveBallCountFromGift(giftObj);
 
-  // Streak incremental logic
   const repeat = giftObj.repeatCount || giftObj.count || giftObj.quantity;
   const streakKey = username + '::' + giftName;
   if(SPAM_MODE && typeof repeat === 'number' && repeat > 0){
     const prev = giftStreakMap.get(streakKey) || 0;
     let delta = repeat - prev;
-    if(delta < 0) delta = repeat; // in case counter resets unexpectedly
-    if(delta === 0) {
-      // no new repeats, skip
-      return;
-    }
+    if(delta < 0) delta = repeat;
+    if(delta === 0) return;
     giftStreakMap.set(streakKey, repeat);
-    // Scale delta by mapped strength if small
     if(delta < total) total = delta;
   }
 
-  // If spam mode off, clamp original limit
   if(!SPAM_MODE) total = clamp(total,1,NORMAL_MAX_BALLS_PER_GIFT);
   else total = clamp(total,1,SPAM_MAX_BALLS_PER_EVENT);
 
-  // Queue balls
   for(let i=0;i<total;i++){
     queueBall(username, avatarUrl);
   }
 
-  // Clear streak on explicit end flags
   if(giftObj.repeatEnd || giftObj.streakEnded || giftObj.streakEnd){
     giftStreakMap.delete(streakKey);
   }
@@ -878,7 +869,6 @@ function listenToEvents(){
     }
 
     if(command.includes('drop') || command.startsWith('gift')){
-      // treat as generic single drop
       queueBall(username, avatarUrl);
     }
   });
@@ -1152,6 +1142,7 @@ optNeon.addEventListener('change', applySettings);
 optParticles.addEventListener('change', applySettings);
 optVibrance.addEventListener('input', applySettings);
 optVolume.addEventListener('input', e=>setAudioVolume(Number(e.target.value)));
+optSpamMode?.addEventListener('change', ()=>setSpamMode(optSpamMode.checked)); // NEW binding
 
 btnSaveAdmin.addEventListener('click',()=>{
   try{
@@ -1210,7 +1201,6 @@ window.simGift=(giftName='Rose', count=1)=>{
       repeatCount:i+1,
       timestamp:Date.now()
     };
-    // emulate gift path
     processLocalGiftEvent(evt);
   }
 };
