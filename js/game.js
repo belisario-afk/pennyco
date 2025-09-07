@@ -1,10 +1,13 @@
-/* game.js – Gift Spam Enhancement + Coin Mapping + Per-Gift Panel (FULL)
-   Additions in this version:
-   - Precise coin -> ball mapping table (5,10,20,30,99,500)
-   - Each gift event now produces at least 1 mapping batch (no silent merge).
-   - Streak logic improved: delta <=0 falls back to 1 gift.
-   - Small consecutive gifts (2–3) no longer merged into a single drop.
-   - Gift value panel (index.html) + spam mode checkbox already integrated.
+/* game.js – Gift Fix v2
+   Changes vs previous:
+   - Robust coin extraction (supports giftCoins, coins, coin, diamondCount, diamonds, diamond_value, value, price).
+   - Exact coin → balls mapping table strictly applied (5,10,20,30,99,500).
+   - If repeatCount not increasing (multiple quick gifts each reported as repeatCount=1) we now still count each event (no merge).
+   - If backend aggregates (repeatCount jumps), we spawn (delta * mappedBalls).
+   - Spam Mode forces every event to spawn at least mappedBalls (delta logic but clamps delta>=1).
+   - isGiftEvent broadened: any numeric coin/diamond field OR typical gift fields.
+   - Added DEBUG_GIFTS flag & verbose logs.
+   - Added fallback for unknown coin values (returns at least 1, or scaled by ratio).
 */
 
 import * as THREE from 'three';
@@ -26,7 +29,9 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 
 const { Engine, World, Bodies, Events, Body } = Matter;
 
-/* ============ CONFIG ============ */
+/* ================= CORE CONFIG ================= */
+window.DEBUG_GIFTS = window.DEBUG_GIFTS ?? false;
+
 const REWARD_COSTS  = { t1:1000, t2:5000, t3:10000 };
 const REWARD_NAMES  = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
 const REDEEM_PREFIX = 'redeem:';
@@ -34,7 +39,7 @@ const DEV_BYPASS_DEFAULT = true;
 const SHOW_PERF_PANEL = true;
 const ADAPTIVE_QUALITY = true;
 
-/* Gift -> base balls mapping by name */
+/* Gift name → base (if coins not matched) */
 const GIFT_BALL_MAP = {
   'rose': 1,
   'finger heart': 1,
@@ -45,186 +50,161 @@ const GIFT_BALL_MAP = {
   'castle': 12
 };
 
-/* Explicit coin mapping (exact price) */
-const COIN_MAPPING_TABLE = [
-  { coins:5,   balls:2 },
-  { coins:10,  balls:3 },
-  { coins:20,  balls:4 },
-  { coins:30,  balls:5 },
-  { coins:99,  balls:10 },
-  { coins:500, balls:60 },
+/* Exact coin mapping table */
+const COIN_MAP = [
+  { c:5,   b:2 },
+  { c:10,  b:3 },
+  { c:20,  b:4 },
+  { c:30,  b:5 },
+  { c:99,  b:10 },
+  { c:500, b:60 }
 ];
 
-/* Fallback ratios */
+/* Fallback ratios & limits */
 const NORMAL_MAX_BALLS_PER_GIFT = 25;
-const COIN_TO_BALL_RATIO_NORMAL = 10;
+const COIN_RATIO_NORMAL = 10;
+const COIN_RATIO_SPAM   = 4;
+const SPAM_MAX_BALLS_PER_EVENT = 400;
+const SPAWN_PER_FRAME = 60;
+const SPAM_GLOBAL_WINDOW_MS = 10000;
+const SPAM_GLOBAL_WINDOW_MAX = 8000;
 
 let SPAM_MODE = (localStorage.getItem('plk_spam_mode') || 'false') === 'true';
-const SPAM_MAX_BALLS_PER_EVENT   = 400;
-const COIN_TO_BALL_RATIO_SPAM    = 4;
-const SPAWN_PER_FRAME            = 40;
-const SPAM_GLOBAL_WINDOW_MS      = 10_000;
-const SPAM_GLOBAL_WINDOW_MAX     = 6000;  // Set Infinity to remove safety cap
-
 function setSpamMode(on){
-  SPAM_MODE = !!on;
-  localStorage.setItem('plk_spam_mode', SPAM_MODE ? 'true':'false');
-  console.log('[SpamMode]', SPAM_MODE ? 'ENABLED' : 'DISABLED');
-  const cb=document.getElementById('opt-spam-mode');
-  if(cb) cb.checked=SPAM_MODE;
+  SPAM_MODE=!!on;
+  localStorage.setItem('plk_spam_mode', SPAM_MODE?'true':'false');
+  const cb=document.getElementById('opt-spam-mode'); if(cb) cb.checked=SPAM_MODE;
+  console.log('[SpamMode]', SPAM_MODE);
 }
-window.enableSpam  = ()=>setSpamMode(true);
-window.disableSpam = ()=>setSpamMode(false);
-window.toggleSpam  = ()=>setSpamMode(!SPAM_MODE);
-window.isSpamMode  = ()=>SPAM_MODE;
+window.enableSpam = ()=>setSpamMode(true);
+window.disableSpam= ()=>setSpamMode(false);
+window.toggleSpam = ()=>setSpamMode(!SPAM_MODE);
+window.isSpamMode = ()=>SPAM_MODE;
 
-/* Physics / World dims */
-const FIXED_DT = 1000/60;
-const MAX_STEPS_BASE = 4;
-const maxStepsForFrame = dt => dt > 140 ? 1 : dt > 90 ? 2 : MAX_STEPS_BASE;
+/* World / physics config */
+const FIXED_DT=1000/60;
+const MAX_STEPS_BASE=4;
+const maxStepsForFrame=dt=>dt>140?1:dt>90?2:MAX_STEPS_BASE;
 
-const WORLD_HEIGHT = 100;
-let WORLD_WIDTH = 56.25;
-let BOARD_HEIGHT = WORLD_HEIGHT * 0.82;
-let BOARD_WIDTH  = 0;
-let PEG_SPACING  = 4.2;
-const ROWS = 12;
-const PEG_RADIUS = 0.75;
-const BALL_RADIUS = 1.5;
-const WALL_THICKNESS = 2.0;
-const TRAY_RATIO = 0.22;
-let TRAY_HEIGHT = 0;
+const WORLD_HEIGHT=100;
+let WORLD_WIDTH=56.25, BOARD_HEIGHT=WORLD_HEIGHT*0.82, BOARD_WIDTH=0, PEG_SPACING=4.2;
+const ROWS=12;
+const PEG_RADIUS=0.75, BALL_RADIUS=1.5, WALL_THICKNESS=2.0, TRAY_RATIO=0.22;
+let TRAY_HEIGHT=0;
 
-let GRAVITY_MAG   = 1.0;
-let DROP_SPEED    = 0.5;
-let NEON          = true;
-let PARTICLES     = true;
-let CRATE_SCALE   = 4.4;
-let VIBRANCE_PULSE= 0.4;
+/* Tunables */
+let GRAVITY_MAG=1.0, DROP_SPEED=0.5, NEON=true, PARTICLES=true, CRATE_SCALE=4.4, VIBRANCE_PULSE=0.4;
 
-const BALL_RESTITUTION = 0.06;
-const PEG_RESTITUTION  = 0.02;
-const BALL_FRICTION    = 0.04;
-const BALL_FRICTION_AIR= 0.012;
-const MAX_SPEED        = 28;
-const MAX_H_SPEED      = 22;
+/* Physics params */
+const BALL_RESTITUTION=0.06, PEG_RESTITUTION=0.02;
+const BALL_FRICTION=0.04, BALL_FRICTION_AIR=0.012;
+const MAX_SPEED=28, MAX_H_SPEED=22;
 
-/* State */
-let engine, world;
-let scene, camera, renderer;
-let ambient, dirLight;
-let composer, bloomPass, smaaPass, fxMgr;
-let slotSensors = [];
-const dynamicBodies = new Set();
-const meshById = new Map();
-const labelById = new Map();
-const leaderboard = {};
-const processedEvents = new Set();
-const processedRedemptions = new Set();
+/* Runtime state */
+let engine, world, scene, camera, renderer;
+let ambient, dirLight, composer, bloomPass, smaaPass, fxMgr;
+let slotSensors=[];
+const dynamicBodies=new Set();
+const meshById=new Map();
+const labelById=new Map();
+const leaderboard={};
+const processedEvents=new Set();
+const processedRedemptions=new Set();
 let SLOT_POINTS=[], SLOT_MULTIPLIERS=[], TOP_ROW_Y=0;
-const startTime = Date.now();
+const startTime=Date.now();
 
-const targetCamOffset = new THREE.Vector3();
-const baseCamPos      = new THREE.Vector3(0,0,100);
+const targetCamOffset=new THREE.Vector3();
+const baseCamPos=new THREE.Vector3(0,0,100);
 
-/* DOM */
-const container       = document.getElementById('game-container');
-const fxCanvas        = document.getElementById('fx-canvas');
-const fxCtx           = fxCanvas.getContext('2d');
-const boardFrame      = document.getElementById('board-frame');
-const boardDivider    = document.getElementById('board-divider');
-const slotTray        = document.getElementById('slot-tray');
-const trayDividers    = document.getElementById('tray-dividers');
-const boardTitle      = document.getElementById('board-title');
-const slotLabelsEl    = document.getElementById('slot-labels');
-const leaderboardList = document.getElementById('leaderboard-list');
-const spawnStatusEl   = document.getElementById('spawn-status');
-const redeemLayer     = document.getElementById('redeem-layer');
-const devPanel        = document.getElementById('dev-panel');
-const devFreeToggle   = document.getElementById('dev-free-toggle');
-const commandsPanel   = document.getElementById('commands-panel');
-const settingsPanel   = document.getElementById('settings-panel');
-const btnGear         = document.getElementById('btn-gear');
-const btnCloseSettings= document.getElementById('btn-close-settings');
-const btnResetUI      = document.getElementById('btn-reset-ui');
-const giftValuePanel  = document.getElementById('gift-value-panel');
+const container=document.getElementById('game-container');
+const fxCanvas  =document.getElementById('fx-canvas');
+const fxCtx     =fxCanvas.getContext('2d');
+const boardFrame=document.getElementById('board-frame');
+const boardDivider=document.getElementById('board-divider');
+const slotTray  =document.getElementById('slot-tray');
+const trayDividers=document.getElementById('tray-dividers');
+const boardTitle=document.getElementById('board-title');
+const slotLabelsEl=document.getElementById('slot-labels');
+const leaderboardList=document.getElementById('leaderboard-list');
+const spawnStatusEl=document.getElementById('spawn-status');
+const redeemLayer=document.getElementById('redeem-layer');
+const devPanel=document.getElementById('dev-panel');
+const devFreeToggle=document.getElementById('dev-free-toggle');
+const commandsPanel=document.getElementById('commands-panel');
+const settingsPanel=document.getElementById('settings-panel');
+const btnGear=document.getElementById('btn-gear');
+const btnCloseSettings=document.getElementById('btn-close-settings');
+const btnResetUI=document.getElementById('btn-reset-ui');
 
-/* Settings fields */
-const optDropSpeed    = document.getElementById('opt-drop-speed');
-const optGravity      = document.getElementById('opt-gravity');
-const optCrateScale   = document.getElementById('opt-crate-scale');
-const optNeon         = document.getElementById('opt-neon');
-const optParticles    = document.getElementById('opt-particles');
-const optVibrance     = document.getElementById('opt-vibrance');
-const optVolume       = document.getElementById('opt-volume');
-const optSpamMode     = document.getElementById('opt-spam-mode');
-const adminTokenInput = document.getElementById('admin-token');
-const backendUrlInput = document.getElementById('backend-url');
-const btnSaveAdmin    = document.getElementById('btn-save-admin');
-const btnReset        = document.getElementById('btn-reset-leaderboard');
-const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
-const btnSimulate     = document.getElementById('btn-simulate');
+const optDropSpeed=document.getElementById('opt-drop-speed');
+const optGravity=document.getElementById('opt-gravity');
+const optCrateScale=document.getElementById('opt-crate-scale');
+const optNeon=document.getElementById('opt-neon');
+const optParticles=document.getElementById('opt-particles');
+const optVibrance=document.getElementById('opt-vibrance');
+const optVolume=document.getElementById('opt-volume');
+const optSpamMode=document.getElementById('opt-spam-mode');
+const adminTokenInput=document.getElementById('admin-token');
+const backendUrlInput=document.getElementById('backend-url');
+const btnSaveAdmin=document.getElementById('btn-save-admin');
+const btnReset=document.getElementById('btn-reset-leaderboard');
+const btnToggleSpawn=document.getElementById('btn-toggle-spawn');
+const btnSimulate=document.getElementById('btn-simulate');
 
-/* Show / hide settings */
+/* Settings panel helpers */
 function showSettings(){
-  settingsPanel?.classList.add('open');
-  settingsPanel?.setAttribute('aria-hidden','false');
+  settingsPanel?.classList.add('open'); settingsPanel?.setAttribute('aria-hidden','false');
 }
 function hideSettings(){
-  settingsPanel?.classList.remove('open');
-  settingsPanel?.setAttribute('aria-hidden','true');
+  settingsPanel?.classList.remove('open'); settingsPanel?.setAttribute('aria-hidden','true');
 }
 
-/* Helpers */
+/* Utility */
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
-const safeNum=(v,f)=>{ const n=parseFloat(v); return Number.isFinite(n)?n:f; };
+const safeNum=(v,f)=>{const n=parseFloat(v);return Number.isFinite(n)?n:f;};
 
-/* Performance */
+/* Performance tracking */
 let perfPanel;
 const perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
-const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
-let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
+const BASE_DEVICE_PR=Math.min(window.devicePixelRatio||1,1.75);
+let currentPR=Math.min(BASE_DEVICE_PR,1.5);
 let frameSamples=0, frameAccum=0;
 
-const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
+const sharedBallGeo=new THREE.SphereGeometry(BALL_RADIUS,20,14);
 let sharedBallBaseMaterial=null;
 const avatarTextureCache=new Map();
 
 /* Redemption queue */
 const redeemQueue=[];
 let redeemActive=false;
-let activeReward3D=null;
-let activeRewardDisposeFn=null;
-let activeRedemptionCrate=null;
+let activeReward3D=null, activeRewardDisposeFn=null, activeRedemptionCrate=null;
 
-function enterRedemptionFocus(){ document.body.classList.add('redeem-focus'); forceCommandsVisible(); }
-function exitRedemptionFocus(){ document.body.classList.remove('redeem-focus'); }
+function enterRedemptionFocus(){document.body.classList.add('redeem-focus');forceCommandsVisible();}
+function exitRedemptionFocus(){document.body.classList.remove('redeem-focus');}
 
 function enqueueRedemption(evId,tier,username,avatarUrl){
-  redeemQueue.push({evId,tier,username,avatarUrl});
-  runNextRedemption();
+  redeemQueue.push({evId,tier,username,avatarUrl});runNextRedemption();
 }
 function runNextRedemption(){
   if(redeemActive) return;
-  const next=redeemQueue.shift();
-  if(!next) return;
+  const next=redeemQueue.shift(); if(!next) return;
   redeemActive=true;
   playRedemptionAnimation(next).then(()=>{redeemActive=false;runNextRedemption();});
 }
-async function prepare3DModel(){ try{ await ensureRewardModelLoaded(); return true; }catch{return false;} }
+async function prepare3DModel(){try{await ensureRewardModelLoaded();return true;}catch{return false;}}
 
 function attachReward3D(tier){
   if(activeReward3D){
     scene.remove(activeReward3D);
     if(activeRewardDisposeFn) activeRewardDisposeFn();
-    activeReward3D=null; activeRewardDisposeFn=null;
+    activeReward3D=null;activeRewardDisposeFn=null;
   }
   try{
     const model=createRewardModelInstance(tier==='t3'?22:tier==='t2'?19:16);
     model.position.set(0,WORLD_HEIGHT*0.27,15);
     scene.add(model);
     activeReward3D=model;
-    activeRewardDisposeFn=animateRewardModel(model, gsap);
+    activeRewardDisposeFn=animateRewardModel(model,gsap);
     model.scale.multiplyScalar(0.01);
     gsap.to(model.scale,{x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,duration:.5,ease:'back.out(1.6)'});
   }catch{}
@@ -257,15 +237,15 @@ function playRedemptionAnimation({tier,username,avatarUrl}){
     activeRedemptionCrate=createRedemptionCrate(tier);
     activeRedemptionCrate.position.set(0,WORLD_HEIGHT*0.05,12);
     scene.add(activeRedemptionCrate);
-    animateCrateEntrance(activeRedemptionCrate, gsap);
+    animateCrateEntrance(activeRedemptionCrate,gsap);
 
     const modelLoaded=await prepare3DModel().catch(()=>false);
-    setTimeout(async ()=>{ await openCrate(activeRedemptionCrate, gsap); if(modelLoaded) attachReward3D(tier); },700);
+    setTimeout(async ()=>{await openCrate(activeRedemptionCrate,gsap);if(modelLoaded) attachReward3D(tier);},700);
 
     setTimeout(()=>{
       gsap.to(hud,{opacity:0,y:24,scale:0.85,duration:.35,ease:'power1.in',onComplete:()=>redeemLayer.removeChild(hud)});
       detachReward3D();
-      disposeRedemptionCrate(activeRedemptionCrate, gsap);
+      disposeRedemptionCrate(activeRedemptionCrate,gsap);
       activeRedemptionCrate=null;
       exitRedemptionFocus();
       resolve();
@@ -274,43 +254,42 @@ function playRedemptionAnimation({tier,username,avatarUrl}){
 }
 
 /* Slots */
-function buildSlots(count){
-  const center=Math.floor((count-1)/2);
+function buildSlots(n){
+  const center=Math.floor((n-1)/2);
   const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
-  SLOT_MULTIPLIERS=Array.from({length:count},(_,i)=>mult(Math.abs(i-center)));
+  SLOT_MULTIPLIERS=Array.from({length:n},(_,i)=>mult(Math.abs(i-center)));
   SLOT_POINTS=SLOT_MULTIPLIERS.map(m=>m*100);
 }
-function renderSlotLabels(count, framePx){
+function renderSlotLabels(n, framePx){
   slotLabelsEl.innerHTML='';
   SLOT_MULTIPLIERS.forEach(m=>{
-    const div=document.createElement('div');
-    div.className='slot-label '+(m>=16?'mult-top':m>=9?'mult-high':m>=5?'mult-mid':m>=3?'mult-low':'mult-base');
-    div.innerHTML=`<span class="x">x</span><span class="val">${m}</span>`;
-    slotLabelsEl.appendChild(div);
+    const d=document.createElement('div');
+    d.className='slot-label '+(m>=16?'mult-top':m>=9?'mult-high':m>=5?'mult-mid':m>=3?'mult-low':'mult-base');
+    d.innerHTML=`<span class="x">x</span><span class="val">${m}</span>`;
+    slotLabelsEl.appendChild(d);
   });
-  trayDividers.style.setProperty('--slot-width', `${framePx.width/count}px`);
+  trayDividers.style.setProperty('--slot-width',`${framePx.width/n}px`);
 }
 
-/* Backend base */
-function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
+/* Backend */
+function getBackendBaseUrl(){return (localStorage.getItem('backendBaseUrl')||'').trim();}
 function setBackendBaseUrl(url){
   const clean=String(url||'').trim().replace(/\/+$/,'');
   if(clean) localStorage.setItem('backendBaseUrl',clean); else localStorage.removeItem('backendBaseUrl');
 }
 function adminFetch(path,opt={}){
-  const base=getBackendBaseUrl();
-  if(!base) throw new Error('Backend URL not set.');
+  const base=getBackendBaseUrl(); if(!base) throw new Error('Backend URL not set');
   return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
 }
 
-/* Settings persistence */
+/* Settings */
 devFreeToggle.checked=(localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
 devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
 function loadSettings(){
   const read=(k,d)=>Number(localStorage.getItem(k) ?? d);
-  optGravity.value = read('plk_gravity',1);
-  optDropSpeed.value= read('plk_dropSpeed',0.5);
+  optGravity.value=read('plk_gravity',1);
+  optDropSpeed.value=read('plk_dropSpeed',0.5);
   optCrateScale.value=read('plk_crate_scale',4.4); CRATE_SCALE=parseFloat(optCrateScale.value);
   optVibrance.value=read('plk_vibrance',0.4); VIBRANCE_PULSE=parseFloat(optVibrance.value);
   optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
@@ -336,13 +315,10 @@ function applySettings(){
   localStorage.setItem('plk_vibrance',VIBRANCE_PULSE);
   if(world) world.gravity.y=-Math.abs(GRAVITY_MAG);
   setTeaserScale(CRATE_SCALE);
-  if(bloomPass){
-    bloomPass.enabled=NEON;
-    bloomPass.strength=NEON?0.6:0;
-  }
+  if(bloomPass){ bloomPass.enabled=NEON; bloomPass.strength=NEON?0.6:0; }
 }
 
-/* Three.js init */
+/* Three.js */
 function initThree(){
   renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
   renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -380,15 +356,14 @@ function initThree(){
   }
 
   const rectTarget={w:0,h:0};
-  function updateRect(){ const r=renderer.domElement.getBoundingClientRect(); rectTarget.w=r.width; rectTarget.h=r.height; }
-  updateRect();
-  window.addEventListener('resize',updateRect);
+  function updateRect(){const r=renderer.domElement.getBoundingClientRect();rectTarget.w=r.width;rectTarget.h=r.height;}
+  updateRect(); window.addEventListener('resize',updateRect);
 
   renderer.domElement.addEventListener('pointermove',e=>{
-    const xNorm=(e.clientX/rectTarget.w)*2 - 1;
-    const yNorm=(e.clientY/rectTarget.h)*2 - 1;
-    targetCamOffset.x = xNorm * 2.5;
-    targetCamOffset.y = yNorm * 1.8;
+    const xNorm=(e.clientX/rectTarget.w)*2 -1;
+    const yNorm=(e.clientY/rectTarget.h)*2 -1;
+    targetCamOffset.x = xNorm*2.5;
+    targetCamOffset.y = yNorm*1.8;
   });
 
   const raycaster=new THREE.Raycaster();
@@ -401,6 +376,7 @@ function initThree(){
     raycastTeasers(raycaster);
   });
 }
+
 function computeWorldSize(){
   const w=container.clientWidth||1;
   const h=container.clientHeight||1;
@@ -411,6 +387,7 @@ function computeWorldSize(){
   PEG_SPACING=BOARD_WIDTH/(ROWS+1);
   TRAY_HEIGHT=BOARD_HEIGHT*TRAY_RATIO;
 }
+
 function onResize(){
   if(!renderer) return;
   renderer.setSize(container.clientWidth,container.clientHeight);
@@ -418,8 +395,8 @@ function onResize(){
   smaaPass.setSize(container.clientWidth,container.clientHeight);
   bloomPass.setSize(container.clientWidth,container.clientHeight);
   computeWorldSize();
-  camera.left=-WORLD_WIDTH/2; camera.right=WORLD_WIDTH/2;
-  camera.top=WORLD_HEIGHT/2; camera.bottom=-WORLD_HEIGHT/2;
+  camera.left=-WORLD_WIDTH/2;camera.right=WORLD_WIDTH/2;
+  camera.top=WORLD_HEIGHT/2;camera.bottom=-WORLD_HEIGHT/2;
   camera.updateProjectionMatrix();
   fxCanvas.width=container.clientWidth;
   fxCanvas.height=container.clientHeight;
@@ -427,6 +404,7 @@ function onResize(){
   updateTeaserLayout();
   forceCommandsVisible();
 }
+
 function layoutOverlays(){
   const left=-BOARD_WIDTH/2,right=BOARD_WIDTH/2;
   const top=BOARD_HEIGHT/2,bottom=-BOARD_HEIGHT/2;
@@ -438,9 +416,12 @@ function layoutOverlays(){
   const tray={x:frame.x,width:frame.width,height:Math.round(pBR.y-pTrayTL.y),top:Math.round(pTrayTL.y)};
   Object.assign(boardFrame.style,{left:frame.x+'px',top:frame.y+'px',width:frame.width+'px',height:frame.height+'px'});
   Object.assign(slotTray.style,{left:tray.x+'px',top:tray.top+'px',width:tray.width+'px',height:tray.height+'px'});
-  boardDivider.style.left=frame.x+'px'; boardDivider.style.width=frame.width+'px';
-  boardDivider.style.top=(pTrayTL.y-1)+'px'; boardDivider.style.display='block';
-  boardTitle.style.left=(frame.x+22)+'px'; boardTitle.style.top=(frame.y+18)+'px';
+  boardDivider.style.left=frame.x+'px';
+  boardDivider.style.width=frame.width+'px';
+  boardDivider.style.top=(pTrayTL.y-1)+'px';
+  boardDivider.style.display='block';
+  boardTitle.style.left=(frame.x+22)+'px';
+  boardTitle.style.top=(frame.y+18)+'px';
   const slotCount=ROWS+1;
   buildSlots(slotCount);
   renderSlotLabels(slotCount, frame);
@@ -464,7 +445,7 @@ function buildBoard(){
   TOP_ROW_Y=startY;
   const rowH=PEG_SPACING*0.9;
   const startX=-((ROWS-1)*PEG_SPACING)/2;
-  const pegs=[];
+  const pegPositions=[];
   for(let r=0;r<ROWS;r++){
     const y=startY - r*rowH;
     for(let c=0;c<=r;c++){
@@ -472,10 +453,10 @@ function buildBoard(){
       const peg=Bodies.circle(x,y,PEG_RADIUS,{isStatic:true,restitution:PEG_RESTITUTION,friction:0.01});
       peg.label='PEG';
       World.add(world,peg);
-      pegs.push({x,y});
+      pegPositions.push({x,y});
     }
   }
-  addPegInstancedMesh(pegs);
+  addPegInstancedMesh(pegPositions);
   slotSensors=[];
   const slotCount=ROWS+1;
   const slotWidth=BOARD_WIDTH/slotCount;
@@ -490,11 +471,7 @@ function buildBoard(){
 }
 function addPegInstancedMesh(list){
   const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
-  const mat=new THREE.MeshPhysicalMaterial({
-    color:0x86f7ff,metalness:0.35,roughness:0.35,
-    clearcoat:0.6,clearcoatRoughness:0.2,
-    emissive:0x00ffff,emissiveIntensity:0.23
-  });
+  const mat=new THREE.MeshPhysicalMaterial({color:0x86f7ff,metalness:0.35,roughness:0.35,clearcoat:0.6,clearcoatRoughness:0.2,emissive:0x00ffff,emissiveIntensity:0.23});
   const inst=new THREE.InstancedMesh(geo,mat,list.length);
   const m=new THREE.Matrix4();
   const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
@@ -519,10 +496,10 @@ function handlePair(a,b){
   if(slot && String(a.label||'').startsWith('BALL_')){
     if(!a.plugin?.scored){
       const idx=slot.index;
-      const points=SLOT_POINTS[idx]||100;
+      const pts=SLOT_POINTS[idx]||100;
       a.plugin.scored=true;
-      awardPoints(a.plugin.username,a.plugin.avatarUrl||'',points).catch(console.warn);
-      sfxScore(points>=1600);
+      awardPoints(a.plugin.username,a.plugin.avatarUrl||'',pts).catch(console.warn);
+      sfxScore(pts>=1600);
       setTimeout(()=>tryRemoveBall(a),900);
     }
     return;
@@ -540,7 +517,7 @@ function handlePair(a,b){
   if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
 }
 
-/* Loop */
+/* Loop & rendering */
 function adaptQuality(frameMs){
   frameAccum+=frameMs; frameSamples++;
   perfData.frames++;
@@ -571,7 +548,7 @@ let vibranceTime=0;
 function startLoop(){
   let last=performance.now(), acc=0;
   function tick(now){
-    const dt=Math.min(250, now-last); last=now; acc+=dt;
+    const dt=Math.min(250,now-last); last=now; acc+=dt;
     let steps=0;
     while(acc>=FIXED_DT && steps<maxStepsForFrame(dt)){
       Engine.update(engine,FIXED_DT);
@@ -593,8 +570,8 @@ function startLoop(){
     }
 
     const t0=performance.now();
-    (bloomPass.enabled || smaaPass.enabled)?composer.render():renderer.render(scene,camera);
-    adaptQuality(dt + (performance.now()-t0));
+    (bloomPass.enabled||smaaPass.enabled)?composer.render():renderer.render(scene,camera);
+    adaptQuality(dt+(performance.now()-t0));
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
@@ -604,9 +581,9 @@ function clampVelocities(){
   for(const b of dynamicBodies){
     let {x,y}=b.velocity;
     if(Math.abs(x)>MAX_H_SPEED) x=Math.sign(x)*MAX_H_SPEED;
-    const speed=Math.hypot(x,y);
-    if(speed>MAX_SPEED){
-      const k=MAX_SPEED/speed; x*=k; y*=k;
+    const sp=Math.hypot(x,y);
+    if(sp>MAX_SPEED){
+      const k=MAX_SPEED/sp; x*=k; y*=k;
     }
     Body.setVelocity(b,{x,y});
   }
@@ -618,23 +595,23 @@ function updateThreeFromMatter(){
       mesh.position.set(body.position.x,body.position.y,0);
       mesh.rotation.z=body.angle;
     }
-    const label=labelById.get(body.id);
-    if(label) label.position.set(body.position.x,body.position.y + BALL_RADIUS*2.2,0);
+    const lbl=labelById.get(body.id);
+    if(lbl) lbl.position.set(body.position.x,body.position.y + BALL_RADIUS*2.2,0);
   });
 }
 
-/* Spawn */
+/* Spawn queue */
 const spawnQueue=[];
 let spawnInLastWindow=[];
-function queueBall(username, avatarUrl){ spawnQueue.push({username,avatarUrl}); }
+function queueBall(username,avatarUrl){ spawnQueue.push({username,avatarUrl}); }
 function drainSpawnQueue(){
   const now=performance.now();
   spawnInLastWindow=spawnInLastWindow.filter(t=>now-t<SPAM_GLOBAL_WINDOW_MS);
   let allowed=Infinity;
   if(SPAM_MODE){
-    const remain=SPAM_GLOBAL_WINDOW_MAX - spawnInLastWindow.length;
-    if(remain<=0) return;
-    allowed=remain;
+    const remaining=SPAM_GLOBAL_WINDOW_MAX - spawnInLastWindow.length;
+    if(remaining<=0) return;
+    allowed=remaining;
   }
   const batch=Math.min(spawnQueue.length,SPAWN_PER_FRAME,allowed);
   for(let i=0;i<batch;i++){
@@ -650,8 +627,7 @@ function spawnSingle({username,avatarUrl}){
   const dropX=Math.max(-BOARD_WIDTH/2+4,Math.min(BOARD_WIDTH/2-4,(Math.random()-0.5)*jitter));
   const dropY=TOP_ROW_Y + PEG_SPACING*0.8;
   const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{
-    restitution:BALL_RESTITUTION,friction:BALL_FRICTION,
-    frictionAir:BALL_FRICTION_AIR,density:0.0018
+    restitution:BALL_RESTITUTION,friction:BALL_FRICTION,frictionAir:BALL_FRICTION_AIR,density:0.0018
   });
   body.label=`BALL_${username}`;
   body.plugin={username,avatarUrl,scored:false};
@@ -669,11 +645,9 @@ function spawnSingle({username,avatarUrl}){
     });
   }
   const mesh=new THREE.Mesh(sharedBallGeo,sharedBallBaseMaterial.clone());
-  scene.add(mesh);
-  meshById.set(body.id,mesh);
+  scene.add(mesh); meshById.set(body.id,mesh);
   const sprite=buildNameSprite(username);
-  scene.add(sprite);
-  labelById.set(body.id,sprite);
+  scene.add(sprite); labelById.set(body.id,sprite);
 
   const applyTex=async()=>{
     try{
@@ -704,45 +678,43 @@ function tryRemoveBall(body){
     meshById.delete(body.id);
     labelById.delete(body.id);
     dynamicBodies.delete(body);
-    World.remove(world, body);
+    World.remove(world,body);
   }catch{}
 }
 
-/* Leaderboard */
-async function awardPoints(username, avatarUrl, points){
-  const current=leaderboard[username] || { username, avatarUrl, score:0 };
+/* Leaderboard logic */
+async function awardPoints(username,avatarUrl,points){
+  const current=leaderboard[username]||{username,avatarUrl,score:0};
   const next=current.score+points;
-  leaderboard[username]={ username, avatarUrl, score:next, lastUpdate:Date.now() };
+  leaderboard[username]={username,avatarUrl,score:next,lastUpdate:Date.now()};
   refreshLeaderboard();
-  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,{
-    username, avatarUrl:avatarUrl||'', score:next, lastUpdate:Date.now()
-  }).catch(()=>{});
+  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,
+    {username,avatarUrl:avatarUrl||'',score:next,lastUpdate:Date.now()}).catch(()=>{});
 }
-function setPointsLocal(username, avatarUrl, score){
-  leaderboard[username]={ username, avatarUrl, score, lastUpdate:Date.now() };
+function setPointsLocal(username,avatarUrl,score){
+  leaderboard[username]={username,avatarUrl,score,lastUpdate:Date.now()};
   refreshLeaderboard();
 }
-function deductPoints(username, avatarUrl, points){
-  const current=leaderboard[username] || { username, avatarUrl, score:0 };
-  if(current.score < points) return false;
-  const next=current.score - points;
-  leaderboard[username]={ username, avatarUrl, score: next, lastUpdate:Date.now() };
+function deductPoints(username,avatarUrl,points){
+  const curr=leaderboard[username]||{username,avatarUrl,score:0};
+  if(curr.score<points) return false;
+  const next=curr.score-points;
+  leaderboard[username]={username,avatarUrl,score:next,lastUpdate:Date.now()};
   refreshLeaderboard();
-  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,{
-    username, avatarUrl:avatarUrl||'', score:next, lastUpdate:Date.now()
-  }).catch(()=>{});
+  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,
+    {username,avatarUrl:avatarUrl||'',score:next,lastUpdate:Date.now()}).catch(()=>{});
   return true;
 }
 function refreshLeaderboard(){
-  const entries=Object.values(leaderboard).sort((a,b)=>b.score-a.score).slice(0,50);
+  const list=Object.values(leaderboard).sort((a,b)=>b.score-a.score).slice(0,50);
   leaderboardList.innerHTML='';
-  for(const e of entries){
+  for(const e of list){
     const li=document.createElement('li'); li.className='lb-item';
     const ava=document.createElement('div'); ava.className='lb-ava';
     if(e.avatarUrl) ava.style.backgroundImage=`url(${e.avatarUrl})`;
-    const name=document.createElement('div'); name.className='lb-name'; name.textContent='@'+(e.username||'viewer');
-    const score=document.createElement('div'); score.className='lb-score'; score.textContent=e.score.toLocaleString();
-    li.append(ava,name,score);
+    const name=document.createElement('div'); name.className='lb-name'; name.textContent='@'+e.username;
+    const sc=document.createElement('div'); sc.className='lb-score'; sc.textContent=e.score.toLocaleString();
+    li.append(ava,name,sc);
     leaderboardList.appendChild(li);
   }
 }
@@ -750,7 +722,7 @@ function clearLeaderboardLocal(){
   Object.keys(leaderboard).forEach(k=>delete leaderboard[k]);
   leaderboardList.innerHTML='';
 }
-function handleRedeemEvent(id, username, avatarUrl, tier){
+function handleRedeemEvent(id,username,avatarUrl,tier){
   if(processedRedemptions.has(id)) return;
   processedRedemptions.add(id);
   const cost=REWARD_COSTS[tier];
@@ -762,110 +734,117 @@ function handleRedeemEvent(id, username, avatarUrl, tier){
   enqueueRedemption(id,tier,username,avatarUrl);
 }
 
-/* Gift / streak logic */
+/* ===== GIFT / STREAK LOGIC ===== */
+
+/* Extract coins/diamonds robustly */
+function extractCoins(obj){
+  const keys=[
+    'giftCoins','gift_coins',
+    'coins','coin',
+    'diamondCount','diamond_count','diamonds','diamond_value',
+    'value','price','amount','giftValue','gift_value'
+  ];
+  for(const k of keys){
+    if(k in obj){
+      const v=parseFloat(obj[k]);
+      if(Number.isFinite(v) && v>0) return v;
+    }
+  }
+  // Some APIs nest gift info
+  if(obj.gift && typeof obj.gift==='object'){
+    return extractCoins(obj.gift);
+  }
+  return NaN;
+}
+
+/* Exact coin mapping */
+function exactCoinMapped(coins){
+  if(!Number.isFinite(coins)) return null;
+  const hit=COIN_MAP.find(m=>m.c===coins);
+  return hit?hit.b:null;
+}
+
 const giftStreakMap=new Map(); // key => last repeatCount
 
 function resolveGiftName(o){
-  return (o.giftName || o.gift || o.gift_type || o.giftType || o.itemName || o.name || '').toString();
-}
-function coinMapping(coins){
-  if(!Number.isFinite(coins) || coins<=0) return null;
-  const exact=COIN_MAPPING_TABLE.find(e=>e.coins===coins);
-  return exact ? exact.balls : null;
+  return (o.giftName||o.gift || o.gift_type || o.giftType || o.itemName || o.name || '').toString().toLowerCase();
 }
 
-/* Derive base balls (one event, before repeat scaling) */
-function deriveBaseBallsForGift(obj){
-  const name=resolveGiftName(obj).trim().toLowerCase();
-  const coins = obj.giftCoins ?? obj.coins ?? obj.coin ?? obj.diamondCount ?? obj.diamonds ?? obj.value;
-
-  // 1) Exact coin mapping first
-  const mappedExact = coinMapping(coins);
-  if(mappedExact!=null){
-    return mappedExact;
-  }
-
-  // 2) Name mapping
-  if(name && GIFT_BALL_MAP[name]) return GIFT_BALL_MAP[name];
-
-  // 3) Coin fallback ratio
+function baseBallsFromGift(obj){
+  const coins=extractCoins(obj);
+  const giftName=resolveGiftName(obj);
+  // 1. Exact coin mapping
+  const exact=exactCoinMapped(coins);
+  if(exact!=null) return exact;
+  // 2. Name mapping
+  if(giftName && GIFT_BALL_MAP[giftName]) return GIFT_BALL_MAP[giftName];
+  // 3. Ratio fallback
   if(Number.isFinite(coins) && coins>0){
-    if(SPAM_MODE){
-      return clamp(Math.floor(coins/COIN_TO_BALL_RATIO_SPAM) || 1, 1, SPAM_MAX_BALLS_PER_EVENT);
-    }
-    return clamp(Math.floor(coins/COIN_TO_BALL_RATIO_NORMAL) || 1, 1, NORMAL_MAX_BALLS_PER_GIFT);
+    const ratio=SPAM_MODE?COIN_RATIO_SPAM:COIN_RATIO_NORMAL;
+    const val= Math.max(1, Math.floor(coins/ratio));
+    return clamp(val,1, SPAM_MODE?SPAM_MAX_BALLS_PER_EVENT: NORMAL_MAX_BALLS_PER_GIFT);
   }
-
-  // 4) Default
-  return SPAM_MODE ? 3 : 1;
+  // 4. Default
+  return 1;
 }
 
-/* Compute total balls for one event (handles repeatCount delta) */
-function computeEventBallCount(username,obj){
-  const base = deriveBaseBallsForGift(obj);
-  const repeatRaw = obj.repeatCount ?? obj.count ?? obj.quantity;
-  const giftName = resolveGiftName(obj).toLowerCase();
-  const key = username+'::'+giftName;
+function computeGiftEventBalls(username,obj){
+  const base=baseBallsFromGift(obj);
+  const giftName=resolveGiftName(obj)||'';
+  const repeatRaw = obj.repeatCount ?? obj.count ?? obj.quantity ?? obj.repeat ?? obj.repeats;
+  const key=username+'::'+giftName;
 
-  // If no repeat info treat each event as single unit
+  // If no streak info treat this as a single event
   if(!Number.isFinite(repeatRaw) || repeatRaw<=0){
+    if(window.DEBUG_GIFTS) console.log('[GIFT] single event (no repeat)', {base});
     return base;
   }
 
-  // Streak delta
-  const prev = giftStreakMap.get(key) || 0;
-  let delta = repeatRaw - prev;
-
-  // If streaming backend sends only final repeat at end (so events produce same repeat),
-  // ensure delta at least 1 to avoid merging small bursts
-  if(delta <= 0) delta = 1;
-
-  // Update last count
+  const prev=giftStreakMap.get(key) || 0;
+  let delta=repeatRaw - prev;
+  if(delta<=0){
+    // Means backend is sending non-incrementing count (e.g., always 1)
+    // treat as 1 new gift
+    delta=1;
+  }
   giftStreakMap.set(key, repeatRaw);
 
-  // Multiply base by delta
   let total = base * delta;
+  total = clamp(total, 1, SPAM_MODE?SPAM_MAX_BALLS_PER_EVENT: NORMAL_MAX_BALLS_PER_GIFT);
 
-  // Clamp
-  if(SPAM_MODE){
-    total = clamp(total, 1, SPAM_MAX_BALLS_PER_EVENT);
-  }else{
-    total = clamp(total, 1, NORMAL_MAX_BALLS_PER_GIFT);
-  }
-
+  if(window.DEBUG_GIFTS) console.log('[GIFT]', {giftName, coins:extractCoins(obj), repeatRaw, prev, delta, base, total, spam:SPAM_MODE});
   return total;
 }
 
-function finalizeStreakIfEnded(username,obj){
+function finalizeStreakIfEnd(username,obj){
   if(obj.repeatEnd || obj.streakEnd || obj.streakEnded){
-    const giftName=resolveGiftName(obj).toLowerCase();
+    const giftName=resolveGiftName(obj);
     giftStreakMap.delete(username+'::'+giftName);
   }
 }
 
 function isGiftEvent(obj){
   if(!obj || typeof obj!=='object') return false;
-  if(obj.type && String(obj.type).toLowerCase().includes('gift')) return true;
-  if('giftName' in obj || 'gift' in obj || 'giftId' in obj || 'giftType' in obj) return true;
-  if('giftCoins' in obj || 'coins' in obj || 'diamondCount' in obj || 'diamonds' in obj) return true;
-  if(String(obj.event||'').toLowerCase()==='gift') return true;
+  const nameFields=['giftName','gift','giftType','gift_type','itemName','name'];
+  if(nameFields.some(k=>k in obj)) return true;
+  const coinVal=extractCoins(obj);
+  if(Number.isFinite(coinVal) && coinVal>0) return true;
+  if('giftId' in obj || 'gift_id' in obj) return true;
   return false;
 }
 
 function spawnGiftBalls(username, avatarUrl, obj){
-  const total = computeEventBallCount(username,obj);
-  for(let i=0;i<total;i++){
-    queueBall(username,avatarUrl);
-  }
-  finalizeStreakIfEnded(username,obj);
+  const total=computeGiftEventBalls(username,obj);
+  for(let i=0;i<total;i++) queueBall(username,avatarUrl);
+  finalizeStreakIfEnd(username,obj);
 }
 
-/* Firebase events */
+/* Event listeners (Firebase) */
 function listenToEvents(){
   FirebaseREST.onChildAdded('/events',(id,obj)=>{
     if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
     const ts=Number(obj.timestamp)||0;
-    if(ts && ts < startTime - 60_000) return;
+    if(ts && ts < startTime - 60000) return;
     processedEvents.add(id);
 
     const username=sanitize(obj.username||'viewer');
@@ -873,14 +852,16 @@ function listenToEvents(){
     const command=(obj.command||'').toLowerCase();
 
     if(command.startsWith(REDEEM_PREFIX)){
-      const tier=command.split(':')[1];
-      handleRedeemEvent(id,username,avatarUrl,tier);
+      handleRedeemEvent(id,username,avatarUrl,command.split(':')[1]);
       return;
     }
 
     if(isGiftEvent(obj)){
       const spawnEnabled = spawnStatusEl?.textContent !== 'false';
-      if(!spawnEnabled && !devFreeToggle.checked) return;
+      if(!spawnEnabled && !devFreeToggle.checked){
+        if(window.DEBUG_GIFTS) console.log('[GIFT] spawn disabled, ignoring');
+        return;
+      }
       spawnGiftBalls(username,avatarUrl,obj);
       return;
     }
@@ -890,7 +871,7 @@ function listenToEvents(){
     }
   });
 
-  FirebaseREST.onValue('/leaderboard',(data)=>{
+  FirebaseREST.onValue('/leaderboard',data=>{
     if(data && typeof data==='object'){
       Object.keys(data).forEach(k=>{
         const e=data[k];
@@ -907,17 +888,14 @@ function listenToEvents(){
     } else clearLeaderboardLocal();
   });
 
-  FirebaseREST.onValue('/config',(data)=>{
+  FirebaseREST.onValue('/config',data=>{
     const enabled=!!(data && data.spawnEnabled);
     spawnStatusEl.textContent=enabled?'true':'false';
     spawnStatusEl.style.color=enabled?'var(--good)':'var(--danger)';
   });
 }
 
-function sanitize(u){
-  const s=String(u||'').trim();
-  return s ? s.slice(0,24) : 'viewer';
-}
+function sanitize(v){const s=String(v||'').trim();return s?s.slice(0,24):'viewer';}
 
 /* Teasers & Dev */
 function initTeasers(){
@@ -932,10 +910,9 @@ function devRedeem(tier='t1',user='DevUser'){
   handleRedeemEvent(id,user,'',tier);
 }
 function devDrop(user='DevUser'){ queueBall(user,''); }
-window.devRedeem=devRedeem;
-window.devDrop=devDrop;
+window.devRedeem=devRedeem; window.devDrop=devDrop;
 
-/* Dev Panel */
+/* Dev panel */
 function initDevPanel(){
   if(!devPanel) return;
   devPanel.querySelectorAll('button[data-act]').forEach(btn=>{
@@ -946,13 +923,13 @@ function initDevPanel(){
     });
   });
 }
-
-/* Gift grid test */
 function initGiftCards(){
   document.querySelectorAll('.gift-card').forEach(card=>{
     card.addEventListener('click',()=>{
-      // Simulate coin-based mapping (just queue one base gift)
-      queueBall(card.dataset.gift||'GiftUser','');
+      // Simulate coin-based small gift (use mapping)
+      const map={rose:5,'finger-heart':5,'gg':10,'unicorn':99};
+      const gift=card.dataset.gift||'rose';
+      window.simGiftCoins(map[gift]||5,1);
     });
   });
 }
@@ -961,10 +938,10 @@ function initGiftCards(){
 function initDraggables(){
   const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
   panels.forEach(p=>{
-    preparePanel(p); attachDrag(p); attachScale(p); ensurePanelOnScreen(p,true);
+    preparePanel(p);attachDrag(p);attachScale(p);ensurePanelOnScreen(p,true);
   });
 
-  window.addEventListener('wheel', e=>{
+  window.addEventListener('wheel',e=>{
     if(!e.altKey) return;
     const el=e.target.closest('[data-drag][data-scale]');
     if(!el) return;
@@ -976,26 +953,23 @@ function initDraggables(){
     renderTransform(el);
     savePanel(el);
     if(el===commandsPanel) forceCommandsVisible();
-  }, { passive:false });
+  },{passive:false});
 
   window.resetAllPanels=()=>{
     panels.forEach(p=>{
       localStorage.removeItem(storageKey(p,'pos'));
       localStorage.removeItem(storageKey(p,'scale'));
-      p.dataset.x='40'; p.dataset.y='120'; p.dataset.scale='1';
+      p.dataset.x='40';p.dataset.y='120';p.dataset.scale='1';
       renderTransform(p);
     });
     forceCommandsVisible();
   };
 }
-function storageKey(panel,suffix){ return `plk_${panel.id || panel.dataset.panel || 'panel'}_${suffix}`; }
-
+function storageKey(panel,suffix){return `plk_${panel.id||panel.dataset.panel||'panel'}_${suffix}`;}
 function preparePanel(panel){
   panel.classList.add('drag-enabled');
   if(!panel.querySelector('.resize-handle')){
-    const h=document.createElement('div');
-    h.className='resize-handle'; h.textContent='↘';
-    panel.appendChild(h);
+    const h=document.createElement('div');h.className='resize-handle';h.textContent='↘';panel.appendChild(h);
   }
   const posKey=storageKey(panel,'pos'), scaleKey=storageKey(panel,'scale');
   let x=40,y=120,scale=1;
@@ -1008,7 +982,7 @@ function preparePanel(panel){
     }
     const sStr=localStorage.getItem(scaleKey); if(sStr) scale=parseFloat(sStr);
   }catch{}
-  panel.dataset.x=x; panel.dataset.y=y; panel.dataset.scale=scale;
+  panel.dataset.x=x;panel.dataset.y=y;panel.dataset.scale=scale;
   renderTransform(panel);
 }
 function attachDrag(panel){
@@ -1020,8 +994,8 @@ function attachDrag(panel){
     h.addEventListener('pointerdown',e=>{
       if(e.button!==0) return;
       if(e.target.closest('.resize-handle')) return;
-      dragging=true; panel.classList.add('dragging');
-      sx=e.clientX; sy=e.clientY;
+      dragging=true;panel.classList.add('dragging');
+      sx=e.clientX;sy=e.clientY;
       startX=parseFloat(panel.dataset.x||'0');
       startY=parseFloat(panel.dataset.y||'0');
       e.preventDefault();
@@ -1035,10 +1009,8 @@ function attachDrag(panel){
   });
   window.addEventListener('pointerup',()=>{
     if(!dragging) return;
-    dragging=false;
-    panel.classList.remove('dragging');
-    savePanel(panel);
-    ensurePanelOnScreen(panel,false);
+    dragging=false;panel.classList.remove('dragging');
+    savePanel(panel);ensurePanelOnScreen(panel,false);
   });
 }
 function attachScale(panel){
@@ -1046,52 +1018,45 @@ function attachScale(panel){
   if(!handle) return;
   let resizing=false,sx=0,startScale=1;
   handle.addEventListener('pointerdown',e=>{
-    e.preventDefault(); e.stopPropagation();
-    resizing=true; sx=e.clientX;
-    startScale=parseFloat(panel.dataset.scale||'1');
+    e.preventDefault();e.stopPropagation();
+    resizing=true;sx=e.clientX;startScale=parseFloat(panel.dataset.scale||'1');
     panel.classList.add('dragging');
   });
   window.addEventListener('pointermove',e=>{
     if(!resizing) return;
-    let sc=startScale + (e.clientX - sx)/240;
+    let sc=startScale+(e.clientX-sx)/240;
     sc=clamp(sc,0.45,3.5);
-    panel.dataset.scale=sc;
-    renderTransform(panel);
+    panel.dataset.scale=sc;renderTransform(panel);
   });
   window.addEventListener('pointerup',()=>{
     if(!resizing) return;
-    resizing=false;
-    panel.classList.remove('dragging');
-    savePanel(panel);
-    ensurePanelOnScreen(panel,false);
+    resizing=false;panel.classList.remove('dragging');
+    savePanel(panel);ensurePanelOnScreen(panel,false);
   });
 }
 function renderTransform(panel){
-  const x=parseFloat(panel.dataset.x||'0');
-  const y=parseFloat(panel.dataset.y||'0');
-  const s=parseFloat(panel.dataset.scale||'1');
+  const x=parseFloat(panel.dataset.x||'0'), y=parseFloat(panel.dataset.y||'0'), s=parseFloat(panel.dataset.scale||'1');
   panel.style.transform=`translate(${x}px,${y}px) scale(${s})`;
   if(panel===commandsPanel) forceCommandsVisible();
 }
 function savePanel(panel){
-  const posKey=storageKey(panel,'pos'), scaleKey=storageKey(panel,'scale');
+  const posKey=storageKey(panel,'pos'),scaleKey=storageKey(panel,'scale');
   const x=parseFloat(panel.dataset.x||'0'), y=parseFloat(panel.dataset.y||'0'), s=parseFloat(panel.dataset.scale||'1');
   localStorage.setItem(posKey,JSON.stringify({left:x,top:y}));
   localStorage.setItem(scaleKey,String(s));
 }
 function ensurePanelOnScreen(panel,initial){
   const rect=container.getBoundingClientRect();
-  const x=parseFloat(panel.dataset.x||'0'), y=parseFloat(panel.dataset.y||'0');
-  const s=parseFloat(panel.dataset.scale||'1');
+  const x=parseFloat(panel.dataset.x||'0'), y=parseFloat(panel.dataset.y||'0'), s=parseFloat(panel.dataset.scale||'1');
   const w=panel.offsetWidth*s, h=panel.offsetHeight*s;
   const margin=30;
-  let changed=false, nx=x, ny=y;
-  if(x + w < margin){ nx=margin; changed=true; }
-  if(y + h < margin){ ny=margin; changed=true; }
-  if(x > rect.width - margin){ nx=rect.width - margin - w; changed=true; }
-  if(y > rect.height - margin){ ny=rect.height - margin - h; changed=true; }
+  let changed=false,nx=x,ny=y;
+  if(x + w < margin){ nx=margin; changed=true;}
+  if(y + h < margin){ ny=margin; changed=true;}
+  if(x > rect.width - margin){ nx=rect.width - margin - w; changed=true;}
+  if(y > rect.height - margin){ ny=rect.height - margin - h; changed=true;}
   if(changed){
-    panel.dataset.x=nx; panel.dataset.y=ny;
+    panel.dataset.x=nx;panel.dataset.y=ny;
     if(!initial) savePanel(panel);
     renderTransform(panel);
   }
@@ -1103,41 +1068,31 @@ function forceCommandsVisible(){
   commandsPanel.style.pointerEvents='auto';
 }
 
-/* UI / Audio events */
-btnGear?.addEventListener('click',()=>{ showSettings(); forceCommandsVisible(); });
-btnCloseSettings?.addEventListener('click', hideSettings);
+/* UI / Audio */
+btnGear?.addEventListener('click',()=>{showSettings();forceCommandsVisible();});
+btnCloseSettings?.addEventListener('click',hideSettings);
 btnResetUI?.addEventListener('click',()=>{
   if(!commandsPanel) return;
-  commandsPanel.dataset.x='40';
-  commandsPanel.dataset.y='120';
-  commandsPanel.dataset.scale='1';
-  renderTransform(commandsPanel);
-  savePanel(commandsPanel);
-  forceCommandsVisible();
+  commandsPanel.dataset.x='40';commandsPanel.dataset.y='120';commandsPanel.dataset.scale='1';
+  renderTransform(commandsPanel);savePanel(commandsPanel);forceCommandsVisible();
 });
 
 let audioBound=false;
 function bindAudioUnlockOnce(){
-  if(audioBound) return;
-  audioBound=true;
-  const unlock=async()=>{
-    await initAudioOnce().catch(()=>{});
-    window.removeEventListener('pointerdown',unlock,true);
-    window.removeEventListener('keydown',unlock,true);
-  };
+  if(audioBound) return; audioBound=true;
+  const unlock=async()=>{ await initAudioOnce().catch(()=>{}); window.removeEventListener('pointerdown',unlock,true); window.removeEventListener('keydown',unlock,true); };
   window.addEventListener('pointerdown',unlock,true);
   window.addEventListener('keydown',unlock,true);
 }
 bindAudioUnlockOnce();
 
-/* Settings handlers */
-optDropSpeed.addEventListener('input', applySettings);
-optGravity.addEventListener('input', applySettings);
-optCrateScale.addEventListener('input', applySettings);
-optNeon.addEventListener('change', applySettings);
-optParticles.addEventListener('change', applySettings);
-optVibrance.addEventListener('input', applySettings);
-optVolume.addEventListener('input', e=>setAudioVolume(Number(e.target.value)));
+optDropSpeed.addEventListener('input',applySettings);
+optGravity.addEventListener('input',applySettings);
+optCrateScale.addEventListener('input',applySettings);
+optNeon.addEventListener('change',applySettings);
+optParticles.addEventListener('change',applySettings);
+optVibrance.addEventListener('input',applySettings);
+optVolume.addEventListener('input',e=>setAudioVolume(Number(e.target.value)));
 optSpamMode?.addEventListener('change',()=>setSpamMode(optSpamMode.checked));
 
 btnSaveAdmin.addEventListener('click',()=>{
@@ -1147,29 +1102,29 @@ btnSaveAdmin.addEventListener('click',()=>{
     setBackendBaseUrl(base);
     tok?localStorage.setItem('adminToken',tok):localStorage.removeItem('adminToken');
     alert('Saved admin settings.');
-  }catch{ alert('Save failed.'); }
+  }catch{ alert('Save failed'); }
 });
-btnReset.addEventListener('click', async ()=>{
+btnReset.addEventListener('click',async ()=>{
   const tok=adminTokenInput.value || localStorage.getItem('adminToken') || '';
-  if(!tok) return alert('Provide token.');
+  if(!tok) return alert('Provide token');
   try{
     const res=await adminFetch('/admin/reset-leaderboard',{method:'POST',headers:{'x-admin-token':tok}});
     if(!res.ok) throw new Error();
     clearLeaderboardLocal();
     alert('Leaderboard reset.');
-  }catch{ alert('Reset failed.'); }
+  }catch{ alert('Reset failed'); }
 });
-btnToggleSpawn.addEventListener('click', async ()=>{
+btnToggleSpawn.addEventListener('click',async ()=>{
   const tok=adminTokenInput.value || localStorage.getItem('adminToken') || '';
-  if(!tok) return alert('Provide token.');
+  if(!tok) return alert('Provide token');
   try{
     const curr=spawnStatusEl.textContent==='true';
     const res=await adminFetch(`/admin/spawn-toggle?enabled=${!curr}`,{method:'POST',headers:{'x-admin-token':tok}});
     if(!res.ok) throw new Error();
     alert(`Spawn set to ${!curr}`);
-  }catch{ alert('Toggle failed.'); }
+  }catch{ alert('Toggle failed'); }
 });
-btnSimulate.addEventListener('click', async ()=>{
+btnSimulate.addEventListener('click',async ()=>{
   try{
     const name='LocalTester'+Math.floor(Math.random()*1000);
     const res=await adminFetch('/admin/spawn',{
@@ -1179,17 +1134,17 @@ btnSimulate.addEventListener('click', async ()=>{
     });
     if(!res.ok) throw new Error();
     alert('Simulated drop sent.');
-  }catch{ alert('Simulation failed.'); }
+  }catch{ alert('Simulation failed'); }
 });
 
 /* Console helpers */
 window.forceShowCommands=()=>forceCommandsVisible();
-window.simGift=(coins=5,count=1)=>{
+window.simGiftCoins=(coins=5,count=1)=>{
   for(let i=0;i<count;i++){
     const evt={
       username:'SimGifter',
       avatarUrl:'',
-      giftName:'coinGift',
+      giftName:`coin-${coins}`,
       giftCoins:coins,
       repeatCount:i+1,
       timestamp:Date.now()

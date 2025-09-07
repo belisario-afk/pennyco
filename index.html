@@ -61,7 +61,7 @@
           <div id="reward-teasers" aria-label="Mystery Reward Tiers" data-drag data-scale class="drag-enabled">
             <div class="teaser-hint">
               Redeem: !t1 !t2 !t3<br>
-              Send a TikTok Gift to drop a ball
+              Send a TikTok Gift to drop balls
             </div>
           </div>
 
@@ -88,19 +88,19 @@
             </div>
 
             <div class="cmd-section">
-              <h4 class="cmd-section-title">DROP A BALL (TikTok Gifts)</h4>
+              <h4 class="cmd-section-title">TIKTOK GIFTS → BALLS</h4>
               <div class="gift-grid">
                 <div class="gift-card" data-gift="rose">
                   <img alt="Rose Gift"
                        src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect rx='18' width='80' height='80' fill='%23ff2768'/%3E%3Ctext x='50%25' y='52%25' font-size='40' text-anchor='middle' fill='white'%3E🌹%3C/text%3E%3C/svg%3E">
                   <div class="gift-name">Rose</div>
-                  <div class="gift-note">1 ball</div>
+                  <div class="gift-note">1–2 balls*</div>
                 </div>
                 <div class="gift-card" data-gift="finger-heart">
                   <img alt="Finger Heart Gift"
                        src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect rx='18' width='80' height='80' fill='%23ff5ca8'/%3E%3Ctext x='50%25' y='52%25' font-size='40' text-anchor='middle' fill='white'%3E❤️%3C/text%3E%3C/svg%3E">
                   <div class="gift-name">Finger Heart</div>
-                  <div class="gift-note">1 ball</div>
+                  <div class="gift-note">1–2 balls*</div>
                 </div>
                 <div class="gift-card" data-gift="gg">
                   <img alt="GG Gift"
@@ -112,10 +112,10 @@
                   <img alt="Unicorn Gift"
                        src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect rx='18' width='80' height='80' fill='%23b37bff'/%3E%3Ctext x='50%25' y='52%25' font-size='40' text-anchor='middle' fill='white'%3E🦄%3C/text%3E%3C/svg%3E">
                   <div class="gift-name">Unicorn</div>
-                  <div class="gift-note accent">Mega (5)</div>
+                  <div class="gift-note accent">5 balls</div>
                 </div>
               </div>
-              <div class="gift-hint">Real TikTok gift art can replace these placeholders.</div>
+              <div class="gift-hint">*Exact coins mapping below.</div>
             </div>
 
             <div class="cmd-move-hint">Drag corner to resize • Alt+Scroll to scale</div>
@@ -135,8 +135,8 @@
               <li><span class="gv-coins">500</span><span class="gv-arrow">→</span><span class="gv-balls">60 balls</span></li>
             </ul>
             <div class="gift-value-footer">
-              Repeats & streaks add more (each gift event).<br>
-              Spam Mode boosts & speeds large chains.
+              Each gift event uses this table. Streak / multi send = table amount × new streak amount.
+              Spam Mode: no merging – every gift counts.
             </div>
           </section>
         </div>
@@ -148,62 +148,62 @@
             <button id="btn-close-settings" class="close-small" title="Close" aria-label="Close settings">✖</button>
           </div>
 
-            <div class="settings-group" aria-label="Game Settings Controls">
-              <label>Ball Drop Speed
-                <input id="opt-drop-speed" type="range" min="0" max="1" step="0.01" value="0.5">
-              </label>
-              <label>Gravity Strength
-                <input id="opt-gravity" type="range" min="0.3" max="2.0" step="0.05" value="1.0">
-              </label>
-              <label>Crate Scale
-                <input id="opt-crate-scale" type="range" min="2" max="7" step="0.1" value="4.4">
-              </label>
-              <label class="row">
-                <input id="opt-neon" type="checkbox" checked> Neon Effects
-              </label>
-              <label class="row">
-                <input id="opt-particles" type="checkbox" checked> Particles
-              </label>
-              <label>Vibrance Pulse
-                <input id="opt-vibrance" type="range" min="0" max="1" step="0.01" value="0.4">
-              </label>
-              <label>Sound Volume
-                <input id="opt-volume" type="range" min="0" max="1" step="0.01" value="0.5">
-              </label>
-              <label class="row accent-opt">
-                <input id="opt-spam-mode" type="checkbox">
-                <span>Spam Mode (Gift Ball Flood)</span>
-              </label>
-              <p class="spam-hint">
-                Spam Mode: every gift & streak step spawns balls instantly (no small gift merging). Safety caps still applied.
-              </p>
-            </div>
+          <div class="settings-group" aria-label="Game Settings Controls">
+            <label>Ball Drop Speed
+              <input id="opt-drop-speed" type="range" min="0" max="1" step="0.01" value="0.5">
+            </label>
+            <label>Gravity Strength
+              <input id="opt-gravity" type="range" min="0.3" max="2.0" step="0.05" value="1.0">
+            </label>
+            <label>Crate Scale
+              <input id="opt-crate-scale" type="range" min="2" max="7" step="0.1" value="4.4">
+            </label>
+            <label class="row">
+              <input id="opt-neon" type="checkbox" checked> Neon Effects
+            </label>
+            <label class="row">
+              <input id="opt-particles" type="checkbox" checked> Particles
+            </label>
+            <label>Vibrance Pulse
+              <input id="opt-vibrance" type="range" min="0" max="1" step="0.01" value="0.4">
+            </label>
+            <label>Sound Volume
+              <input id="opt-volume" type="range" min="0" max="1" step="0.01" value="0.5">
+            </label>
+            <label class="row accent-opt">
+              <input id="opt-spam-mode" type="checkbox">
+              <span>Spam Mode (Gift Ball Flood)</span>
+            </label>
+            <p class="spam-hint">
+              Spam Mode: Every gift & streak step spawns all its balls instantly (no merging).
+            </p>
+          </div>
 
-            <hr class="divider" aria-hidden="true">
+          <hr class="divider" aria-hidden="true">
 
-            <div class="settings-group">
-              <h4>Admin</h4>
-              <label>Backend URL (Render)
-                <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url">
-              </label>
-              <label class="visually-hidden">Admin Username
-                <input id="admin-username" name="username" type="text" value="admin" autocomplete="username" tabindex="-1">
-              </label>
-              <label>Admin Token / DB Auth
-                <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
-              </label>
-              <div class="admin-actions">
-                <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
-                <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
-              </div>
-              <div class="admin-actions">
-                <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
-                <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
-              </div>
-              <div class="admin-status">
-                <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
-              </div>
+          <div class="settings-group">
+            <h4>Admin</h4>
+            <label>Backend URL (Relay)
+              <input id="backend-url" type="url" placeholder="https://plinkoo-relay.onrender.com" autocomplete="url">
+            </label>
+            <label class="visually-hidden">Admin Username
+              <input id="admin-username" name="username" type="text" value="admin" autocomplete="username" tabindex="-1">
+            </label>
+            <label>Admin Token / DB Auth
+              <input id="admin-token" type="password" placeholder="Admin or DB Secret" autocomplete="current-password">
+            </label>
+            <div class="admin-actions">
+              <button id="btn-save-admin" class="btn" type="button">Save Admin Settings</button>
+              <button id="btn-reset-leaderboard" class="btn danger" type="button">Reset Leaderboard</button>
             </div>
+            <div class="admin-actions">
+              <button id="btn-toggle-spawn" class="btn alt" type="button">Toggle Spawn</button>
+              <button id="btn-simulate" class="btn alt" type="button">Simulate Drop</button>
+            </div>
+            <div class="admin-status">
+              <span>Spawn enabled: <strong id="spawn-status">unknown</strong></span>
+            </div>
+          </div>
         </div>
         <!-- END SETTINGS PANEL -->
       </div>
@@ -212,9 +212,9 @@
         <div class="drag-bar small">DEV <span class="mini-hint">drag / resize</span></div>
         <div class="dev-row">
           <button data-act="drop">Drop</button>
-            <button data-act="redeem-t1">T1</button>
-            <button data-act="redeem-t2">T2</button>
-            <button data-act="redeem-t3">T3</button>
+          <button data-act="redeem-t1">T1</button>
+          <button data-act="redeem-t2">T2</button>
+          <button data-act="redeem-t3">T3</button>
           <label class="dev-free"><input id="dev-free-toggle" type="checkbox"> free</label>
         </div>
       </div>
