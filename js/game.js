@@ -1,34 +1,16 @@
-/* game.js (Gift Drop Fix Update)
-   CHANGE LOG (this patch focuses ONLY on making TikTok gift -> ball spawning more reliable):
-   ------------------------------------------------------------------
-   1. Robust Gift Event Normalization:
-      - Added normalizeGiftEvent() that inspects multiple possible shapes:
-        a) Flat fields: giftName, giftCoins, coins, diamondCount, diamonds, repeatCount.
-        b) Nested gift object: gift.name, gift.count, gift.diamondCount, gift.info, gift.giftId, gift.repeatCount.
-        c) Some SDKs send { type:'gift', gift: { ... }, user: { ... } }.
-      - Gracefully handles missing timestamp (treats as now).
-   2. Expanded isGiftEvent():
-      - Now returns true if any nested gift object exists or known root/nested keys.
-   3. Safer Derivation of Ball Count:
-      - deriveBallCountFromGift() now delegates to normalizeGiftEvent() (which aggregates coins/diamonds/repeat).
-      - Always clamps to [1, MAX_BALLS_PER_GIFT].
-   4. Debug Instrumentation:
-      - Enable with localStorage.setItem('plk_debug_gifts','1') OR set window.DEBUG_GIFTS = true in console.
-      - Logs reasons when a potential gift was ignored (timestamp filter, disabled spawn, unrecognized shape).
-      - Prints normalized gift payload before spawning.
-   5. Timestamp Handling:
-      - If no timestamp or invalid in event, we no longer discard; we treat it as current time.
-      - Prior filter (older than startTime - 60000) now only applies if timestamp looks valid (>0).
-   6. Spawn Enabled Fallback:
-      - If DOM element spawnStatusEl is 'unknown' we assume spawning is enabled (used to silently block).
-   7. Local Testing Utilities:
-      - window.injectGift({ username, giftName, coins, repeat }) to simulate different shapes.
-      - window.injectNestedGift(...) builds nested form { type:'gift', gift:{ name, diamondCount,... } }.
-   8. Defensive Null Checks & Error Guards.
-   9. No changes to redemption / layout logic except reposition of some gift-related code.
-   ------------------------------------------------------------------
-
-   NOTE: Only this file changed per user request. Integrate by replacing the existing game.js with this version.
+/* game.js (Hotfix)
+   Fixes:
+     - Removed duplicate declaration that caused: "Identifier 'amongUsModelPromise' has already been declared".
+       (It happened because amongUsModelPromise was declared twice in the same IIFE.)
+     - Removed accidental self‑referential line: `const leaderboard = leaderboard;` (would throw ReferenceError).
+     - Simplified reward variant picker (single implementation).
+   Retains:
+     - Gift normalization & reliable spawning
+     - External GLB (AmongUs) + middle finger reward across tiers
+     - Anti-stuck physics
+     - No spiral layout
+     - Mouse parallax disabled
+   Only this file changed. Replace your existing game.js with this one.
 */
 
 import * as THREE from 'three';
@@ -48,6 +30,7 @@ import {
   getLayoutDescriptor, generatePegPositions,
   registerCustomLayout, getAllLayoutIds
 } from './boardLayouts.js';
+
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
@@ -58,45 +41,34 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
 (function PlinkooGame(){
 
-/* ---------------- CONFIG (UNCHANGED BASE + GIFT FIX FLAGS) ---------------- */
-
+/* ---------------- CONFIG ---------------- */
 const ENABLE_MOUSE_PARALLAX = false;
 const DEV_BYPASS_DEFAULT = true;
 const SHOW_PERF_PANEL = true;
 const ADAPTIVE_QUALITY = true;
 
-/* Enable or disable gift debug via localStorage or manual */
 let DEBUG_GIFTS = false;
-try{
-  DEBUG_GIFTS = localStorage.getItem('plk_debug_gifts') === '1';
-}catch{}
-
-/* Force at runtime: window.DEBUG_GIFTS = true to toggle */
+try{ DEBUG_GIFTS = localStorage.getItem('plk_debug_gifts') === '1'; }catch{}
 Object.defineProperty(window,'DEBUG_GIFTS',{
   get(){return DEBUG_GIFTS;},
   set(v){DEBUG_GIFTS=!!v; console.log('[GiftDebug] DEBUG_GIFTS =',DEBUG_GIFTS);}
 });
 
-/* REWARD CONFIG (from earlier custom version) */
 const REWARD_COSTS = { t1:1000, t2:5000, t3:10000 };
 const REWARD_NAMES = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
 const REDEEM_PREFIX = 'redeem:';
 
-/* Gift -> balls base mapping */
 const GIFT_BALL_MAP = {
   'rose':1,'finger heart':1,'finger_heart':1,
   'gg':2,'unicorn':5,'lion':8,'castle':12
 };
-
 const COIN_TO_BALL_RATIO = 10;
 const MAX_BALLS_PER_GIFT = 25;
 
-/* Timing */
 const FIXED_DT = 1000/60;
 const MAX_STEPS_BASE = 4;
 const maxStepsForFrame = dt => dt > 140 ? 1 : dt > 90 ? 2 : MAX_STEPS_BASE;
 
-/* World */
 const WORLD_HEIGHT = 100;
 let WORLD_WIDTH = 56.25;
 let BOARD_HEIGHT = WORLD_HEIGHT * 0.82;
@@ -106,7 +78,6 @@ const TRAY_RATIO = 0.22;
 let ROWS = 12;
 let SLOT_COUNT = ROWS + 1;
 
-/* Peg / Ball Physics */
 const PEG_RADIUS = 0.75;
 const BALL_RADIUS = 1.5;
 const WALL_THICKNESS = 2.0;
@@ -130,7 +101,7 @@ let PARTICLES = true;
 let CRATE_SCALE = 4.4;
 let VIBRANCE_PULSE = 0.4;
 
-/* Physics tuning */
+/* Physics */
 const BALL_RESTITUTION = 0.06;
 const PEG_RESTITUTION  = 0.02;
 const BALL_FRICTION    = 0.04;
@@ -142,27 +113,26 @@ const PEG_MORPH_DURATION = 0.85;
 const PEG_CROSSFADE_DURATION = 0.6;
 const PEG_COUNT_DIFF_THRESHOLD = 0.30;
 
-/* Reward variant config (unchanged from prior patch) */
+/* Reward variants */
 const MIDDLE_FINGER_MODEL_ID = 22;
 const AMONG_US_GLB_URL =
   'https://raw.githubusercontent.com/belisario-afk/try240/main/amongus_sexy_female.glb';
 
 const TIER_REWARD_POOLS = {
   t1: [
-    { kind:'external', key:'amongusGirl', weight: 1 },
-    { kind:'internal', id:16, weight: 1 },
-    { kind:'internal', id:MIDDLE_FINGER_MODEL_ID, weight: 1 }
+    { kind:'external', key:'amongusGirl', weight:1 },
+    { kind:'internal', id:16, weight:1 },
+    { kind:'internal', id:MIDDLE_FINGER_MODEL_ID, weight:1 }
   ],
   t2: [
-    { kind:'internal', id:19, weight: 1 },
-    { kind:'internal', id:MIDDLE_FINGER_MODEL_ID, weight: 1 }
+    { kind:'internal', id:19, weight:1 },
+    { kind:'internal', id:MIDDLE_FINGER_MODEL_ID, weight:1 }
   ],
   t3: [
-    { kind:'internal', id:22, weight: 1 },
-    { kind:'internal', id:MIDDLE_FINGER_MODEL_ID, weight: 1 }
+    { kind:'internal', id:22, weight:1 },
+    { kind:'internal', id:MIDDLE_FINGER_MODEL_ID, weight:1 }
   ]
 };
-
 function pickTierRewardVariant(tier){
   const pool = TIER_REWARD_POOLS[tier] || TIER_REWARD_POOLS.t1;
   const total = pool.reduce((a,b)=>a+(b.weight||1),0);
@@ -174,6 +144,7 @@ function pickTierRewardVariant(tier){
   return pool[pool.length-1];
 }
 
+/* External GLB cache (single declaration) */
 let amongUsModelPromise = null;
 function loadAmongUsModel(){
   if(amongUsModelPromise) return amongUsModelPromise;
@@ -186,8 +157,8 @@ function loadAmongUsModel(){
         if(!root){ reject(new Error('GLB no scene')); return; }
         const box = new THREE.Box3().setFromObject(root);
         const size = new THREE.Vector3(); box.getSize(size);
-        const targetHeight = 30;
-        const scale = targetHeight / (size.y || 1);
+        const targetH = 30;
+        const scale = targetH / (size.y || 1);
         root.scale.setScalar(scale);
         root.traverse(o=>{
           if(o.isMesh){
@@ -205,7 +176,6 @@ function loadAmongUsModel(){
 }
 
 /* ---------------- STATE ---------------- */
-
 let engine, world;
 let scene, camera, renderer;
 let ambient, dirLight;
@@ -234,14 +204,14 @@ let wallBodies = [];
 let deflectorBodies = [];
 let floorBody = null;
 
-/* Redemption state */
+/* Redemption */
 const redeemQueue = [];
 let redeemActive = false;
 let activeReward3D = null;
 let activeRewardDisposeFn = null;
 let activeRedemptionCrate = null;
 
-/* Performance stats */
+/* Performance */
 let perfPanel;
 const perfData={avgMs:0,worstMs:0,frames:0,qualityTier:2};
 const BASE_DEVICE_PR = Math.min(window.devicePixelRatio||1, 1.75);
@@ -252,7 +222,7 @@ const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
 let sharedBallBaseMaterial = null;
 const avatarTextureCache = new Map();
 
-/* ---------------- DOM ELEMENTS ---------------- */
+/* ---------------- DOM ---------------- */
 const container       = document.getElementById('game-container');
 const fxCanvas        = document.getElementById('fx-canvas');
 const fxCtx           = fxCanvas.getContext('2d');
@@ -309,32 +279,18 @@ function safeInitFirebase(){
 }
 safeInitFirebase();
 
-/* ---------------- REWARD ATTACH (UNCHANGED FROM PREVIOUS PATCH) ---------------- */
-function pickTierRewardVariant(tier){ /* already defined above */ return TIER_REWARD_POOLS[tier] ? pickTierRewardVariant._impl(tier):TIER_REWARD_POOLS.t1[0]; }
-pickTierRewardVariant._impl = function(tier){
-  const pool = TIER_REWARD_POOLS[tier] || TIER_REWARD_POOLS.t1;
-  const total = pool.reduce((a,b)=>a+(b.weight||1),0);
-  let roll = Math.random()*total;
-  for(const item of pool){
-    roll -= (item.weight||1);
-    if(roll <= 0) return item;
-  }
-  return pool[pool.length-1];
-};
-
-let amongUsModelPromise = amongUsModelPromise; // keep reference if already defined
-
+/* ---------------- REWARD ATTACH ---------------- */
 async function attachReward3D(tier){
   if(activeReward3D){
     scene.remove(activeReward3D);
     if(activeRewardDisposeFn) activeRewardDisposeFn();
     activeReward3D=null; activeRewardDisposeFn=null;
   }
-  const variant = pickTierRewardVariant._impl(tier);
+  const variant = pickTierRewardVariant(tier);
   if(variant.kind === 'external' && variant.key === 'amongusGirl'){
     try{
-      const root = await loadAmongUsModel();
-      const model = root.clone(true);
+      const base = await loadAmongUsModel();
+      const model = base.clone(true);
       model.position.set(0,WORLD_HEIGHT*0.27,15);
       model.scale.multiplyScalar(0.01);
       scene.add(model);
@@ -346,7 +302,7 @@ async function attachReward3D(tier){
       console.warn('[Reward] External load failed, fallback internal',e);
       attachInternalReward(tier);
     }
-  }else{
+  } else {
     attachInternalReward(tier, variant.kind==='internal'?variant.id:undefined);
   }
 }
@@ -382,7 +338,7 @@ function detachReward3D(){
   });
 }
 
-/* ---------------- REDEMPTION ANIMATION ---------------- */
+/* ---------------- REDEMPTION ---------------- */
 function enqueueRedemption(evId,tier,username,avatarUrl){
   redeemQueue.push({evId,tier,username,avatarUrl});
   runNextRedemption();
@@ -443,7 +399,7 @@ function renderSlotLabels(slotCount, framePx){
   trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
 }
 
-/* ---------------- LAYOUT LOGIC ---------------- */
+/* ---------------- LAYOUT ---------------- */
 function getDayOfYear(d=new Date()){
   const start=new Date(d.getFullYear(),0,0);
   const diff=d - start + (start.getTimezoneOffset()-d.getTimezoneOffset())*60000;
@@ -474,114 +430,66 @@ function cycleLayout(){
   ensureLayout(list[(idx+1)%list.length]);
 }
 
-/* ---------------- GIFT NORMALIZATION & SPAWNING (FIXED) ---------------- */
-
-/**
- * normalizeGiftEvent
- * Accepts raw event object and returns a unified meta object:
- * { giftName, coins, diamonds, repeat, raw }
- */
+/* ---------------- GIFT NORMALIZATION ---------------- */
 function normalizeGiftEvent(obj){
   if(!obj || typeof obj!=='object') return null;
-
-  // Flatten nested gift object if present
-  const gift = obj.gift && typeof obj.gift === 'object' ? obj.gift : null;
-
-  // Candidate gift name possibilities
+  const gift = obj.gift && typeof obj.gift==='object' ? obj.gift : null;
   const nameCandidates = [
     obj.giftName, obj.gift_name, obj.gift_type, obj.gift,
     obj.itemName, obj.name,
     gift && (gift.name || gift.giftName || gift.title)
-  ].filter(v=>typeof v === 'string' && v.trim().length);
+  ].filter(v=>typeof v==='string' && v.trim());
+  const giftName = (nameCandidates[0]||'gift').trim();
 
-  const giftName = nameCandidates[0]?.trim() || 'gift';
-
-  // Coin / diamond style values
   const coinCandidates = [
     obj.giftCoins, obj.coins, obj.coin, obj.value,
     gift && (gift.coin || gift.coins || gift.giftCoins),
     obj.diamondCount, obj.diamonds,
     gift && (gift.diamondCount || gift.diamonds)
   ].filter(v=> typeof v === 'number' && v >= 0);
+  let coins=0;
+  for(const c of coinCandidates) coins=Math.max(coins,c);
 
-  // Some connectors send separate diamonds vs coin; treat all as "coins" base
-  let coins = 0;
-  for(const c of coinCandidates) coins = Math.max(coins, c);
-
-  // Repetition
-  const repeatCandidates = [
+  const repeatCandidates=[
     obj.repeatCount, obj.count, obj.quantity,
     gift && (gift.repeatCount || gift.count || gift.quantity)
-  ].filter(v=> typeof v === 'number' && v > 0);
-  let repeat = repeatCandidates[0] || 1;
+  ].filter(v=> typeof v === 'number' && v>0);
+  let repeat=repeatCandidates[0] || 1;
 
-  // Fallback: if no coins and no mapping, still at least 1
-  if(coins === 0 && !GIFT_BALL_MAP[giftName.toLowerCase()]){
-    // sometimes large repeat indicates multi
-    if(repeat > 1) coins = repeat * COIN_TO_BALL_RATIO;
+  if(coins===0 && !GIFT_BALL_MAP[giftName.toLowerCase()] && repeat>1){
+    coins = repeat * COIN_TO_BALL_RATIO;
   }
-
-  return {
-    giftName,
-    coins,
-    diamonds: coins, // unify
-    repeat,
-    raw: obj
-  };
+  return { giftName, coins, diamonds:coins, repeat, raw:obj };
 }
-
-/**
- * isGiftEvent - expanded
- * True if:
- *  - type includes 'gift'
- *  - root has giftName / giftId / giftCoins / diamondCount / nested gift object
- *  - nested gift object has recognizable fields (name or diamondCount)
- */
 function isGiftEvent(obj){
   if(!obj || typeof obj!=='object') return false;
-  const t = (obj.type||'').toLowerCase();
+  const t=(obj.type||'').toLowerCase();
   if(t.includes('gift')) return true;
   if(obj.giftName || obj.gift || obj.giftId || obj.gift_type || obj.giftType) return true;
   if(obj.giftCoins!==undefined || obj.coins!==undefined || obj.diamondCount!==undefined || obj.diamonds!==undefined) return true;
   if(obj.event && String(obj.event).toLowerCase()==='gift') return true;
   if(obj.gift && typeof obj.gift==='object'){
-    const g = obj.gift;
+    const g=obj.gift;
     if(g.name || g.giftName || g.diamondCount!==undefined || g.coins!==undefined || g.giftId!==undefined) return true;
   }
   return false;
 }
-
 function deriveBallCountFromGift(eventObj){
-  const meta = normalizeGiftEvent(eventObj);
-  if(!meta){
-    return 1;
-  }
-  const key = meta.giftName.toLowerCase();
-  // direct mapping
+  const meta=normalizeGiftEvent(eventObj);
+  if(!meta) return 1;
+  const key=meta.giftName.toLowerCase();
   if(GIFT_BALL_MAP[key]) return clamp(GIFT_BALL_MAP[key],1,MAX_BALLS_PER_GIFT);
-
-  // coins -> ratio
-  if(meta.coins > 0){
-    const c = clamp(Math.floor(meta.coins / COIN_TO_BALL_RATIO) || 1,1,MAX_BALLS_PER_GIFT);
-    return c;
+  if(meta.coins>0){
+    return clamp(Math.floor(meta.coins/COIN_TO_BALL_RATIO)||1,1,MAX_BALLS_PER_GIFT);
   }
-
-  // fallback to repeat
-  if(meta.repeat > 1){
-    return clamp(meta.repeat,1,MAX_BALLS_PER_GIFT);
-  }
-
+  if(meta.repeat>1) return clamp(meta.repeat,1,MAX_BALLS_PER_GIFT);
   return 1;
 }
-
 function spawnGiftBalls(username, avatarUrl, giftObj){
-  const count = deriveBallCountFromGift(giftObj);
-  if(DEBUG_GIFTS){
-    console.log('[GiftDebug] Spawning balls',
-      { user:username, count, normalized:normalizeGiftEvent(giftObj) });
-  }
+  const count=deriveBallCountFromGift(giftObj);
+  if(DEBUG_GIFTS) console.log('[GiftDebug] spawnGiftBalls', {user:username,count,normalized:normalizeGiftEvent(giftObj)});
   for(let i=0;i<count;i++){
-    setTimeout(()=>requestAnimationFrame(()=>spawnBallSet({ username, avatarUrl })), i*90*DROP_SPEED);
+    setTimeout(()=>requestAnimationFrame(()=>spawnBallSet({username,avatarUrl})), i*90*DROP_SPEED);
   }
 }
 
@@ -600,7 +508,6 @@ function adminFetch(path,opt={}){
 /* ---------------- SETTINGS ---------------- */
 devFreeToggle.checked=(localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
 devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
-
 function loadSettings(){
   const read=(k,d)=>Number(localStorage.getItem(k) ?? d);
   optGravity.value=read('plk_gravity',1);
@@ -671,7 +578,6 @@ function initThree(){
     document.body.appendChild(perfPanel);
   }
 }
-
 function computeWorldSize(){
   const w=container.clientWidth||1;
   const h=container.clientHeight||1;
@@ -720,7 +626,7 @@ function layoutOverlays(){
   renderSlotLabels(SLOT_COUNT, frame);
 }
 
-/* ---------------- MATTER / BOARD ---------------- */
+/* ---------------- MATTER ---------------- */
 function initMatter(){
   engine=Engine.create({enableSleeping:false});
   world=engine.world;
@@ -754,9 +660,10 @@ function addWallsSlotsDeflectors(){
   const startY = BOARD_HEIGHT/2 - segmentHeight/2;
   for(let i=0;i<WALL_DEFLECTOR_COUNT;i++){
     const y = startY - i*segmentHeight;
-    const dl = Bodies.rectangle(-BOARD_WIDTH/2 + WALL_DEFLECTOR_INSET,y,0.8,WALL_DEFLECTOR_DEPTH,{isStatic:true,angle:WALL_DEFLECTOR_ANGLE,label:'DEFLECTOR'});
-    const dr = Bodies.rectangle( BOARD_WIDTH/2 - WALL_DEFLECTOR_INSET,y,0.8,WALL_DEFLECTOR_DEPTH,{isStatic:true,angle:-WALL_DEFLECTOR_ANGLE,label:'DEFLECTOR'});
-    deflectorBodies.push(dl,dr);
+    deflectorBodies.push(
+      Bodies.rectangle(-BOARD_WIDTH/2 + WALL_DEFLECTOR_INSET,y,0.8,WALL_DEFLECTOR_DEPTH,{isStatic:true,angle:WALL_DEFLECTOR_ANGLE,label:'DEFLECTOR'}),
+      Bodies.rectangle( BOARD_WIDTH/2 - WALL_DEFLECTOR_INSET,y,0.8,WALL_DEFLECTOR_DEPTH,{isStatic:true,angle:-WALL_DEFLECTOR_ANGLE,label:'DEFLECTOR'})
+    );
   }
   World.add(world, deflectorBodies);
   slotSensors=[];
@@ -773,8 +680,7 @@ function clampPegPositions(pegPositions){
   const minX=-BOARD_WIDTH/2 + WALL_CLEAR_MARGIN;
   const maxX= BOARD_WIDTH/2 - WALL_CLEAR_MARGIN;
   pegPositions.forEach(p=>{
-    if(p.x<minX)p.x=minX;
-    else if(p.x>maxX)p.x=maxX;
+    if(p.x<minX)p.x=minX; else if(p.x>maxX)p.x=maxX;
   });
 }
 function createPegBodies(pegPositions){
@@ -791,16 +697,16 @@ function buildPegInstancedMesh(pegPositions){
   const mat=new THREE.MeshPhysicalMaterial({
     color:0x86f7ff,metalness:0.35,roughness:0.35,
     clearcoat:0.6,clearcoatRoughness:0.2,
-    emissive:0x00ffff,emissiveIntensity:0.23,transparent:true,opacity:1
+    emissive:0x00ffff,emissiveIntensity:0.23,
+    transparent:true,opacity:1
   });
   const mesh=new THREE.InstancedMesh(geo,mat,pegPositions.length);
   const m=new THREE.Matrix4();
   const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
-  for(let i=0;i<pegPositions.length;i++){
-    const {x,y}=pegPositions[i];
+  pegPositions.forEach(({x,y},i)=>{
     m.compose(new THREE.Vector3(x,y,0),q,new THREE.Vector3(1,1,1));
     mesh.setMatrixAt(i,m);
-  }
+  });
   mesh.instanceMatrix.needsUpdate=true;
   return mesh;
 }
@@ -842,10 +748,7 @@ function animateLayoutTransition(){
     const shared=Math.min(oldCount,newCount);
     const morphData=[];
     for(let i=0;i<shared;i++){
-      morphData.push({
-        sx:oldPositions[i].x, sy:oldPositions[i].y,
-        tx:pegPositions[i].x, ty:pegPositions[i].y
-      });
+      morphData.push({sx:oldPositions[i].x,sy:oldPositions[i].y,tx:pegPositions[i].x,ty:pegPositions[i].y});
     }
     newMesh.material.opacity=1;
     oldMesh.material.transparent=true;
@@ -858,15 +761,11 @@ function animateLayoutTransition(){
       onUpdate:()=>{
         for(let i=0;i<shared;i++){
           const d=morphData[i];
-          dummy.position.set(
-            d.sx+(d.tx-d.sx)*tObj.t,
-            d.sy+(d.ty-d.sy)*tObj.t,
-            0
-          );
+          dummy.position.set(d.sx+(d.tx-d.sx)*tObj.t,d.sy+(d.ty-d.sy)*tObj.t,0);
           dummy.quaternion.copy(q);
-            dummy.scale.set(1,1,1);
-            dummy.updateMatrix();
-            newMesh.setMatrixAt(i,dummy.matrix);
+          dummy.scale.set(1,1,1);
+          dummy.updateMatrix();
+          newMesh.setMatrixAt(i,dummy.matrix);
         }
         newMesh.instanceMatrix.needsUpdate=true;
       },
@@ -876,7 +775,7 @@ function animateLayoutTransition(){
         oldMesh.material.dispose();
       }
     });
-  }else{
+  } else {
     oldMesh.material.transparent=true;
     gsap.to(oldMesh.material,{opacity:0,duration:PEG_CROSSFADE_DURATION,ease:'power1.in'});
     gsap.to(newMesh.material,{opacity:1,duration:PEG_CROSSFADE_DURATION,ease:'power2.out',onComplete:()=>{
@@ -950,7 +849,7 @@ function adaptQuality(frameMs){
   }
 }
 
-/* ---------------- GAME LOOP ---------------- */
+/* ---------------- LOOP ---------------- */
 let vibranceTime=0;
 function startLoop(){
   let last=performance.now(), acc=0;
@@ -981,7 +880,6 @@ function startLoop(){
   }
   requestAnimationFrame(tick);
 }
-
 function antiStuckNudges(){
   const leftZone = -BOARD_WIDTH/2 + WALL_NUDGE_ZONE;
   const rightZone=  BOARD_WIDTH/2 - WALL_NUDGE_ZONE;
@@ -1026,13 +924,15 @@ function updateThreeFromMatter(){
   });
 }
 
-/* ---------------- SPAWN / BALLS ---------------- */
+/* ---------------- SPAWNING ---------------- */
 function spawnBallSet(o){ spawnSingle(o); }
 function spawnSingle({username,avatarUrl}){
   const margin=4;
   const dropX=(Math.random()-0.5)*(BOARD_WIDTH - margin*2);
   const dropY=TOP_ROW_Y + PEG_RADIUS*4;
-  const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{restitution:BALL_RESTITUTION,friction:BALL_FRICTION,frictionAir:BALL_FRICTION_AIR,density:0.0018});
+  const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{
+    restitution:BALL_RESTITUTION,friction:BALL_FRICTION,frictionAir:BALL_FRICTION_AIR,density:0.0018
+  });
   body.label=`BALL_${username}`;
   body.plugin={username,avatarUrl,scored:false};
   World.add(world,body);
@@ -1087,7 +987,6 @@ function tryRemoveBall(body){
 }
 
 /* ---------------- SCORE / LEADERBOARD ---------------- */
-const leaderboard = leaderboard;
 async function awardPoints(username, avatarUrl, points){
   const cur=leaderboard[username]||{username,avatarUrl,score:0};
   const next=cur.score+points;
@@ -1141,7 +1040,7 @@ function handleRedeemEvent(id, username, avatarUrl, tier){
   enqueueRedemption(id,tier,username,avatarUrl);
 }
 
-/* ---------------- EVENT LISTENING (GIFT FIX APPLIED HERE) ---------------- */
+/* ---------------- EVENT LISTENERS ---------------- */
 function listenToEvents(){
   if(!window.FirebaseREST){
     console.error('[game.js] FirebaseREST missing.');
@@ -1149,59 +1048,43 @@ function listenToEvents(){
   }
   FirebaseREST.onChildAdded('/events',(id,obj)=>{
     if(!obj || typeof obj!=='object'){
-      if(DEBUG_GIFTS) console.log('[GiftDebug] Ignored non-object event', obj);
+      if(DEBUG_GIFTS) console.log('[GiftDebug] Non-object event ignored',obj);
       return;
     }
-    if(processedEvents.has(id)){
-      if(DEBUG_GIFTS) console.log('[GiftDebug] Duplicate event ID', id);
-      return;
-    }
+    if(processedEvents.has(id)) return;
 
-    // Timestamp gating (only if ts looks valid)
     let ts = Number(obj.timestamp);
-    if(!Number.isFinite(ts) || ts<=0){
-      ts = Date.now(); // treat as current if missing or invalid
-    } else if(ts < startTime - 60_000){
-      if(DEBUG_GIFTS) console.log('[GiftDebug] Old event dropped (timestamp filter)', id, ts);
+    if(!Number.isFinite(ts) || ts<=0) ts = Date.now();
+    else if(ts < startTime - 60_000){
+      if(DEBUG_GIFTS) console.log('[GiftDebug] Old event filtered');
       return;
     }
-
     processedEvents.add(id);
 
     const username=sanitize(obj.username || (obj.user && obj.user.username) || 'viewer');
-    const avatarUrl=obj.avatarUrl || (obj.user && (obj.user.profilePic || obj.user.avatarUrl)) || '';
+    const avatarUrl=obj.avatarUrl || (obj.user && (obj.user.profilePic||obj.user.avatarUrl)) || '';
     const command=(obj.command||'').toLowerCase();
 
-    // Redemption commands
     if(command.startsWith(REDEEM_PREFIX)){
-      const tier=command.split(':')[1];
-      handleRedeemEvent(id, username, avatarUrl, tier);
+      handleRedeemEvent(id,username,avatarUrl,command.split(':')[1]);
       return;
     }
 
-    // Gift detection
     if(isGiftEvent(obj)){
-      const statusText = (spawnStatusEl?.textContent || 'unknown').trim().toLowerCase();
-      const spawnAllowed = statusText==='true' || statusText==='unknown';
+      const statusText=(spawnStatusEl?.textContent||'unknown').trim().toLowerCase();
+      const spawnAllowed=statusText==='true' || statusText==='unknown';
       if(!spawnAllowed && !devFreeToggle.checked){
-        if(DEBUG_GIFTS) console.log('[GiftDebug] Spawn disabled by config.');
+        if(DEBUG_GIFTS) console.log('[GiftDebug] Spawn disabled by config');
         return;
       }
-      if(DEBUG_GIFTS){
-        console.log('[GiftDebug] Gift event recognized', {
-          id, username, raw:obj, normalized:normalizeGiftEvent(obj)
-        });
-      }
-      spawnGiftBalls(username, avatarUrl, obj);
+      spawnGiftBalls(username,avatarUrl,obj);
       return;
     } else if(DEBUG_GIFTS){
-      console.log('[GiftDebug] Event not recognized as gift', id, obj);
+      console.log('[GiftDebug] Not a gift', obj);
     }
 
-    // Fallback: textual commands
     if(command.includes('drop') || command.startsWith('gift')){
-      if(DEBUG_GIFTS) console.log('[GiftDebug] Fallback command spawn', command);
-      spawnBallSet({ username, avatarUrl });
+      spawnBallSet({username,avatarUrl});
     }
   });
 
@@ -1240,19 +1123,15 @@ function initTeasers(){
     initialScale:CRATE_SCALE
   });
 }
-function devRedeem(tier='t1',user='DevUser'){
-  handleRedeemEvent('dev_'+Date.now(),user,'',tier);
-}
+function devRedeem(tier='t1',user='DevUser'){ handleRedeemEvent('dev_'+Date.now(),user,'',tier); }
 function devDrop(user='DevUser'){ spawnBallSet({username:user,avatarUrl:''}); }
 window.devRedeem=devRedeem;
 window.devDrop=devDrop;
 
-/* ---------------- DRAGGABLES (UNCHANGED) ---------------- */
+/* ---------------- DRAGGABLE UI ---------------- */
 function initDraggables(){
   const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
-  panels.forEach(p=>{
-    preparePanel(p); attachDrag(p); attachScale(p); ensurePanelOnScreen(p,true);
-  });
+  panels.forEach(p=>{ preparePanel(p); attachDrag(p); attachScale(p); ensurePanelOnScreen(p,true); });
   window.addEventListener('wheel',e=>{
     if(!e.altKey) return;
     const el=e.target.closest('[data-drag][data-scale]');
@@ -1270,9 +1149,7 @@ function initDraggables(){
     panels.forEach(p=>{
       localStorage.removeItem(storageKey(p,'pos'));
       localStorage.removeItem(storageKey(p,'scale'));
-      p.dataset.x='40';
-      p.dataset.y='120';
-      p.dataset.scale='1';
+      p.dataset.x='40'; p.dataset.y='120'; p.dataset.scale='1';
       renderTransform(p);
     });
     forceCommandsVisible();
@@ -1342,8 +1219,7 @@ function attachScale(panel){
   let resizing=false,sx=0,startScale=1;
   handle.addEventListener('pointerdown',e=>{
     e.preventDefault(); e.stopPropagation();
-    resizing=true; sx=e.clientX;
-    startScale=parseFloat(panel.dataset.scale||'1');
+    resizing=true; sx=e.clientX; startScale=parseFloat(panel.dataset.scale||'1');
     panel.classList.add('dragging');
   });
   window.addEventListener('pointermove',e=>{
@@ -1419,14 +1295,12 @@ async function loadCustomLayoutsFromUrl(url){
   }
 }
 
-/* ---------------- VISIBILITY ---------------- */
+/* ---------------- VISIBILITY / AUDIO ---------------- */
 function forceCommandsVisible(){
   if(!commandsPanel) return;
   commandsPanel.style.opacity='1';
   commandsPanel.style.pointerEvents='auto';
 }
-
-/* ---------------- AUDIO UNLOCK ---------------- */
 let audioBound=false;
 function bindAudioUnlockOnce(){
   if(audioBound) return;
@@ -1442,7 +1316,7 @@ function bindAudioUnlockOnce(){
 bindAudioUnlockOnce();
 
 /* ---------------- UI BINDINGS ---------------- */
-btnGear?.addEventListener('click',showSettingsPanel);
+btnGear?.addEventListener('click',showSettings);
 btnCloseSettings?.addEventListener('click',hideSettings);
 btnResetUI?.addEventListener('click',()=>{
   if(!commandsPanel)return;
@@ -1506,30 +1380,13 @@ btnLoadLayouts?.addEventListener('click',()=>loadCustomLayoutsFromUrl(layoutJson
 
 window.forceShowCommands=()=>forceCommandsVisible();
 
-/* ---------------- TEST HELPERS FOR GIFT DEBUG ---------------- */
+/* Gift test helpers */
 window.injectGift = function({username='TestUser',giftName='Rose',coins=1,repeat=1}={}){
-  const evt={
-    username,
-    giftName,
-    giftCoins: coins,
-    repeatCount: repeat,
-    timestamp: Date.now()
-  };
-  if(DEBUG_GIFTS) console.log('[GiftDebug] injectGift',evt);
+  const evt={username,giftName,giftCoins:coins,repeatCount:repeat,timestamp:Date.now()};
   FirebaseREST.emitChildAdded('/events',evt);
 };
 window.injectNestedGift = function({username='NestedUser',name='Unicorn',diamondCount=90,repeat=1}={}){
-  const evt={
-    type:'gift',
-    username,
-    gift:{
-      name,
-      diamondCount,
-      repeatCount:repeat
-    },
-    timestamp: Date.now()
-  };
-  if(DEBUG_GIFTS) console.log('[GiftDebug] injectNestedGift',evt);
+  const evt={type:'gift',username,gift:{name,diamondCount,repeatCount:repeat},timestamp:Date.now()};
   FirebaseREST.emitChildAdded('/events',evt);
 };
 window.simGift=(giftName='rose',count=1)=>{
@@ -1551,8 +1408,24 @@ function start(){
   setTeaserScale(CRATE_SCALE);
   startLoop();
   forceCommandsVisible();
-  if(DEBUG_GIFTS) console.log('[GiftDebug] Gift debug enabled.');
+  if(DEBUG_GIFTS) console.log('[GiftDebug] Enabled');
 }
+function initDevPanel(){
+  if(!devPanel) return;
+  devPanel.querySelectorAll('button[data-act]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const act=btn.dataset.act;
+      if(act==='drop') devDrop('DevDrop');
+      else if(act.startsWith('redeem-')) devRedeem(act.split('-')[1],'DevUser');
+    });
+  });
+}
+function initGiftCards(){
+  document.querySelectorAll('.gift-card').forEach(card=>{
+    card.addEventListener('click',()=>devDrop(card.dataset.gift||'GiftUser'));
+  });
+}
+
 start();
 
 })(); // end IIFE
