@@ -1,6 +1,5 @@
 /* ===============================
-   Restored + Fixed Unified Styles
-   + Spam Mode checkbox styling
+   Unified Styles + Gift Value Panel + Spam Mode
    =============================== */
 
 :root {
@@ -275,6 +274,76 @@ html,body,#app,#game-container{
 }
 .tiny-reset:hover{filter:brightness(1.25);}
 
+/* Gift Value panel */
+#gift-value-panel{
+  padding:10px 14px 18px;
+  z-index:210;
+  font-size:14px;
+}
+#gift-value-panel .drag-bar{
+  height:var(--drag-bar-height);
+  display:flex;
+  align-items:center;
+  padding:0 12px;
+  font-weight:900;
+  letter-spacing:1.2px;
+  font-size:14px;
+  background:linear-gradient(90deg,rgba(0,242,234,0.25),rgba(255,0,128,0.25));
+  border-radius:18px;
+  margin:2px 2px 12px;
+  cursor:grab;
+}
+.gift-value-list{
+  list-style:none;
+  margin:0 0 12px;
+  padding:0;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.gift-value-list li{
+  display:grid;
+  grid-template-columns:60px 18px 1fr;
+  align-items:center;
+  gap:6px;
+  padding:8px 10px;
+  background:linear-gradient(130deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02));
+  border:1px solid rgba(255,255,255,0.14);
+  border-radius:12px;
+  font-size:13px;
+  font-weight:600;
+  letter-spacing:.4px;
+}
+.gift-value-list li:hover{filter:brightness(1.18);}
+.gv-coins{
+  background:linear-gradient(90deg,#ffe99c,#ffbf42);
+  -webkit-background-clip:text;
+  color:transparent;
+  font-weight:900;
+  font-size:15px;
+  text-shadow:0 0 8px rgba(247,210,92,.45);
+}
+.gv-arrow{
+  text-align:center;
+  font-weight:800;
+  color:#8ad9ff;
+  text-shadow:0 0 8px rgba(0,242,234,.4);
+}
+.gv-balls{
+  color:#e8f7ff;
+  font-weight:700;
+}
+#gift-value-panel .gift-value-footer{
+  font-size:11px;
+  line-height:1.35;
+  background:linear-gradient(140deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02));
+  border:1px solid rgba(255,255,255,0.12);
+  padding:8px 10px;
+  border-radius:10px;
+  color:var(--muted);
+  text-wrap:balance;
+}
+
 /* Settings panel */
 #settings-panel{
   padding:10px 14px 18px;
@@ -343,7 +412,6 @@ html,body,#app,#game-container{
   padding:8px 10px;
   border-radius:10px;
   margin-top:-4px;
-  text-wrap:balance;
 }
 
 .settings-group input[type="range"],
@@ -482,7 +550,8 @@ body.redeem-focus #controls-panel {
   transition:var(--transition);
 }
 body.redeem-focus #redeem-layer .redeem-user-card{filter:none;}
-body.redeem-focus #commands-panel{
+body.redeem-focus #commands-panel,
+body.redeem-focus #gift-value-panel{
   opacity:1;
   filter:none;
   pointer-events:auto;

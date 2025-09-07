@@ -1,10 +1,10 @@
-/* game.js – Gift Spam Enhancement + Spam Mode Settings Checkbox Integrated
-   (Full file, expanded)
-   Features:
-   - Spam Mode toggle via settings checkbox (#opt-spam-mode)
-   - Persisted in localStorage (plk_spam_mode)
-   - High-volume gift streak handling with spawn queue + safety caps
-   - Matte crates, redemption focus, audio, drag/scale panels retained
+/* game.js – Gift Spam Enhancement + Coin Mapping + Per-Gift Panel (FULL)
+   Additions in this version:
+   - Precise coin -> ball mapping table (5,10,20,30,99,500)
+   - Each gift event now produces at least 1 mapping batch (no silent merge).
+   - Streak logic improved: delta <=0 falls back to 1 gift.
+   - Small consecutive gifts (2–3) no longer merged into a single drop.
+   - Gift value panel (index.html) + spam mode checkbox already integrated.
 */
 
 import * as THREE from 'three';
@@ -26,15 +26,15 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 
 const { Engine, World, Bodies, Events, Body } = Matter;
 
-/* ================= CONFIG ================= */
-const REWARD_COSTS = { t1:1000, t2:5000, t3:10000 };
-const REWARD_NAMES = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
+/* ============ CONFIG ============ */
+const REWARD_COSTS  = { t1:1000, t2:5000, t3:10000 };
+const REWARD_NAMES  = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
 const REDEEM_PREFIX = 'redeem:';
 const DEV_BYPASS_DEFAULT = true;
 const SHOW_PERF_PANEL = true;
 const ADAPTIVE_QUALITY = true;
 
-/* Gift mapping (baseline) */
+/* Gift -> base balls mapping by name */
 const GIFT_BALL_MAP = {
   'rose': 1,
   'finger heart': 1,
@@ -45,30 +45,40 @@ const GIFT_BALL_MAP = {
   'castle': 12
 };
 
-/* Original non-spam limits */
+/* Explicit coin mapping (exact price) */
+const COIN_MAPPING_TABLE = [
+  { coins:5,   balls:2 },
+  { coins:10,  balls:3 },
+  { coins:20,  balls:4 },
+  { coins:30,  balls:5 },
+  { coins:99,  balls:10 },
+  { coins:500, balls:60 },
+];
+
+/* Fallback ratios */
 const NORMAL_MAX_BALLS_PER_GIFT = 25;
 const COIN_TO_BALL_RATIO_NORMAL = 10;
 
-/* Spam mode parameters */
 let SPAM_MODE = (localStorage.getItem('plk_spam_mode') || 'false') === 'true';
-const SPAM_MAX_BALLS_PER_EVENT = 400;
-const COIN_TO_BALL_RATIO_SPAM = 4;
-const SPAWN_PER_FRAME = 40;
-const SPAM_GLOBAL_WINDOW_MS = 10_000;
-const SPAM_GLOBAL_WINDOW_MAX = 6000; // Avoid meltdown; change to Infinity to disable
+const SPAM_MAX_BALLS_PER_EVENT   = 400;
+const COIN_TO_BALL_RATIO_SPAM    = 4;
+const SPAWN_PER_FRAME            = 40;
+const SPAM_GLOBAL_WINDOW_MS      = 10_000;
+const SPAM_GLOBAL_WINDOW_MAX     = 6000;  // Set Infinity to remove safety cap
 
 function setSpamMode(on){
   SPAM_MODE = !!on;
   localStorage.setItem('plk_spam_mode', SPAM_MODE ? 'true':'false');
   console.log('[SpamMode]', SPAM_MODE ? 'ENABLED' : 'DISABLED');
-  if(optSpamMode) optSpamMode.checked = SPAM_MODE;
+  const cb=document.getElementById('opt-spam-mode');
+  if(cb) cb.checked=SPAM_MODE;
 }
-window.enableSpam = ()=>setSpamMode(true);
-window.disableSpam= ()=>setSpamMode(false);
-window.toggleSpam = ()=>setSpamMode(!SPAM_MODE);
-window.isSpamMode = ()=>SPAM_MODE;
+window.enableSpam  = ()=>setSpamMode(true);
+window.disableSpam = ()=>setSpamMode(false);
+window.toggleSpam  = ()=>setSpamMode(!SPAM_MODE);
+window.isSpamMode  = ()=>SPAM_MODE;
 
-/* Board & physics constants */
+/* Physics / World dims */
 const FIXED_DT = 1000/60;
 const MAX_STEPS_BASE = 4;
 const maxStepsForFrame = dt => dt > 140 ? 1 : dt > 90 ? 2 : MAX_STEPS_BASE;
@@ -85,21 +95,19 @@ const WALL_THICKNESS = 2.0;
 const TRAY_RATIO = 0.22;
 let TRAY_HEIGHT = 0;
 
-/* Tunables */
-let GRAVITY_MAG = 1.0;
-let DROP_SPEED   = 0.5;
-let NEON = true;
-let PARTICLES = true;
-let CRATE_SCALE = 4.4;
-let VIBRANCE_PULSE = 0.4;
+let GRAVITY_MAG   = 1.0;
+let DROP_SPEED    = 0.5;
+let NEON          = true;
+let PARTICLES     = true;
+let CRATE_SCALE   = 4.4;
+let VIBRANCE_PULSE= 0.4;
 
-/* Physics params */
 const BALL_RESTITUTION = 0.06;
 const PEG_RESTITUTION  = 0.02;
 const BALL_FRICTION    = 0.04;
 const BALL_FRICTION_AIR= 0.012;
-const MAX_SPEED = 28;
-const MAX_H_SPEED = 22;
+const MAX_SPEED        = 28;
+const MAX_H_SPEED      = 22;
 
 /* State */
 let engine, world;
@@ -113,15 +121,13 @@ const labelById = new Map();
 const leaderboard = {};
 const processedEvents = new Set();
 const processedRedemptions = new Set();
-let SLOT_POINTS = [];
-let SLOT_MULTIPLIERS = [];
-let TOP_ROW_Y = 0;
+let SLOT_POINTS=[], SLOT_MULTIPLIERS=[], TOP_ROW_Y=0;
 const startTime = Date.now();
 
 const targetCamOffset = new THREE.Vector3();
-const baseCamPos = new THREE.Vector3(0,0,100);
+const baseCamPos      = new THREE.Vector3(0,0,100);
 
-/* DOM references */
+/* DOM */
 const container       = document.getElementById('game-container');
 const fxCanvas        = document.getElementById('fx-canvas');
 const fxCtx           = fxCanvas.getContext('2d');
@@ -141,8 +147,9 @@ const settingsPanel   = document.getElementById('settings-panel');
 const btnGear         = document.getElementById('btn-gear');
 const btnCloseSettings= document.getElementById('btn-close-settings');
 const btnResetUI      = document.getElementById('btn-reset-ui');
+const giftValuePanel  = document.getElementById('gift-value-panel');
 
-/* Settings inputs */
+/* Settings fields */
 const optDropSpeed    = document.getElementById('opt-drop-speed');
 const optGravity      = document.getElementById('opt-gravity');
 const optCrateScale   = document.getElementById('opt-crate-scale');
@@ -150,15 +157,15 @@ const optNeon         = document.getElementById('opt-neon');
 const optParticles    = document.getElementById('opt-particles');
 const optVibrance     = document.getElementById('opt-vibrance');
 const optVolume       = document.getElementById('opt-volume');
+const optSpamMode     = document.getElementById('opt-spam-mode');
 const adminTokenInput = document.getElementById('admin-token');
 const backendUrlInput = document.getElementById('backend-url');
 const btnSaveAdmin    = document.getElementById('btn-save-admin');
 const btnReset        = document.getElementById('btn-reset-leaderboard');
 const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
 const btnSimulate     = document.getElementById('btn-simulate');
-const optSpamMode     = document.getElementById('opt-spam-mode'); // NEW
 
-/* Settings panel show/hide */
+/* Show / hide settings */
 function showSettings(){
   settingsPanel?.classList.add('open');
   settingsPanel?.setAttribute('aria-hidden','false');
@@ -169,11 +176,8 @@ function hideSettings(){
 }
 
 /* Helpers */
-const clamp = (v,a,b) => v<a?a:v>b?b:v;
-const safeNum = (v,f)=> {
-  const n=parseFloat(v);
-  return Number.isFinite(n)?n:f;
-};
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const safeNum=(v,f)=>{ const n=parseFloat(v); return Number.isFinite(n)?n:f; };
 
 /* Performance */
 let perfPanel;
@@ -183,44 +187,18 @@ let currentPR = Math.min(BASE_DEVICE_PR, 1.5);
 let frameSamples=0, frameAccum=0;
 
 const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
-let sharedBallBaseMaterial = null;
-const avatarTextureCache = new Map();
+let sharedBallBaseMaterial=null;
+const avatarTextureCache=new Map();
 
-/* Redemption */
-const redeemQueue = [];
-let redeemActive = false;
-let activeReward3D = null;
-let activeRewardDisposeFn = null;
-let activeRedemptionCrate = null;
+/* Redemption queue */
+const redeemQueue=[];
+let redeemActive=false;
+let activeReward3D=null;
+let activeRewardDisposeFn=null;
+let activeRedemptionCrate=null;
 
 function enterRedemptionFocus(){ document.body.classList.add('redeem-focus'); forceCommandsVisible(); }
 function exitRedemptionFocus(){ document.body.classList.remove('redeem-focus'); }
-
-/* Spawn Queue (for spam) */
-const spawnQueue = [];
-let spawnInLastWindow = []; // timestamps for window-limited safety
-
-function queueBall(username, avatarUrl){
-  spawnQueue.push({username, avatarUrl});
-}
-
-/* Drain spawn queue each frame */
-function drainSpawnQueue(){
-  const now = performance.now();
-  spawnInLastWindow = spawnInLastWindow.filter(t=> now - t < SPAM_GLOBAL_WINDOW_MS);
-  let allowed = Infinity;
-  if(SPAM_MODE){
-    const remainingWindow = SPAM_GLOBAL_WINDOW_MAX - spawnInLastWindow.length;
-    if(remainingWindow <= 0) return;
-    allowed = remainingWindow;
-  }
-  const batch = Math.min(spawnQueue.length, SPAWN_PER_FRAME, allowed);
-  for(let i=0;i<batch;i++){
-    const item=spawnQueue.shift();
-    spawnBallSet(item);
-    spawnInLastWindow.push(now);
-  }
-}
 
 function enqueueRedemption(evId,tier,username,avatarUrl){
   redeemQueue.push({evId,tier,username,avatarUrl});
@@ -228,14 +206,13 @@ function enqueueRedemption(evId,tier,username,avatarUrl){
 }
 function runNextRedemption(){
   if(redeemActive) return;
-  const item=redeemQueue.shift();
-  if(!item) return;
+  const next=redeemQueue.shift();
+  if(!next) return;
   redeemActive=true;
-  playRedemptionAnimation(item).then(()=>{redeemActive=false;runNextRedemption();});
+  playRedemptionAnimation(next).then(()=>{redeemActive=false;runNextRedemption();});
 }
-async function prepare3DModel(){
-  try{ await ensureRewardModelLoaded(); return true; }catch{ return false; }
-}
+async function prepare3DModel(){ try{ await ensureRewardModelLoaded(); return true; }catch{return false;} }
+
 function attachReward3D(tier){
   if(activeReward3D){
     scene.remove(activeReward3D);
@@ -297,13 +274,13 @@ function playRedemptionAnimation({tier,username,avatarUrl}){
 }
 
 /* Slots */
-function buildSlots(slotCount){
-  const center=Math.floor((slotCount-1)/2);
+function buildSlots(count){
+  const center=Math.floor((count-1)/2);
   const mult=d=>d===0?16:d===1?9:d===2?5:d===3?3:1;
-  SLOT_MULTIPLIERS=Array.from({length:slotCount},(_,i)=>mult(Math.abs(i-center)));
+  SLOT_MULTIPLIERS=Array.from({length:count},(_,i)=>mult(Math.abs(i-center)));
   SLOT_POINTS=SLOT_MULTIPLIERS.map(m=>m*100);
 }
-function renderSlotLabels(slotCount, framePx){
+function renderSlotLabels(count, framePx){
   slotLabelsEl.innerHTML='';
   SLOT_MULTIPLIERS.forEach(m=>{
     const div=document.createElement('div');
@@ -311,10 +288,10 @@ function renderSlotLabels(slotCount, framePx){
     div.innerHTML=`<span class="x">x</span><span class="val">${m}</span>`;
     slotLabelsEl.appendChild(div);
   });
-  trayDividers.style.setProperty('--slot-width', `${framePx.width/slotCount}px`);
+  trayDividers.style.setProperty('--slot-width', `${framePx.width/count}px`);
 }
 
-/* Backend base functions */
+/* Backend base */
 function getBackendBaseUrl(){ return (localStorage.getItem('backendBaseUrl')||'').trim(); }
 function setBackendBaseUrl(url){
   const clean=String(url||'').trim().replace(/\/+$/,'');
@@ -326,22 +303,22 @@ function adminFetch(path,opt={}){
   return fetch(`${base}${path.startsWith('/')?'':'/'}${path}`,opt);
 }
 
-/* Settings load / apply */
-devFreeToggle.checked = (localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
+/* Settings persistence */
+devFreeToggle.checked=(localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
 devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
 
 function loadSettings(){
-  const read = (k,d)=>Number(localStorage.getItem(k) ?? d);
-  const g=read('plk_gravity',1); optGravity.value=g;
-  const ds=read('plk_dropSpeed',0.5); optDropSpeed.value=ds;
-  const cs=read('plk_crate_scale',4.4); optCrateScale.value=cs; CRATE_SCALE=cs;
-  const vb=read('plk_vibrance',0.4); optVibrance.value=vb; VIBRANCE_PULSE=vb;
+  const read=(k,d)=>Number(localStorage.getItem(k) ?? d);
+  optGravity.value = read('plk_gravity',1);
+  optDropSpeed.value= read('plk_dropSpeed',0.5);
+  optCrateScale.value=read('plk_crate_scale',4.4); CRATE_SCALE=parseFloat(optCrateScale.value);
+  optVibrance.value=read('plk_vibrance',0.4); VIBRANCE_PULSE=parseFloat(optVibrance.value);
   optNeon.checked=(localStorage.getItem('plk_neon') ?? 'true')==='true';
   optParticles.checked=(localStorage.getItem('plk_particles') ?? 'true')==='true';
   const vol=read('plk_volume',0.5); optVolume.value=vol; setAudioVolume(vol);
-  const savedBase=getBackendBaseUrl(); if(savedBase) backendUrlInput.value=savedBase;
+  const base=getBackendBaseUrl(); if(base) backendUrlInput.value=base;
   const tok=localStorage.getItem('adminToken')||''; if(tok) adminTokenInput.value=tok;
-  if(optSpamMode) optSpamMode.checked = SPAM_MODE; // reflect stored
+  if(optSpamMode) optSpamMode.checked=SPAM_MODE;
   applySettings();
 }
 function applySettings(){
@@ -365,7 +342,7 @@ function applySettings(){
   }
 }
 
-/* Three.js */
+/* Three.js init */
 function initThree(){
   renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
   renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -441,10 +418,8 @@ function onResize(){
   smaaPass.setSize(container.clientWidth,container.clientHeight);
   bloomPass.setSize(container.clientWidth,container.clientHeight);
   computeWorldSize();
-  camera.left=-WORLD_WIDTH/2;
-  camera.right=WORLD_WIDTH/2;
-  camera.top=WORLD_HEIGHT/2;
-  camera.bottom=-WORLD_HEIGHT/2;
+  camera.left=-WORLD_WIDTH/2; camera.right=WORLD_WIDTH/2;
+  camera.top=WORLD_HEIGHT/2; camera.bottom=-WORLD_HEIGHT/2;
   camera.updateProjectionMatrix();
   fxCanvas.width=container.clientWidth;
   fxCanvas.height=container.clientHeight;
@@ -456,19 +431,16 @@ function layoutOverlays(){
   const left=-BOARD_WIDTH/2,right=BOARD_WIDTH/2;
   const top=BOARD_HEIGHT/2,bottom=-BOARD_HEIGHT/2;
   const trayTop=bottom+TRAY_HEIGHT;
-  const pTopLeft=worldToScreen(new THREE.Vector3(left,top,0),camera,renderer);
-  const pBottomRight=worldToScreen(new THREE.Vector3(right,bottom,0),camera,renderer);
-  const pTrayTopLeft=worldToScreen(new THREE.Vector3(left,trayTop,0),camera,renderer);
-  const frame={x:Math.round(pTopLeft.x),y:Math.round(pTopLeft.y),width:Math.round(pBottomRight.x-pTopLeft.x),height:Math.round(pBottomRight.y-pTopLeft.y)};
-  const tray={x:frame.x,width:frame.width,height:Math.round(pBottomRight.y-pTrayTopLeft.y),top:Math.round(pTrayTopLeft.y)};
+  const pTL=worldToScreen(new THREE.Vector3(left,top,0),camera,renderer);
+  const pBR=worldToScreen(new THREE.Vector3(right,bottom,0),camera,renderer);
+  const pTrayTL=worldToScreen(new THREE.Vector3(left,trayTop,0),camera,renderer);
+  const frame={x:Math.round(pTL.x),y:Math.round(pTL.y),width:Math.round(pBR.x-pTL.x),height:Math.round(pBR.y-pTL.y)};
+  const tray={x:frame.x,width:frame.width,height:Math.round(pBR.y-pTrayTL.y),top:Math.round(pTrayTL.y)};
   Object.assign(boardFrame.style,{left:frame.x+'px',top:frame.y+'px',width:frame.width+'px',height:frame.height+'px'});
   Object.assign(slotTray.style,{left:tray.x+'px',top:tray.top+'px',width:tray.width+'px',height:tray.height+'px'});
-  boardDivider.style.left=frame.x+'px';
-  boardDivider.style.width=frame.width+'px';
-  boardDivider.style.top=(pTrayTopLeft.y-1)+'px';
-  boardDivider.style.display='block';
-  boardTitle.style.left=(frame.x+22)+'px';
-  boardTitle.style.top =(frame.y+18)+'px';
+  boardDivider.style.left=frame.x+'px'; boardDivider.style.width=frame.width+'px';
+  boardDivider.style.top=(pTrayTL.y-1)+'px'; boardDivider.style.display='block';
+  boardTitle.style.left=(frame.x+22)+'px'; boardTitle.style.top=(frame.y+18)+'px';
   const slotCount=ROWS+1;
   buildSlots(slotCount);
   renderSlotLabels(slotCount, frame);
@@ -492,7 +464,7 @@ function buildBoard(){
   TOP_ROW_Y=startY;
   const rowH=PEG_SPACING*0.9;
   const startX=-((ROWS-1)*PEG_SPACING)/2;
-  const pegPositions=[];
+  const pegs=[];
   for(let r=0;r<ROWS;r++){
     const y=startY - r*rowH;
     for(let c=0;c<=r;c++){
@@ -500,10 +472,10 @@ function buildBoard(){
       const peg=Bodies.circle(x,y,PEG_RADIUS,{isStatic:true,restitution:PEG_RESTITUTION,friction:0.01});
       peg.label='PEG';
       World.add(world,peg);
-      pegPositions.push({x,y});
+      pegs.push({x,y});
     }
   }
-  addPegInstancedMesh(pegPositions);
+  addPegInstancedMesh(pegs);
   slotSensors=[];
   const slotCount=ROWS+1;
   const slotWidth=BOARD_WIDTH/slotCount;
@@ -516,17 +488,17 @@ function buildBoard(){
     slotSensors.push({body:sensor,index:i});
   }
 }
-function addPegInstancedMesh(pegPositions){
+function addPegInstancedMesh(list){
   const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
   const mat=new THREE.MeshPhysicalMaterial({
     color:0x86f7ff,metalness:0.35,roughness:0.35,
     clearcoat:0.6,clearcoatRoughness:0.2,
     emissive:0x00ffff,emissiveIntensity:0.23
   });
-  const inst=new THREE.InstancedMesh(geo,mat,pegPositions.length);
+  const inst=new THREE.InstancedMesh(geo,mat,list.length);
   const m=new THREE.Matrix4();
   const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI/2);
-  pegPositions.forEach(({x,y},i)=>{
+  list.forEach(({x,y},i)=>{
     m.compose(new THREE.Vector3(x,y,0),q,new THREE.Vector3(1,1,1));
     inst.setMatrixAt(i,m);
   });
@@ -534,7 +506,7 @@ function addPegInstancedMesh(pegPositions){
   scene.add(inst);
 }
 function bindCollisions(){
-  Events.on(engine,'collisionStart', ev=>{
+  Events.on(engine,'collisionStart',ev=>{
     for(const {bodyA,bodyB} of ev.pairs){
       handlePair(bodyA,bodyB);
       handlePair(bodyB,bodyA);
@@ -651,17 +623,35 @@ function updateThreeFromMatter(){
   });
 }
 
-/* Spawning */
+/* Spawn */
+const spawnQueue=[];
+let spawnInLastWindow=[];
+function queueBall(username, avatarUrl){ spawnQueue.push({username,avatarUrl}); }
+function drainSpawnQueue(){
+  const now=performance.now();
+  spawnInLastWindow=spawnInLastWindow.filter(t=>now-t<SPAM_GLOBAL_WINDOW_MS);
+  let allowed=Infinity;
+  if(SPAM_MODE){
+    const remain=SPAM_GLOBAL_WINDOW_MAX - spawnInLastWindow.length;
+    if(remain<=0) return;
+    allowed=remain;
+  }
+  const batch=Math.min(spawnQueue.length,SPAWN_PER_FRAME,allowed);
+  for(let i=0;i<batch;i++){
+    const item=spawnQueue.shift();
+    spawnBallSet(item);
+    spawnInLastWindow.push(now);
+  }
+}
+
 function spawnBallSet(o){ spawnSingle(o); }
 function spawnSingle({username,avatarUrl}){
   const jitter=PEG_SPACING*0.35;
   const dropX=Math.max(-BOARD_WIDTH/2+4,Math.min(BOARD_WIDTH/2-4,(Math.random()-0.5)*jitter));
   const dropY=TOP_ROW_Y + PEG_SPACING*0.8;
   const body=Bodies.circle(dropX,dropY,BALL_RADIUS,{
-    restitution:BALL_RESTITUTION,
-    friction:BALL_FRICTION,
-    frictionAir:BALL_FRICTION_AIR,
-    density:0.0018
+    restitution:BALL_RESTITUTION,friction:BALL_FRICTION,
+    frictionAir:BALL_FRICTION_AIR,density:0.0018
   });
   body.label=`BALL_${username}`;
   body.plugin={username,avatarUrl,scored:false};
@@ -718,14 +708,14 @@ function tryRemoveBall(body){
   }catch{}
 }
 
-/* Points & leaderboard */
+/* Leaderboard */
 async function awardPoints(username, avatarUrl, points){
   const current=leaderboard[username] || { username, avatarUrl, score:0 };
   const next=current.score+points;
   leaderboard[username]={ username, avatarUrl, score:next, lastUpdate:Date.now() };
   refreshLeaderboard();
-  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
-    username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
+  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,{
+    username, avatarUrl:avatarUrl||'', score:next, lastUpdate:Date.now()
   }).catch(()=>{});
 }
 function setPointsLocal(username, avatarUrl, score){
@@ -738,8 +728,8 @@ function deductPoints(username, avatarUrl, points){
   const next=current.score - points;
   leaderboard[username]={ username, avatarUrl, score: next, lastUpdate:Date.now() };
   refreshLeaderboard();
-  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`, {
-    username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
+  FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,{
+    username, avatarUrl:avatarUrl||'', score:next, lastUpdate:Date.now()
   }).catch(()=>{});
   return true;
 }
@@ -760,92 +750,121 @@ function clearLeaderboardLocal(){
   Object.keys(leaderboard).forEach(k=>delete leaderboard[k]);
   leaderboardList.innerHTML='';
 }
-function handleRedeemEvent(eventId, username, avatarUrl, tier){
-  if(processedRedemptions.has(eventId)) return;
-  processedRedemptions.add(eventId);
+function handleRedeemEvent(id, username, avatarUrl, tier){
+  if(processedRedemptions.has(id)) return;
+  processedRedemptions.add(id);
   const cost=REWARD_COSTS[tier];
   if(!cost) return;
-  if(devFreeToggle.checked && (leaderboard[username]?.score||0) < cost){
-    setPointsLocal(username, avatarUrl, cost);
+  if(devFreeToggle.checked && (leaderboard[username]?.score||0)<cost){
+    setPointsLocal(username,avatarUrl,cost);
   }
-  if(!deductPoints(username, avatarUrl, cost)) return;
-  enqueueRedemption(eventId, tier, username, avatarUrl);
+  if(!deductPoints(username,avatarUrl,cost)) return;
+  enqueueRedemption(id,tier,username,avatarUrl);
 }
 
-/* Gift logic with streak tracking */
-const giftStreakMap = new Map(); // key => lastRepeatCount
+/* Gift / streak logic */
+const giftStreakMap=new Map(); // key => last repeatCount
 
-function resolveGiftName(obj){
-  return (obj.giftName || obj.gift || obj.gift_type || obj.giftType || obj.itemName || obj.name || '').toString();
+function resolveGiftName(o){
+  return (o.giftName || o.gift || o.gift_type || o.giftType || o.itemName || o.name || '').toString();
 }
-function deriveBallCountFromGift(eventObj){
-  const rawName = resolveGiftName(eventObj).trim();
-  const key = rawName.toLowerCase();
-  const baseMapped = key && GIFT_BALL_MAP[key] ? GIFT_BALL_MAP[key] : null;
+function coinMapping(coins){
+  if(!Number.isFinite(coins) || coins<=0) return null;
+  const exact=COIN_MAPPING_TABLE.find(e=>e.coins===coins);
+  return exact ? exact.balls : null;
+}
 
-  const coins = eventObj.giftCoins ?? eventObj.coins ?? eventObj.coin ?? eventObj.diamondCount ?? eventObj.diamonds ?? eventObj.value;
+/* Derive base balls (one event, before repeat scaling) */
+function deriveBaseBallsForGift(obj){
+  const name=resolveGiftName(obj).trim().toLowerCase();
+  const coins = obj.giftCoins ?? obj.coins ?? obj.coin ?? obj.diamondCount ?? obj.diamonds ?? obj.value;
 
-  if(SPAM_MODE){
-    if(typeof coins === 'number' && coins > 0){
-      const scaled = Math.max(1, Math.floor(coins / COIN_TO_BALL_RATIO_SPAM));
-      return clamp(scaled, 1, SPAM_MAX_BALLS_PER_EVENT);
-    }
-    if(baseMapped) return Math.min(baseMapped * 2, SPAM_MAX_BALLS_PER_EVENT);
-  } else {
-    if(baseMapped) return baseMapped;
-    if(typeof coins === 'number' && coins > 0){
-      return clamp(Math.floor(coins / COIN_TO_BALL_RATIO_NORMAL) || 1,1,NORMAL_MAX_BALLS_PER_GIFT);
-    }
+  // 1) Exact coin mapping first
+  const mappedExact = coinMapping(coins);
+  if(mappedExact!=null){
+    return mappedExact;
   }
 
-  const repeat = eventObj.repeatCount || eventObj.count || eventObj.quantity;
-  if(typeof repeat === 'number' && repeat > 0){
-    return SPAM_MODE
-      ? clamp(repeat,1,SPAM_MAX_BALLS_PER_EVENT)
-      : clamp(repeat,1,NORMAL_MAX_BALLS_PER_GIFT);
+  // 2) Name mapping
+  if(name && GIFT_BALL_MAP[name]) return GIFT_BALL_MAP[name];
+
+  // 3) Coin fallback ratio
+  if(Number.isFinite(coins) && coins>0){
+    if(SPAM_MODE){
+      return clamp(Math.floor(coins/COIN_TO_BALL_RATIO_SPAM) || 1, 1, SPAM_MAX_BALLS_PER_EVENT);
+    }
+    return clamp(Math.floor(coins/COIN_TO_BALL_RATIO_NORMAL) || 1, 1, NORMAL_MAX_BALLS_PER_GIFT);
   }
+
+  // 4) Default
   return SPAM_MODE ? 3 : 1;
 }
+
+/* Compute total balls for one event (handles repeatCount delta) */
+function computeEventBallCount(username,obj){
+  const base = deriveBaseBallsForGift(obj);
+  const repeatRaw = obj.repeatCount ?? obj.count ?? obj.quantity;
+  const giftName = resolveGiftName(obj).toLowerCase();
+  const key = username+'::'+giftName;
+
+  // If no repeat info treat each event as single unit
+  if(!Number.isFinite(repeatRaw) || repeatRaw<=0){
+    return base;
+  }
+
+  // Streak delta
+  const prev = giftStreakMap.get(key) || 0;
+  let delta = repeatRaw - prev;
+
+  // If streaming backend sends only final repeat at end (so events produce same repeat),
+  // ensure delta at least 1 to avoid merging small bursts
+  if(delta <= 0) delta = 1;
+
+  // Update last count
+  giftStreakMap.set(key, repeatRaw);
+
+  // Multiply base by delta
+  let total = base * delta;
+
+  // Clamp
+  if(SPAM_MODE){
+    total = clamp(total, 1, SPAM_MAX_BALLS_PER_EVENT);
+  }else{
+    total = clamp(total, 1, NORMAL_MAX_BALLS_PER_GIFT);
+  }
+
+  return total;
+}
+
+function finalizeStreakIfEnded(username,obj){
+  if(obj.repeatEnd || obj.streakEnd || obj.streakEnded){
+    const giftName=resolveGiftName(obj).toLowerCase();
+    giftStreakMap.delete(username+'::'+giftName);
+  }
+}
+
 function isGiftEvent(obj){
-  if(!obj || typeof obj !== 'object') return false;
+  if(!obj || typeof obj!=='object') return false;
   if(obj.type && String(obj.type).toLowerCase().includes('gift')) return true;
   if('giftName' in obj || 'gift' in obj || 'giftId' in obj || 'giftType' in obj) return true;
   if('giftCoins' in obj || 'coins' in obj || 'diamondCount' in obj || 'diamonds' in obj) return true;
   if(String(obj.event||'').toLowerCase()==='gift') return true;
   return false;
 }
-function spawnGiftBalls(username, avatarUrl, giftObj){
-  const giftName = resolveGiftName(giftObj).toLowerCase();
-  let total = deriveBallCountFromGift(giftObj);
 
-  const repeat = giftObj.repeatCount || giftObj.count || giftObj.quantity;
-  const streakKey = username + '::' + giftName;
-  if(SPAM_MODE && typeof repeat === 'number' && repeat > 0){
-    const prev = giftStreakMap.get(streakKey) || 0;
-    let delta = repeat - prev;
-    if(delta < 0) delta = repeat;
-    if(delta === 0) return;
-    giftStreakMap.set(streakKey, repeat);
-    if(delta < total) total = delta;
-  }
-
-  if(!SPAM_MODE) total = clamp(total,1,NORMAL_MAX_BALLS_PER_GIFT);
-  else total = clamp(total,1,SPAM_MAX_BALLS_PER_EVENT);
-
+function spawnGiftBalls(username, avatarUrl, obj){
+  const total = computeEventBallCount(username,obj);
   for(let i=0;i<total;i++){
-    queueBall(username, avatarUrl);
+    queueBall(username,avatarUrl);
   }
-
-  if(giftObj.repeatEnd || giftObj.streakEnded || giftObj.streakEnd){
-    giftStreakMap.delete(streakKey);
-  }
+  finalizeStreakIfEnded(username,obj);
 }
 
-/* Events (Firebase) */
+/* Firebase events */
 function listenToEvents(){
   FirebaseREST.onChildAdded('/events',(id,obj)=>{
     if(!obj || typeof obj!=='object' || processedEvents.has(id)) return;
-    const ts=typeof obj.timestamp==='number'?obj.timestamp:0;
+    const ts=Number(obj.timestamp)||0;
     if(ts && ts < startTime - 60_000) return;
     processedEvents.add(id);
 
@@ -855,37 +874,35 @@ function listenToEvents(){
 
     if(command.startsWith(REDEEM_PREFIX)){
       const tier=command.split(':')[1];
-      handleRedeemEvent(id, username, avatarUrl, tier);
+      handleRedeemEvent(id,username,avatarUrl,tier);
       return;
     }
 
     if(isGiftEvent(obj)){
-      const spawnEnabledText = spawnStatusEl?.textContent || 'unknown';
-      if(spawnEnabledText === 'false' && !devFreeToggle.checked){
-        return;
-      }
-      spawnGiftBalls(username, avatarUrl, obj);
+      const spawnEnabled = spawnStatusEl?.textContent !== 'false';
+      if(!spawnEnabled && !devFreeToggle.checked) return;
+      spawnGiftBalls(username,avatarUrl,obj);
       return;
     }
 
     if(command.includes('drop') || command.startsWith('gift')){
-      queueBall(username, avatarUrl);
+      queueBall(username,avatarUrl);
     }
   });
 
   FirebaseREST.onValue('/leaderboard',(data)=>{
     if(data && typeof data==='object'){
-      for(const k of Object.keys(data)){
-        const entry=data[k];
-        if(entry?.username){
-          leaderboard[entry.username]={
-            username:entry.username,
-            avatarUrl:entry.avatarUrl||'',
-            score:entry.score||0,
-            lastUpdate:entry.lastUpdate||0
+      Object.keys(data).forEach(k=>{
+        const e=data[k];
+        if(e?.username){
+          leaderboard[e.username]={
+            username:e.username,
+            avatarUrl:e.avatarUrl||'',
+            score:e.score||0,
+            lastUpdate:e.lastUpdate||0
           };
         }
-      }
+      });
       refreshLeaderboard();
     } else clearLeaderboardLocal();
   });
@@ -896,6 +913,7 @@ function listenToEvents(){
     spawnStatusEl.style.color=enabled?'var(--good)':'var(--danger)';
   });
 }
+
 function sanitize(u){
   const s=String(u||'').trim();
   return s ? s.slice(0,24) : 'viewer';
@@ -904,15 +922,12 @@ function sanitize(u){
 /* Teasers & Dev */
 function initTeasers(){
   initPBRTeasers({
-    scene,
-    camera,
-    renderer,
-    gsap,
+    scene,camera,renderer,gsap,
     onCrateClick:(tier)=>devRedeem(tier,'ClickUser'),
-    initialScale: CRATE_SCALE
+    initialScale:CRATE_SCALE
   });
 }
-function devRedeem(tier='t1', user='DevUser'){
+function devRedeem(tier='t1',user='DevUser'){
   const id='dev_'+Date.now()+'_'+Math.random().toString(36).slice(2);
   handleRedeemEvent(id,user,'',tier);
 }
@@ -920,6 +935,7 @@ function devDrop(user='DevUser'){ queueBall(user,''); }
 window.devRedeem=devRedeem;
 window.devDrop=devDrop;
 
+/* Dev Panel */
 function initDevPanel(){
   if(!devPanel) return;
   devPanel.querySelectorAll('button[data-act]').forEach(btn=>{
@@ -930,22 +946,22 @@ function initDevPanel(){
     });
   });
 }
+
+/* Gift grid test */
 function initGiftCards(){
   document.querySelectorAll('.gift-card').forEach(card=>{
     card.addEventListener('click',()=>{
-      queueBall(card.dataset.gift || 'GiftUser','');
+      // Simulate coin-based mapping (just queue one base gift)
+      queueBall(card.dataset.gift||'GiftUser','');
     });
   });
 }
 
-/* Drag + Scale */
+/* Draggables */
 function initDraggables(){
   const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
   panels.forEach(p=>{
-    preparePanel(p);
-    attachDrag(p);
-    attachScale(p);
-    ensurePanelOnScreen(p,true);
+    preparePanel(p); attachDrag(p); attachScale(p); ensurePanelOnScreen(p,true);
   });
 
   window.addEventListener('wheel', e=>{
@@ -966,27 +982,22 @@ function initDraggables(){
     panels.forEach(p=>{
       localStorage.removeItem(storageKey(p,'pos'));
       localStorage.removeItem(storageKey(p,'scale'));
-      p.dataset.x='40';
-      p.dataset.y='120';
-      p.dataset.scale='1';
+      p.dataset.x='40'; p.dataset.y='120'; p.dataset.scale='1';
       renderTransform(p);
     });
     forceCommandsVisible();
   };
 }
-function storageKey(panel,suffix){
-  return `plk_${panel.id || panel.dataset.panel || 'panel'}_${suffix}`;
-}
+function storageKey(panel,suffix){ return `plk_${panel.id || panel.dataset.panel || 'panel'}_${suffix}`; }
+
 function preparePanel(panel){
   panel.classList.add('drag-enabled');
   if(!panel.querySelector('.resize-handle')){
     const h=document.createElement('div');
-    h.className='resize-handle';
-    h.textContent='↘';
+    h.className='resize-handle'; h.textContent='↘';
     panel.appendChild(h);
   }
-  const posKey=storageKey(panel,'pos');
-  const scaleKey=storageKey(panel,'scale');
+  const posKey=storageKey(panel,'pos'), scaleKey=storageKey(panel,'scale');
   let x=40,y=120,scale=1;
   try{
     const posJSON=localStorage.getItem(posKey);
@@ -995,25 +1006,21 @@ function preparePanel(panel){
       if(typeof p.left==='number') x=p.left;
       if(typeof p.top==='number')  y=p.top;
     }
-    const sStr=localStorage.getItem(scaleKey);
-    if(sStr) scale=parseFloat(sStr);
+    const sStr=localStorage.getItem(scaleKey); if(sStr) scale=parseFloat(sStr);
   }catch{}
-  panel.dataset.x=x;
-  panel.dataset.y=y;
-  panel.dataset.scale=scale;
+  panel.dataset.x=x; panel.dataset.y=y; panel.dataset.scale=scale;
   renderTransform(panel);
 }
 function attachDrag(panel){
-  const handles = panel.querySelectorAll('.drag-bar, .cmd-title, .drag-handle');
-  const dragEls = handles.length?handles:[panel];
+  const handles=panel.querySelectorAll('.drag-bar,.cmd-title,.drag-handle');
+  const dragEls=handles.length?handles:[panel];
   let dragging=false,sx=0,sy=0,startX=0,startY=0;
   dragEls.forEach(h=>{
     h.style.cursor='grab';
     h.addEventListener('pointerdown',e=>{
       if(e.button!==0) return;
       if(e.target.closest('.resize-handle')) return;
-      dragging=true;
-      panel.classList.add('dragging');
+      dragging=true; panel.classList.add('dragging');
       sx=e.clientX; sy=e.clientY;
       startX=parseFloat(panel.dataset.x||'0');
       startY=parseFloat(panel.dataset.y||'0');
@@ -1022,19 +1029,16 @@ function attachDrag(panel){
   });
   window.addEventListener('pointermove',e=>{
     if(!dragging) return;
-    let nx=startX+(e.clientX-sx);
-    let ny=startY+(e.clientY-sy);
-    panel.dataset.x=nx;
-    panel.dataset.y=ny;
+    panel.dataset.x=startX+(e.clientX-sx);
+    panel.dataset.y=startY+(e.clientY-sy);
     renderTransform(panel);
   });
   window.addEventListener('pointerup',()=>{
-    if(dragging){
-      dragging=false;
-      panel.classList.remove('dragging');
-      savePanel(panel);
-      ensurePanelOnScreen(panel,false);
-    }
+    if(!dragging) return;
+    dragging=false;
+    panel.classList.remove('dragging');
+    savePanel(panel);
+    ensurePanelOnScreen(panel,false);
   });
 }
 function attachScale(panel){
@@ -1043,8 +1047,7 @@ function attachScale(panel){
   let resizing=false,sx=0,startScale=1;
   handle.addEventListener('pointerdown',e=>{
     e.preventDefault(); e.stopPropagation();
-    resizing=true;
-    sx=e.clientX;
+    resizing=true; sx=e.clientX;
     startScale=parseFloat(panel.dataset.scale||'1');
     panel.classList.add('dragging');
   });
@@ -1056,12 +1059,11 @@ function attachScale(panel){
     renderTransform(panel);
   });
   window.addEventListener('pointerup',()=>{
-    if(resizing){
-      resizing=false;
-      panel.classList.remove('dragging');
-      savePanel(panel);
-      ensurePanelOnScreen(panel,false);
-    }
+    if(!resizing) return;
+    resizing=false;
+    panel.classList.remove('dragging');
+    savePanel(panel);
+    ensurePanelOnScreen(panel,false);
   });
 }
 function renderTransform(panel){
@@ -1072,31 +1074,24 @@ function renderTransform(panel){
   if(panel===commandsPanel) forceCommandsVisible();
 }
 function savePanel(panel){
-  const posKey=storageKey(panel,'pos');
-  const scaleKey=storageKey(panel,'scale');
-  const x=parseFloat(panel.dataset.x||'0');
-  const y=parseFloat(panel.dataset.y||'0');
-  const s=parseFloat(panel.dataset.scale||'1');
+  const posKey=storageKey(panel,'pos'), scaleKey=storageKey(panel,'scale');
+  const x=parseFloat(panel.dataset.x||'0'), y=parseFloat(panel.dataset.y||'0'), s=parseFloat(panel.dataset.scale||'1');
   localStorage.setItem(posKey,JSON.stringify({left:x,top:y}));
   localStorage.setItem(scaleKey,String(s));
 }
-function ensurePanelOnScreen(panel, initial){
+function ensurePanelOnScreen(panel,initial){
   const rect=container.getBoundingClientRect();
-  const x=parseFloat(panel.dataset.x||'0');
-  const y=parseFloat(panel.dataset.y||'0');
+  const x=parseFloat(panel.dataset.x||'0'), y=parseFloat(panel.dataset.y||'0');
   const s=parseFloat(panel.dataset.scale||'1');
-  const w=panel.offsetWidth * s;
-  const h=panel.offsetHeight * s;
+  const w=panel.offsetWidth*s, h=panel.offsetHeight*s;
   const margin=30;
-  let changed=false;
-  let nx=x,ny=y;
-  if(x + w < margin) { nx=margin; changed=true; }
-  if(y + h < margin) { ny=margin; changed=true; }
-  if(x > rect.width  - margin){ nx=rect.width - margin - w; changed=true; }
+  let changed=false, nx=x, ny=y;
+  if(x + w < margin){ nx=margin; changed=true; }
+  if(y + h < margin){ ny=margin; changed=true; }
+  if(x > rect.width - margin){ nx=rect.width - margin - w; changed=true; }
   if(y > rect.height - margin){ ny=rect.height - margin - h; changed=true; }
   if(changed){
-    panel.dataset.x=nx;
-    panel.dataset.y=ny;
+    panel.dataset.x=nx; panel.dataset.y=ny;
     if(!initial) savePanel(panel);
     renderTransform(panel);
   }
@@ -1108,8 +1103,8 @@ function forceCommandsVisible(){
   commandsPanel.style.pointerEvents='auto';
 }
 
-/* UI / Audio */
-btnGear?.addEventListener('click', ()=>{ showSettings(); forceCommandsVisible(); });
+/* UI / Audio events */
+btnGear?.addEventListener('click',()=>{ showSettings(); forceCommandsVisible(); });
 btnCloseSettings?.addEventListener('click', hideSettings);
 btnResetUI?.addEventListener('click',()=>{
   if(!commandsPanel) return;
@@ -1135,6 +1130,7 @@ function bindAudioUnlockOnce(){
 }
 bindAudioUnlockOnce();
 
+/* Settings handlers */
 optDropSpeed.addEventListener('input', applySettings);
 optGravity.addEventListener('input', applySettings);
 optCrateScale.addEventListener('input', applySettings);
@@ -1142,40 +1138,37 @@ optNeon.addEventListener('change', applySettings);
 optParticles.addEventListener('change', applySettings);
 optVibrance.addEventListener('input', applySettings);
 optVolume.addEventListener('input', e=>setAudioVolume(Number(e.target.value)));
-optSpamMode?.addEventListener('change', ()=>setSpamMode(optSpamMode.checked)); // NEW binding
+optSpamMode?.addEventListener('change',()=>setSpamMode(optSpamMode.checked));
 
 btnSaveAdmin.addEventListener('click',()=>{
   try{
-    const baseUrl=backendUrlInput.value.trim();
-    const token=adminTokenInput.value.trim();
-    setBackendBaseUrl(baseUrl);
-    token?localStorage.setItem('adminToken',token):localStorage.removeItem('adminToken');
+    const base=backendUrlInput.value.trim();
+    const tok=adminTokenInput.value.trim();
+    setBackendBaseUrl(base);
+    tok?localStorage.setItem('adminToken',tok):localStorage.removeItem('adminToken');
     alert('Saved admin settings.');
   }catch{ alert('Save failed.'); }
 });
-
 btnReset.addEventListener('click', async ()=>{
-  const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
-  if(!token) return alert('Provide token.');
+  const tok=adminTokenInput.value || localStorage.getItem('adminToken') || '';
+  if(!tok) return alert('Provide token.');
   try{
-    const res=await adminFetch('/admin/reset-leaderboard',{method:'POST',headers:{'x-admin-token':token}});
+    const res=await adminFetch('/admin/reset-leaderboard',{method:'POST',headers:{'x-admin-token':tok}});
     if(!res.ok) throw new Error();
     clearLeaderboardLocal();
     alert('Leaderboard reset.');
   }catch{ alert('Reset failed.'); }
 });
-
 btnToggleSpawn.addEventListener('click', async ()=>{
-  const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
-  if(!token) return alert('Provide token.');
+  const tok=adminTokenInput.value || localStorage.getItem('adminToken') || '';
+  if(!tok) return alert('Provide token.');
   try{
     const curr=spawnStatusEl.textContent==='true';
-    const res=await adminFetch(`/admin/spawn-toggle?enabled=${!curr}`,{method:'POST',headers:{'x-admin-token':token}});
+    const res=await adminFetch(`/admin/spawn-toggle?enabled=${!curr}`,{method:'POST',headers:{'x-admin-token':tok}});
     if(!res.ok) throw new Error();
     alert(`Spawn set to ${!curr}`);
   }catch{ alert('Toggle failed.'); }
 });
-
 btnSimulate.addEventListener('click', async ()=>{
   try{
     const name='LocalTester'+Math.floor(Math.random()*1000);
@@ -1190,25 +1183,20 @@ btnSimulate.addEventListener('click', async ()=>{
 });
 
 /* Console helpers */
-window.forceShowCommands=()=>{ forceCommandsVisible(); };
-window.simGift=(giftName='Rose', count=1)=>{
+window.forceShowCommands=()=>forceCommandsVisible();
+window.simGift=(coins=5,count=1)=>{
   for(let i=0;i<count;i++){
     const evt={
       username:'SimGifter',
       avatarUrl:'',
-      giftName,
-      giftCoins: giftName.toLowerCase()==='rose'?1:50,
+      giftName:'coinGift',
+      giftCoins:coins,
       repeatCount:i+1,
       timestamp:Date.now()
     };
-    processLocalGiftEvent(evt);
+    spawnGiftBalls(evt.username,evt.avatarUrl,evt);
   }
 };
-function processLocalGiftEvent(obj){
-  const username=sanitize(obj.username||'viewer');
-  const avatarUrl=obj.avatarUrl||'';
-  spawnGiftBalls(username, avatarUrl, obj);
-}
 
 /* Start */
 function start(){
