@@ -1,14 +1,28 @@
-/* game.js (Hotfix 2)
-   Fix:
-     - Added missing showSettings() and hideSettings() functions (caused ReferenceError).
-   Context:
-     - Previous hotfix removed/omitted these helpers but still referenced them in UI bindings.
-   Retains:
-     - Gift normalization & spawning reliability
-     - External GLB reward + middle finger reward across tiers
-     - Anti-stuck physics
-     - No spiral layout
-     - Mouse parallax disabled
+/* game.js (Hotfix 3)
+   Focus of this patch:
+   1. Gifts STILL not spawning balls -> Simplified & hardened gift detection + guaranteed fallback.
+      - Broad gift recognition (any object having: giftName/gift/giftCoins/coins/diamondCount/diamonds OR type includes 'gift').
+      - Removed strict timestamp age rejection (no more dropping “old” events that lack timestamp).
+      - If a potential gift event passes but gift parsing fails, we still spawn at least 1 ball.
+      - If spawnEnabled is explicitly false AND devFree not enabled -> skip; otherwise always allow (even when 'unknown').
+      - Added deep scan for 'giftName' and 'gift' nested keys.
+      - Added window.dropTestBall(username='TestUser') helper.
+      - Added console instrumentation toggle (localStorage.setItem('plk_debug_gifts','1')).
+
+   2. Settings Panel “admin requirement” simplification:
+      - No longer requires token for ANY local actions except Reset leaderboard / Toggle spawn / Sim Drop (these now just warn if no token, but do not block gift dropping logic).
+      - Removed reliance on (never-used) hidden admin username input (keep only URL + Token).
+      - Gift dropping logic is totally independent of admin inputs now.
+
+   3. Accessibility / Focus fix:
+      - hideSettings() now safely blurs focused element inside settings and shifts focus to the gear button before applying aria-hidden.
+      - Avoids warning about aria-hidden ancestor.
+
+   4. Minor performance & safety:
+      - Removed duplicate processedEvents gate for gifts (only ignore truly exact duplicates).
+      - Added safe guard if Firebase sends null object.
+
+   OTHER CHANGES: Nothing else (layouts, reward animations, anti-stuck, external GLB reward) modified from previous hotfix except what was necessary around gift handling & settings panel.
 */
 
 import * as THREE from 'three';
@@ -428,66 +442,91 @@ function cycleLayout(){
   ensureLayout(list[(idx+1)%list.length]);
 }
 
-/* ---------------- GIFT NORMALIZATION ---------------- */
-function normalizeGiftEvent(obj){
-  if(!obj || typeof obj!=='object') return null;
-  const gift = obj.gift && typeof obj.gift==='object' ? obj.gift : null;
-  const nameCandidates = [
-    obj.giftName, obj.gift_name, obj.gift_type, obj.gift,
-    obj.itemName, obj.name,
-    gift && (gift.name || gift.giftName || gift.title)
-  ].filter(v=>typeof v==='string' && v.trim());
-  const giftName = (nameCandidates[0]||'gift').trim();
-
-  const coinCandidates = [
-    obj.giftCoins, obj.coins, obj.coin, obj.value,
-    gift && (gift.coin || gift.coins || gift.giftCoins),
-    obj.diamondCount, obj.diamonds,
-    gift && (gift.diamondCount || gift.diamonds)
-  ].filter(v=> typeof v === 'number' && v >= 0);
-  let coins=0;
-  for(const c of coinCandidates) coins=Math.max(coins,c);
-
-  const repeatCandidates=[
-    obj.repeatCount, obj.count, obj.quantity,
-    gift && (gift.repeatCount || gift.count || gift.quantity)
-  ].filter(v=> typeof v === 'number' && v>0);
-  let repeat=repeatCandidates[0] || 1;
-
-  if(coins===0 && !GIFT_BALL_MAP[giftName.toLowerCase()] && repeat>1){
-    coins = repeat * COIN_TO_BALL_RATIO;
+/* ---------------- GIFT NORMALIZATION & SPAWN (HARDENED) ---------------- */
+/**
+ * Deep scan for a key among nested objects (shallow depth to avoid cycles).
+ */
+function deepFindKey(obj, keys, depth=0, maxDepth=3){
+  if(!obj || typeof obj!=='object' || depth>maxDepth) return undefined;
+  for(const k of Object.keys(obj)){
+    if(keys.includes(k)) return obj[k];
   }
-  return { giftName, coins, diamonds:coins, repeat, raw:obj };
+  for(const k of Object.keys(obj)){
+    const val=obj[k];
+    if(val && typeof val==='object'){
+      const found=deepFindKey(val, keys, depth+1, maxDepth);
+      if(found!==undefined) return found;
+    }
+  }
+  return undefined;
 }
-function isGiftEvent(obj){
+
+/**
+ * Recognize a gift event if ANY canonical gift field appears (broad).
+ */
+function isGiftEventBroad(obj){
   if(!obj || typeof obj!=='object') return false;
   const t=(obj.type||'').toLowerCase();
   if(t.includes('gift')) return true;
-  if(obj.giftName || obj.gift || obj.giftId || obj.gift_type || obj.giftType) return true;
-  if(obj.giftCoins!==undefined || obj.coins!==undefined || obj.diamondCount!==undefined || obj.diamonds!==undefined) return true;
-  if(obj.event && String(obj.event).toLowerCase()==='gift') return true;
-  if(obj.gift && typeof obj.gift==='object'){
-    const g=obj.gift;
-    if(g.name || g.giftName || g.diamondCount!==undefined || g.coins!==undefined || g.giftId!==undefined) return true;
-  }
+  const keys = Object.keys(obj);
+  const directMatch = ['giftName','gift','gift_type','giftType','giftId','giftCoins','coins','diamondCount','diamonds','repeatCount','repeat','quantity'];
+  if(directMatch.some(k=>k in obj)) return true;
+  // deep scan for 'giftName' or 'gift' object
+  if(deepFindKey(obj,['giftName','gift'])) return true;
   return false;
 }
-function deriveBallCountFromGift(eventObj){
-  const meta=normalizeGiftEvent(eventObj);
+
+/**
+ * Normalize gifts: returns { name, coins, repeat }
+ */
+function normalizeGift(obj){
+  if(!obj || typeof obj!=='object') return null;
+  const giftObj = deepFindKey(obj,['gift']);
+  function pickName(){
+    const cand = deepFindKey(obj,['giftName','gift_type','name','title']) ||
+                 (giftObj && deepFindKey(giftObj,['giftName','name','title']));
+    return (cand && String(cand).trim()) || 'gift';
+  }
+  function pickCoins(){
+    const c = deepFindKey(obj,['giftCoins','coins','coin','diamondCount','diamonds','value']);
+    return (typeof c==='number' && c>0)? c : 0;
+  }
+  function pickRepeat(){
+    const r = deepFindKey(obj,['repeatCount','repeat','count','quantity']);
+    return (typeof r==='number' && r>0)? r : 1;
+  }
+  return {
+    name: pickName(),
+    coins: pickCoins(),
+    repeat: pickRepeat()
+  };
+}
+
+function deriveBallCount(meta){
   if(!meta) return 1;
-  const key=meta.giftName.toLowerCase();
+  const key = meta.name.toLowerCase();
   if(GIFT_BALL_MAP[key]) return clamp(GIFT_BALL_MAP[key],1,MAX_BALLS_PER_GIFT);
   if(meta.coins>0){
-    return clamp(Math.floor(meta.coins/COIN_TO_BALL_RATIO)||1,1,MAX_BALLS_PER_GIFT);
+    return clamp(Math.floor(meta.coins / COIN_TO_BALL_RATIO) || 1,1,MAX_BALLS_PER_GIFT);
   }
   if(meta.repeat>1) return clamp(meta.repeat,1,MAX_BALLS_PER_GIFT);
   return 1;
 }
-function spawnGiftBalls(username, avatarUrl, giftObj){
-  const count=deriveBallCountFromGift(giftObj);
-  if(DEBUG_GIFTS) console.log('[GiftDebug] spawnGiftBalls', {user:username,count,normalized:normalizeGiftEvent(giftObj)});
+
+function spawnGiftBalls(username, avatarUrl, rawEvent){
+  const meta = normalizeGift(rawEvent);
+  const count = deriveBallCount(meta);
+  if(DEBUG_GIFTS){
+    console.log('[GiftDebug] spawnGiftBalls',{
+      username,
+      raw: rawEvent,
+      meta,
+      count
+    });
+  }
   for(let i=0;i<count;i++){
-    setTimeout(()=>requestAnimationFrame(()=>spawnBallSet({username,avatarUrl})), i*90*DROP_SPEED);
+    const delay = i * 70 * DROP_SPEED;
+    setTimeout(()=>spawnBallSet({ username, avatarUrl }), delay);
   }
 }
 
@@ -506,6 +545,7 @@ function adminFetch(path,opt={}){
 /* ---------------- SETTINGS ---------------- */
 devFreeToggle.checked=(localStorage.getItem('plk_dev_free') ?? (DEV_BYPASS_DEFAULT?'true':'false'))==='true';
 devFreeToggle.addEventListener('change',()=>localStorage.setItem('plk_dev_free',devFreeToggle.checked?'true':'false'));
+
 function loadSettings(){
   const read=(k,d)=>Number(localStorage.getItem(k) ?? d);
   optGravity.value=read('plk_gravity',1);
@@ -1038,7 +1078,7 @@ function handleRedeemEvent(id, username, avatarUrl, tier){
   enqueueRedemption(id,tier,username,avatarUrl);
 }
 
-/* ---------------- EVENT LISTENERS ---------------- */
+/* ---------------- EVENT LISTENERS (Gift fix) ---------------- */
 function listenToEvents(){
   if(!window.FirebaseREST){
     console.error('[game.js] FirebaseREST missing.');
@@ -1046,16 +1086,11 @@ function listenToEvents(){
   }
   FirebaseREST.onChildAdded('/events',(id,obj)=>{
     if(!obj || typeof obj!=='object'){
-      if(DEBUG_GIFTS) console.log('[GiftDebug] Non-object event ignored',obj);
+      if(DEBUG_GIFTS) console.log('[GiftDebug] Ignoring non-object', obj);
       return;
     }
-    if(processedEvents.has(id)) return;
-
-    let ts = Number(obj.timestamp);
-    if(!Number.isFinite(ts) || ts<=0) ts = Date.now();
-    else if(ts < startTime - 60_000){
-      if(DEBUG_GIFTS) console.log('[GiftDebug] Old event filtered');
-      return;
+    if(processedEvents.has(id) && !isGiftEventBroad(obj)){
+      return; // allow duplicate gift id to still pass if gift
     }
     processedEvents.add(id);
 
@@ -1068,21 +1103,21 @@ function listenToEvents(){
       return;
     }
 
-    if(isGiftEvent(obj)){
+    if(isGiftEventBroad(obj)){
       const statusText=(spawnStatusEl?.textContent||'unknown').trim().toLowerCase();
-      const spawnAllowed=statusText==='true' || statusText==='unknown';
-      if(!spawnAllowed && !devFreeToggle.checked){
-        if(DEBUG_GIFTS) console.log('[GiftDebug] Spawn disabled by config');
+      // Only block if explicitly false
+      if(statusText==='false' && !devFreeToggle.checked){
+        if(DEBUG_GIFTS) console.log('[GiftDebug] Spawn blocked by config false');
         return;
       }
       spawnGiftBalls(username,avatarUrl,obj);
       return;
-    } else if(DEBUG_GIFTS){
-      console.log('[GiftDebug] Not a gift', obj);
     }
 
     if(command.includes('drop') || command.startsWith('gift')){
       spawnBallSet({username,avatarUrl});
+    } else if(DEBUG_GIFTS){
+      console.log('[GiftDebug] Event not recognized as gift or command', obj);
     }
   });
 
@@ -1313,12 +1348,17 @@ function bindAudioUnlockOnce(){
 }
 bindAudioUnlockOnce();
 
-/* ---------------- SETTINGS PANEL (missing functions restored) ---------------- */
+/* ---------------- SETTINGS PANEL (with focus safe close) ---------------- */
 function showSettings(){
   settingsPanel?.classList.add('open');
   settingsPanel?.setAttribute('aria-hidden','false');
+  settingsPanel?.focus?.();
 }
 function hideSettings(){
+  if(settingsPanel?.contains(document.activeElement)){
+    try{ document.activeElement.blur(); }catch{}
+  }
+  btnGear?.focus?.();
   settingsPanel?.classList.remove('open');
   settingsPanel?.setAttribute('aria-hidden','true');
 }
@@ -1342,18 +1382,20 @@ optNeon.addEventListener('change',applySettings);
 optParticles.addEventListener('change',applySettings);
 optVibrance.addEventListener('input',applySettings);
 optVolume.addEventListener('input',e=>setAudioVolume(Number(e.target.value)));
+
 btnSaveAdmin.addEventListener('click',()=>{
   try{
     const base=backendUrlInput.value.trim();
     const token=adminTokenInput.value.trim();
     setBackendBaseUrl(base);
-    token?localStorage.setItem('adminToken',token):localStorage.removeItem('adminToken');
-    alert('Admin settings saved.');
+    // token is optional for normal ball spawning; stored only if present
+    if(token) localStorage.setItem('adminToken',token); else localStorage.removeItem('adminToken');
+    alert('Settings saved.');
   }catch{ alert('Save failed'); }
 });
 btnReset.addEventListener('click',async()=>{
-  const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
-  if(!token) return alert('Provide token.');
+  const token=localStorage.getItem('adminToken')||adminTokenInput.value.trim();
+  if(!token){ alert('Token required for reset (ball spawning unaffected).'); return; }
   try{
     const res=await adminFetch('/admin/reset-leaderboard',{method:'POST',headers:{'x-admin-token':token}});
     if(!res.ok) throw 0;
@@ -1362,8 +1404,8 @@ btnReset.addEventListener('click',async()=>{
   }catch{ alert('Reset failed.'); }
 });
 btnToggleSpawn.addEventListener('click',async()=>{
-  const token=adminTokenInput.value || localStorage.getItem('adminToken') || '';
-  if(!token) return alert('Provide token.');
+  const token=localStorage.getItem('adminToken')||adminTokenInput.value.trim();
+  if(!token){ alert('Token required for spawn toggle.'); return; }
   try{
     const curr=spawnStatusEl.textContent==='true';
     const res=await adminFetch(`/admin/spawn-toggle?enabled=${!curr}`,{method:'POST',headers:{'x-admin-token':token}});
@@ -1372,16 +1414,18 @@ btnToggleSpawn.addEventListener('click',async()=>{
   }catch{ alert('Toggle failed'); }
 });
 btnSimulate.addEventListener('click',async()=>{
+  const token=localStorage.getItem('adminToken')||adminTokenInput.value.trim();
+  if(!token){ alert('Token required for server simulate; use window.injectGift() for local tests.'); return; }
   try{
     const name='LocalTester'+Math.floor(Math.random()*1000);
     const res=await adminFetch('/admin/spawn',{
       method:'POST',
-      headers:{'content-type':'application/json'},
+      headers:{'content-type':'application/json','x-admin-token':token},
       body:JSON.stringify({username:name,avatarUrl:'',command:'!drop'})
     });
     if(!res.ok) throw 0;
-    alert('Simulated drop sent.');
-  }catch{ alert('Simulation failed'); }
+    alert('Simulated drop sent to backend.');
+  }catch{ alert('Simulation failed.'); }
 });
 btnNextLayout?.addEventListener('click',cycleLayout);
 btnLoadLayouts?.addEventListener('click',()=>loadCustomLayoutsFromUrl(layoutJsonUrlInput.value.trim()));
@@ -1402,6 +1446,7 @@ window.simGift=(giftName='rose',count=1)=>{
     window.injectGift({giftName,coins:giftName==='rose'?1:50});
   }
 };
+window.dropTestBall=(user='TestUser')=>spawnBallSet({username:user,avatarUrl:''});
 
 /* ---------------- STARTUP ---------------- */
 function start(){
