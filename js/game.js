@@ -1,16 +1,14 @@
-/* game.js (Hotfix)
-   Fixes:
-     - Removed duplicate declaration that caused: "Identifier 'amongUsModelPromise' has already been declared".
-       (It happened because amongUsModelPromise was declared twice in the same IIFE.)
-     - Removed accidental self‑referential line: `const leaderboard = leaderboard;` (would throw ReferenceError).
-     - Simplified reward variant picker (single implementation).
+/* game.js (Hotfix 2)
+   Fix:
+     - Added missing showSettings() and hideSettings() functions (caused ReferenceError).
+   Context:
+     - Previous hotfix removed/omitted these helpers but still referenced them in UI bindings.
    Retains:
-     - Gift normalization & reliable spawning
-     - External GLB (AmongUs) + middle finger reward across tiers
+     - Gift normalization & spawning reliability
+     - External GLB reward + middle finger reward across tiers
      - Anti-stuck physics
      - No spiral layout
      - Mouse parallax disabled
-   Only this file changed. Replace your existing game.js with this one.
 */
 
 import * as THREE from 'three';
@@ -144,7 +142,7 @@ function pickTierRewardVariant(tier){
   return pool[pool.length-1];
 }
 
-/* External GLB cache (single declaration) */
+/* External GLB cache */
 let amongUsModelPromise = null;
 function loadAmongUsModel(){
   if(amongUsModelPromise) return amongUsModelPromise;
@@ -1314,6 +1312,16 @@ function bindAudioUnlockOnce(){
   window.addEventListener('keydown',unlock,true);
 }
 bindAudioUnlockOnce();
+
+/* ---------------- SETTINGS PANEL (missing functions restored) ---------------- */
+function showSettings(){
+  settingsPanel?.classList.add('open');
+  settingsPanel?.setAttribute('aria-hidden','false');
+}
+function hideSettings(){
+  settingsPanel?.classList.remove('open');
+  settingsPanel?.setAttribute('aria-hidden','true');
+}
 
 /* ---------------- UI BINDINGS ---------------- */
 btnGear?.addEventListener('click',showSettings);
