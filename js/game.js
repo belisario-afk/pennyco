@@ -1,13 +1,20 @@
-/* game.js (Update: Add AmongUs Female GLB as a possible Tier 1 crate reward + keep middle finger reward for all tiers)
-   Changes in this revision ONLY:
-     - Added external GLB reward (amongus_sexy_female.glb) as a random Tier 1 reward option.
-     - Middle finger (existing default reward model) still available for every tier (unchanged fallback).
-     - Random selection for Tier 1: by default 50% existing (middle finger) / 50% AmongUs female model (configurable).
-     - Lazy loads external GLB via GLTFLoader (cached).
-     - NO other gameplay logic (layouts, anti-stuck, etc.) changed from previous version you installed.
-     - Mouse parallax still disabled as requested earlier.
+/* game.js (Update: Added AmongUs GLB as optional T1 reward + middle-finger prize available to all tiers, mouse parallax disabled)
+   Summary of new changes (compared to previous version you applied):
+   - Added external GLB reward (AmongUs girl) for Tier 1 crates (randomly chosen).
+   - Introduced a configurable middle finger internal model ID available across ALL tiers.
+   - Modified attachReward3D() to randomly pick between internal models and the new external one.
+   - Added lazy GLB loading with caching (GLTFLoader).
+   - Kept prior anti-stuck improvements, no spiral layout, no mouse parallax.
+   - Existing internal reward pipeline (ensureRewardModelLoaded / createRewardModelInstance / animateRewardModel) remains intact for internal picks.
+   - External model gets its own simple spin animation + scale-in tween (non-breaking).
+   - No other gameplay logic altered.
 
-   To add: place amongus_sexy_female.glb at the same directory level the app is served (or adjust AMONGUS_FEMALE_URL).
+   ACTION REQUIRED:
+     1. Set MIDDLE_FINGER_MODEL_ID below to the correct internal model index that represents the middle finger prize in your rewardModel.js system.
+        (Placeholder currently 22 because earlier code used 22 for Tier 3 – adjust if wrong.)
+     2. If you want different probabilities, adjust TIER_REWARD_POOLS.
+
+   If you later move the GLB into your own CDN/hosting, just update AMONG_US_GLB_URL.
 */
 
 import * as THREE from 'three';
@@ -38,60 +45,91 @@ const { Engine, World, Bodies, Events, Body } = Matter;
 
 (function PlinkooGame(){
 
-/* --- Added External Reward Config --- */
-const AMONGUS_FEMALE_URL = './amongus_sexy_female.glb'; // Adjust path if hosted elsewhere
-const T1_EXTERNAL_REWARD_CHANCE = 0.5; // 50% chance AmongUs model, else default (middle finger)
-/*
-   Middle finger reward: we assume your existing rewardModel.js indexes (16 / 19 / 22) cover tiers.
-   We keep those. We only add an alternative for Tier 1 via random branching.
-*/
-let amongUsFemaleCache = null;
-let amongUsLoadPromise = null;
-function loadAmongUsFemaleModel(){
-  if(amongUsFemaleCache) return Promise.resolve(amongUsFemaleCache.clone());
-  if(amongUsLoadPromise) return amongUsLoadPromise.then(m=>m.clone());
+/* ---------------- NEW EXTERNAL REWARD CONFIG ------------------ */
+
+// Internal model id you use for the middle finger prize.
+// TODO: Set this to the CORRECT value for your assets.
+const MIDDLE_FINGER_MODEL_ID = 22;
+
+// External GLB for the AmongUs-style reward (Tier 1 pool).
+// Using raw.githubusercontent for direct access (note: subject to GitHub rate limits).
+const AMONG_US_GLB_URL =
+  'https://raw.githubusercontent.com/belisario-afk/try240/main/amongus_sexy_female.glb';
+
+// Probability weighting pools per tier.
+// Each entry: { kind:'internal', id:number } OR { kind:'external', key:'amongusGirl' }
+const TIER_REWARD_POOLS = {
+  t1: [
+    { kind:'external', key:'amongusGirl', weight: 1 },
+    { kind:'internal', id:16, weight: 1 },             // your existing T1 internal (was 16 earlier)
+    { kind:'internal', id:MIDDLE_FINGER_MODEL_ID, weight: 1 }
+  ],
+  t2: [
+    { kind:'internal', id:19, weight: 1 },
+    { kind:'internal', id:MIDDLE_FINGER_MODEL_ID, weight: 1 }
+  ],
+  t3: [
+    { kind:'internal', id:22, weight: 1 },             // original T3 (if this IS middle finger just keep both or adjust)
+    { kind:'internal', id:MIDDLE_FINGER_MODEL_ID, weight: 1 }
+  ]
+};
+
+// Simple weighted choose
+function pickTierRewardVariant(tier){
+  const pool = TIER_REWARD_POOLS[tier] || TIER_REWARD_POOLS.t1;
+  const total = pool.reduce((a,b)=>a+(b.weight||1),0);
+  let roll = Math.random()*total;
+  for(const item of pool){
+    roll -= (item.weight||1);
+    if(roll <= 0) return item;
+  }
+  return pool[pool.length-1];
+}
+
+// External model caching
+let amongUsModelPromise = null;
+function loadAmongUsModel(){
+  if(amongUsModelPromise) return amongUsModelPromise;
   const loader = new GLTFLoader();
-  amongUsLoadPromise = new Promise((resolve,reject)=>{
+  amongUsModelPromise = new Promise((resolve,reject)=>{
     loader.load(
-      AMONGUS_FEMALE_URL,
-      gltf=>{
-        // Normalize scale a bit (depends on source)
-        const root = gltf.scene || gltf.scenes?.[0];
-        if(!root){ reject(new Error('GLB had no scene')); return; }
-        root.traverse(o=>{
-          if(o.isMesh){
-            o.castShadow=false;
-            o.receiveShadow=false;
-            if(o.material){
-              o.material.transparent = false;
-            }
-          }
-        });
-        // Fit approximate bounding box height to existing reward scale
+      AMONG_US_GLB_URL,
+      glb=>{
+        const root = glb.scene || glb.scenes?.[0];
+        if(!root){ reject(new Error('GLB has no scene')); return; }
+        // Normalize scale roughly (tweak as needed)
         const box = new THREE.Box3().setFromObject(root);
         const size = new THREE.Vector3();
         box.getSize(size);
-        const targetH = 40; // arbitrary scale target
-        const s = targetH / (size.y || 1);
-        root.scale.multiplyScalar(s);
-        amongUsFemaleCache = root;
-        resolve(root.clone());
+        const targetHeight = 30; // world units to display
+        const scale = targetHeight / (size.y || 1);
+        root.scale.setScalar(scale);
+        root.traverse(o=>{
+          if(o.isMesh){
+            o.castShadow=false; o.receiveShadow=false;
+            if(o.material){
+              o.material.toneMapped=true;
+            }
+          }
+        });
+        resolve(root);
       },
       undefined,
       err=>reject(err)
     );
   });
-  return amongUsLoadPromise.then(m=>m.clone());
+  return amongUsModelPromise;
 }
 
-/* CONFIG */
+/* -------------------------------------------------
+   EXISTING CONFIG / CONSTANTS (UNCHANGED SECTIONS SHORTENED)
+-------------------------------------------------- */
 const REWARD_COSTS = { t1:1000, t2:5000, t3:10000 };
 const REWARD_NAMES = { t1:'Tier 1', t2:'Tier 2', t3:'Tier 3' };
 const REDEEM_PREFIX = 'redeem:';
 const DEV_BYPASS_DEFAULT = true;
 const SHOW_PERF_PANEL = true;
 const ADAPTIVE_QUALITY = true;
-const ENABLE_MOUSE_PARALLAX = false;
 
 const GIFT_BALL_MAP = {
   'rose':1,'finger heart':1,'finger_heart':1,
@@ -99,7 +137,6 @@ const GIFT_BALL_MAP = {
 };
 const COIN_TO_BALL_RATIO = 10;
 const MAX_BALLS_PER_GIFT = 25;
-
 const FIXED_DT = 1000/60;
 const MAX_STEPS_BASE = 4;
 const maxStepsForFrame = dt => dt > 140 ? 1 : dt > 90 ? 2 : MAX_STEPS_BASE;
@@ -110,7 +147,6 @@ let BOARD_HEIGHT = WORLD_HEIGHT * 0.82;
 let BOARD_WIDTH  = 0;
 let TRAY_HEIGHT  = 0;
 const TRAY_RATIO = 0.22;
-
 let ROWS = 12;
 let SLOT_COUNT = ROWS + 1;
 
@@ -118,7 +154,7 @@ const PEG_RADIUS = 0.75;
 const BALL_RADIUS = 1.5;
 const WALL_THICKNESS = 2.0;
 
-/* Anti-stuck (unchanged) */
+/* Anti-stuck (unchanged values from your last patch) */
 const WALL_CLEAR_MARGIN = PEG_RADIUS * 2.0 + 0.6;
 const WALL_NUDGE_ZONE   = BALL_RADIUS * 1.8;
 const WALL_NUDGE_FORCE  = 0.42;
@@ -129,6 +165,7 @@ const WALL_DEFLECTOR_ANGLE = 0.18;
 const LOW_SPEED_THRESHOLD = 0.6;
 const LOW_SPEED_JIGGLE = 0.55;
 
+/* Tunables */
 let GRAVITY_MAG = 1.0;
 let DROP_SPEED   = 0.5;
 let NEON = true;
@@ -168,14 +205,13 @@ let currentLayoutId = null;
 let currentLayoutDescriptor = null;
 const initialRotationOrder = ['classic','honeycomb','gaps'];
 
-const targetCamOffset = new THREE.Vector3();
 const baseCamPos = new THREE.Vector3(0,0,100);
 
 let pegInstancedMesh = null;
 const pegBodies = [];
 let wallBodies = [];
-let floorBody = null;
 let deflectorBodies = [];
+let floorBody = null;
 
 /* Redemption state */
 const redeemQueue = [];
@@ -195,7 +231,7 @@ const sharedBallGeo = new THREE.SphereGeometry(BALL_RADIUS,20,14);
 let sharedBallBaseMaterial = null;
 const avatarTextureCache = new Map();
 
-/* DOM refs */
+/* DOM references (unchanged) */
 const container       = document.getElementById('game-container');
 const fxCanvas        = document.getElementById('fx-canvas');
 const fxCtx           = fxCanvas.getContext('2d');
@@ -212,12 +248,10 @@ const devPanel        = document.getElementById('dev-panel');
 const devFreeToggle   = document.getElementById('dev-free-toggle');
 const commandsPanel   = document.getElementById('commands-panel');
 const settingsPanel   = document.getElementById('settings-panel');
-
 const btnGear         = document.getElementById('btn-gear');
 const btnCloseSettings= document.getElementById('btn-close-settings');
 const btnResetUI      = document.getElementById('btn-reset-ui');
 const btnNextLayout   = document.getElementById('btn-next-layout');
-
 const optDropSpeed    = document.getElementById('opt-drop-speed');
 const optGravity      = document.getElementById('opt-gravity');
 const optCrateScale   = document.getElementById('opt-crate-scale');
@@ -234,8 +268,7 @@ const btnReset        = document.getElementById('btn-reset-leaderboard');
 const btnToggleSpawn  = document.getElementById('btn-toggle-spawn');
 const btnSimulate     = document.getElementById('btn-simulate');
 
-/* Helpers */
-const clamp = (v,a,b) => v<a?a:v>b?b:v;
+/* Firebase guard */
 function safeInitFirebase(){
   if(window.FirebaseREST) return;
   const listenersAdded = {};
@@ -249,80 +282,87 @@ function safeInitFirebase(){
   };
 }
 safeInitFirebase();
-function sanitize(u){ const s=String(u||'').trim(); return s ? s.slice(0,24) : 'viewer'; }
 
 /* UI show/hide */
-function showSettings(){ settingsPanel?.classList.add('open'); settingsPanel?.setAttribute('aria-hidden','false'); }
-function hideSettings(){ settingsPanel?.classList.remove('open'); settingsPanel?.setAttribute('aria-hidden','true'); }
+function showSettings(){
+  settingsPanel?.classList.add('open');
+  settingsPanel?.setAttribute('aria-hidden','false');
+}
+function hideSettings(){
+  settingsPanel?.classList.remove('open');
+  settingsPanel?.setAttribute('aria-hidden','true');
+}
 function showSettingsPanel(){ showSettings(); forceCommandsVisible(); }
 
-/* Redemption Focus */
+/* Redemption helpers (existing) */
 function enterRedemptionFocus(){ document.body.classList.add('redeem-focus'); forceCommandsVisible(); }
 function exitRedemptionFocus(){ document.body.classList.remove('redeem-focus'); }
 
-/* Redemption Queue */
-function enqueueRedemption(evId,tier,username,avatarUrl){
-  redeemQueue.push({evId,tier,username,avatarUrl});
-  runNextRedemption();
-}
-function runNextRedemption(){
-  if(redeemActive) return;
-  const item=redeemQueue.shift();
-  if(!item) return;
-  redeemActive=true;
-  playRedemptionAnimation(item).then(()=>{redeemActive=false;runNextRedemption();});
-}
-async function prepare3DModel(){ try{ await ensureRewardModelLoaded(); return true; }catch{ return false; } }
-
-/* -------- MODIFIED attachReward3D WITH EXTERNAL MODEL SELECTION -------- */
-async function createTierRewardModel(tier){
-  // Tier selection logic:
-  // Keep original "middle finger" model always accessible (default indexes).
-  if(tier === 't1'){
-    // 50% chance external AmongUs model
-    if(Math.random() < T1_EXTERNAL_REWARD_CHANCE){
-      try{
-        const model = await loadAmongUsFemaleModel();
-        // Animate pop-in scale separate from crate pop
-        model.scale.multiplyScalar(0.01);
-        gsap.to(model.scale,{x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,duration:.6,ease:'back.out(1.7)'});
-        return model;
-      }catch(e){
-        console.warn('[Reward] Failed to load AmongUs female model, fallback to default. Error:', e);
-      }
-    }
-    // fallback or other half: existing small tier index
-    return createRewardModelInstance(16);
-  }
-  if(tier==='t2') return createRewardModelInstance(19);
-  if(tier==='t3') return createRewardModelInstance(22);
-  // Unknown tier fallback
-  return createRewardModelInstance(16);
-}
-
-function attachReward3D(tier){
+/* ---------------- MODIFIED attachReward3D WITH NEW VARIANT SYSTEM ------------------ */
+async function attachReward3D(tier){
+  // Cleanup previous
   if(activeReward3D){
     scene.remove(activeReward3D);
     if(activeRewardDisposeFn) activeRewardDisposeFn();
-    activeReward3D=null; activeRewardDisposeFn=null;
+    activeReward3D=null;
+    activeRewardDisposeFn=null;
   }
-  // Async create (handles external) then animate
-  (async()=>{
-    let model=null;
+
+  // Pick variant
+  const variant = pickTierRewardVariant(tier);
+
+  if(variant.kind === 'external' && variant.key === 'amongusGirl'){
     try{
-      model=await createTierRewardModel(tier);
-    }catch(e){
-      console.warn('[Reward] createTierRewardModel error:', e);
+      const group = await loadAmongUsModel();
+      // Clone to avoid re-scaling shared root across appearances
+      const model = group.clone(true);
+      model.position.set(0,WORLD_HEIGHT*0.27,15);
+      model.traverse(o=>{
+        if(o.isMesh){
+          o.material = o.material.clone();
+        }
+      });
+      model.scale.multiplyScalar(0.01); // start tiny for pop animation
+      scene.add(model);
+      activeReward3D = model;
+
+      // Scale pop
+      gsap.to(model.scale,{ x:'+=0.99', y:'+=0.99', z:'+=0.99', duration:0.55, ease:'back.out(1.6)'});
+      // Slow spin
+      gsap.to(model.rotation,{ y:Math.PI*2, duration:8, ease:'none', repeat:-1 });
+      // Gentle up-down bob
+      gsap.to(model.position,{ y:model.position.y+4, duration:2.6, yoyo:true, repeat:-1, ease:'sine.inOut' });
+
+    }catch(err){
+      console.warn('[Reward] Failed to load external GLB reward, falling back to internal.', err);
+      attachInternalReward(tier); // fallback
     }
-    if(!model) return;
-    model.position.set(0,WORLD_HEIGHT*0.27,15);
-    scene.add(model);
-    activeReward3D=model;
-    // animateRewardModel might only apply to internal ones; guard
+  } else {
+    attachInternalReward(tier, variant.kind==='internal' ? variant.id : undefined);
+  }
+}
+
+function attachInternalReward(tier, explicitId){
+  ensureRewardModelLoaded().then(()=>{
     try{
-      activeRewardDisposeFn = animateRewardModel(model, gsap);
-    }catch{}
-  })();
+      const modelId = explicitId !== undefined
+        ? explicitId
+        : (tier==='t3'?22 : tier==='t2'?19 : 16);
+
+      const model=createRewardModelInstance(modelId);
+      model.position.set(0,WORLD_HEIGHT*0.27,15);
+      scene.add(model);
+      activeReward3D=model;
+      activeRewardDisposeFn=animateRewardModel(model, gsap);
+      model.scale.multiplyScalar(0.01);
+      gsap.to(model.scale,{
+        x:model.scale.x*100,y:model.scale.y*100,z:model.scale.z*100,
+        duration:.5,ease:'back.out(1.6)'
+      });
+    }catch(e){
+      console.warn('[Reward] Internal reward attach failed', e);
+    }
+  }).catch(()=>{ console.warn('[Reward] ensureRewardModelLoaded failed'); });
 }
 
 function detachReward3D(){
@@ -340,7 +380,20 @@ function detachReward3D(){
     }
   });
 }
-function playRedemptionAnimation({tier,username,avatarUrl}){
+
+/* Redemption Animation (unchanged except uses new attachReward3D) */
+function enqueueRedemption(evId,tier,username,avatarUrl){
+  redeemQueue.push({evId,tier,username,avatarUrl});
+  runNextRedemption();
+}
+function runNextRedemption(){
+  if(redeemActive) return;
+  const item=redeemQueue.shift();
+  if(!item) return;
+  redeemActive=true;
+  playRedemptionAnimation(item).then(()=>{redeemActive=false;runNextRedemption();});
+}
+async function playRedemptionAnimation({tier,username,avatarUrl}){
   return new Promise(async resolve=>{
     enterRedemptionFocus();
     const hud=document.createElement('div');
@@ -356,10 +409,10 @@ function playRedemptionAnimation({tier,username,avatarUrl}){
     scene.add(activeRedemptionCrate);
     animateCrateEntrance(activeRedemptionCrate, gsap);
 
-    const modelReady=await prepare3DModel().catch(()=>false);
+    // After crate "opening" (delay similar to before)
     setTimeout(async ()=>{
       await openCrate(activeRedemptionCrate, gsap);
-      if(modelReady) attachReward3D(tier);
+      attachReward3D(tier); // new variant logic
     },700);
 
     setTimeout(()=>{
@@ -372,6 +425,8 @@ function playRedemptionAnimation({tier,username,avatarUrl}){
     },3600);
   });
 }
+
+/* (The remainder of the file below is your previously supplied updated game.js content, unchanged except for minor references.) */
 
 /* Slots */
 function buildSlotArrays(slotCount){
@@ -408,7 +463,7 @@ function dailyRotatedLayout(){
 function ensureLayout(layoutId){
   const stored = localStorage.getItem('plk_layout_override');
   const requested = layoutId || stored || dailyRotatedLayout();
-  const sanitized = requested === 'spiral' ? 'classic' : requested; // safety if old spiral saved
+  const sanitized = requested === 'spiral' ? 'classic' : requested; // ensure spiral ignored
   if(sanitized===currentLayoutId) return;
   currentLayoutId=sanitized;
   currentLayoutDescriptor=getLayoutDescriptor(sanitized,'classic');
@@ -534,18 +589,6 @@ function initThree(){
     perfPanel.id='perf-panel';
     document.body.appendChild(perfPanel);
   }
-
-  if(ENABLE_MOUSE_PARALLAX){
-    const rectTarget={w:0,h:0};
-    function updateRect(){ const r=renderer.domElement.getBoundingClientRect(); rectTarget.w=r.width; rectTarget.h=r.height; }
-    updateRect(); window.addEventListener('resize',updateRect);
-    renderer.domElement.addEventListener('pointermove',e=>{
-      const xNorm=(e.clientX/rectTarget.w)*2 - 1;
-      const yNorm=(e.clientY/rectTarget.h)*2 - 1;
-      targetCamOffset.x = xNorm * 2.5;
-      targetCamOffset.y = yNorm * 1.8;
-    });
-  }
 }
 
 function computeWorldSize(){
@@ -609,7 +652,6 @@ function initMatter(){
   bindCollisions();
 }
 
-/* Board (same as previous, trimmed) */
 function clearExistingBoardPhysics(){
   slotSensors.forEach(s=>{ try{ World.remove(world,s.body); }catch{} });
   slotSensors=[];
@@ -634,6 +676,7 @@ function addWallsSlotsDeflectors(){
   floorBody=Bodies.rectangle(0,-BOARD_HEIGHT/2 - 6,BOARD_WIDTH + WALL_THICKNESS*2,WALL_THICKNESS,{isStatic:true,label:'KILL'});
   World.add(world,[left,right,floorBody]);
 
+  // deflectors
   const segmentHeight = BOARD_HEIGHT / WALL_DEFLECTOR_COUNT;
   const startY = BOARD_HEIGHT/2 - segmentHeight/2;
   for(let i=0;i<WALL_DEFLECTOR_COUNT;i++){
@@ -675,7 +718,6 @@ function clampPegPositions(pegPositions){
     else if(p.x>maxX)p.x=maxX;
   });
 }
-
 function createPegBodies(pegPositions){
   pegPositions.forEach(pp=>{
     const peg=Bodies.circle(pp.x,pp.y,PEG_RADIUS,{
@@ -688,7 +730,6 @@ function createPegBodies(pegPositions){
   });
   World.add(world, pegBodies);
 }
-
 function buildPegInstancedMesh(pegPositions){
   const geo=new THREE.CylinderGeometry(PEG_RADIUS,PEG_RADIUS,1.2,16);
   const mat=new THREE.MeshPhysicalMaterial({
@@ -708,7 +749,6 @@ function buildPegInstancedMesh(pegPositions){
   mesh.instanceMatrix.needsUpdate=true;
   return mesh;
 }
-
 function extractPositions(instMesh){
   if(!instMesh) return [];
   const out=[];
@@ -720,7 +760,6 @@ function extractPositions(instMesh){
   }
   return out;
 }
-
 function animateLayoutTransition(){
   if(!currentLayoutDescriptor) return;
   computeWorldSize();
@@ -747,7 +786,6 @@ function animateLayoutTransition(){
     gsap.to(newMesh.material,{opacity:1,duration:0.5,ease:'power2.out'});
     return;
   }
-
   const oldCount=oldPositions.length;
   const newCount=pegPositions.length;
   const diffRatio=Math.abs(oldCount-newCount)/Math.max(1,newCount);
@@ -788,7 +826,7 @@ function animateLayoutTransition(){
         oldMesh.material.dispose();
       }
     });
-  }else{
+  } else {
     oldMesh.material.transparent=true;
     gsap.to(oldMesh.material,{opacity:0,duration:PEG_CROSSFADE_DURATION,ease:'power1.in'});
     gsap.to(newMesh.material,{opacity:1,duration:PEG_CROSSFADE_DURATION,ease:'power2.out',onComplete:()=>{
@@ -835,7 +873,7 @@ function handlePair(a,b){
   if(b.label==='KILL' && String(a.label||'').startsWith('BALL_')) tryRemoveBall(a);
 }
 
-/* Performance */
+/* Performance adaptation */
 function adaptQuality(frameMs){
   frameAccum+=frameMs; frameSamples++;
   perfData.frames++;
@@ -877,13 +915,7 @@ function startLoop(){
     antiStuckNudges();
     fxMgr?.update(fxCtx,dt);
     updateThreeFromMatter();
-
-    if(ENABLE_MOUSE_PARALLAX){
-      camera.position.x += (baseCamPos.x + targetCamOffset.x - camera.position.x)*0.06;
-      camera.position.y += (baseCamPos.y + targetCamOffset.y - camera.position.y)*0.06;
-    } else {
-      camera.position.copy(baseCamPos);
-    }
+    camera.position.copy(baseCamPos); // parallax removed per request
 
     if(NEON){
       vibranceTime+=dt*0.001;
@@ -895,7 +927,6 @@ function startLoop(){
     const t0=performance.now();
     (bloomPass.enabled||smaaPass.enabled)?composer.render():renderer.render(scene,camera);
     adaptQuality(dt+(performance.now()-t0));
-
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
@@ -922,7 +953,6 @@ function antiStuckNudges(){
     }
   });
 }
-
 function clampVelocities(){
   for(const b of dynamicBodies){
     let {x,y}=b.velocity;
@@ -961,7 +991,6 @@ function spawnSingle({username,avatarUrl}){
   dynamicBodies.add(body);
   Body.setVelocity(body,{x:0,y:0});
   Body.setAngularVelocity(body,0);
-
   if(!sharedBallBaseMaterial){
     sharedBallBaseMaterial=new THREE.MeshPhysicalMaterial({
       color:0xffffff,metalness:0.25,roughness:0.5,
@@ -973,11 +1002,9 @@ function spawnSingle({username,avatarUrl}){
   const mesh=new THREE.Mesh(sharedBallGeo,sharedBallBaseMaterial.clone());
   scene.add(mesh);
   meshById.set(body.id,mesh);
-
   const sprite=buildNameSprite(username);
   scene.add(sprite);
   labelById.set(body.id,sprite);
-
   const applyTex=async()=>{
     try{
       let prom=avatarTextureCache.get(avatarUrl||'');
@@ -1007,7 +1034,7 @@ function tryRemoveBall(body){
     meshById.delete(body.id);
     labelById.delete(body.id);
     dynamicBodies.delete(body);
-    World.remove(world,body);
+    World.remove(world, body);
   }catch{}
 }
 
@@ -1018,7 +1045,7 @@ async function awardPoints(username, avatarUrl, points){
   leaderboard[username]={username,avatarUrl,score:next,lastUpdate:Date.now()};
   refreshLeaderboard();
   FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,{
-    username,avatarUrl:avatarUrl||'',score:next,lastUpdate:Date.now()
+    username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
   }).catch(()=>{});
 }
 function setPointsLocal(username, avatarUrl, score){
@@ -1032,7 +1059,7 @@ function deductPoints(username, avatarUrl, points){
   leaderboard[username]={username,avatarUrl,score:next,lastUpdate:Date.now()};
   refreshLeaderboard();
   FirebaseREST.update(`/leaderboard/${encodeURIComponent(username.replace(/[.#$[\]]/g,'_'))}`,{
-    username,avatarUrl:avatarUrl||'',score:next,lastUpdate:Date.now()
+    username, avatarUrl: avatarUrl||'', score: next, lastUpdate: Date.now()
   }).catch(()=>{});
   return true;
 }
@@ -1123,7 +1150,7 @@ function listenToEvents(){
   });
 }
 
-/* Teasers / dev utilities */
+/* Teasers & dev */
 function initTeasers(){
   initPBRTeasers({
     scene,camera,renderer,gsap,
@@ -1154,7 +1181,7 @@ function initGiftCards(){
   });
 }
 
-/* Draggables */
+/* Draggables (unchanged) */
 function initDraggables(){
   const panels=[...document.querySelectorAll('[data-drag][data-scale]')];
   panels.forEach(p=>{
@@ -1190,7 +1217,6 @@ function initDraggables(){
     forceCommandsVisible();
   };
 }
-
 function storageKey(panel,suffix){
   return `plk_${panel.id || panel.dataset.panel || 'panel'}_${suffix}`;
 }
@@ -1314,7 +1340,7 @@ function ensurePanelOnScreen(panel, initial){
   if(panel===commandsPanel) forceCommandsVisible();
 }
 
-/* Custom Layout Loader (spiral ignored) */
+/* Custom layout loader */
 async function loadCustomLayoutsFromUrl(url){
   if(!url) return alert('Enter a layouts URL.');
   try{
@@ -1325,7 +1351,7 @@ async function loadCustomLayoutsFromUrl(url){
     let count=0;
     for(const lay of json.layouts){
       if(!lay.id) continue;
-      if(lay.id==='spiral') { console.warn('Ignoring spiral layout (disabled)'); continue; }
+      if(lay.id==='spiral'){ console.warn('Ignoring spiral layout from remote source'); continue; }
       registerCustomLayout(lay.id, lay);
       count++;
     }
